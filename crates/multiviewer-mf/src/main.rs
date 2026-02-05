@@ -16,7 +16,7 @@ use multiviewer_pipeline::{FractionConfig, PipelineConfig};
 use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
-#[command(version = clap::crate_version!(), author = clap::crate_authors!())]
+#[command(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
 struct Cli {
     /// Path to JSON configuration file.
     #[arg(long, default_value = "config/multiviewer.json")]

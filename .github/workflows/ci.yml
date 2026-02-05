@@ -51,7 +51,7 @@ jobs:
         shell: bash
 
       - name: Install libfabric
-        run: ./.devcontainer/scripts/common/libfabric/install.sh
+        run: sudo ./.devcontainer/scripts/common/libfabric/install.sh
 
       - name: Cache cargo
         uses: actions/cache@v4

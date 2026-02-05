@@ -36,7 +36,7 @@ impl PipelineConfig {
 pub fn build_pipeline(config: &PipelineConfig) -> Result<gst::Pipeline> {
     ensure_mxl_elements_available()?;
 
-    let pipeline = gst::Pipeline::new(None);
+    let pipeline = gst::Pipeline::new();
 
     let compositor = gst::ElementFactory::make("compositor")
         .build()
