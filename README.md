@@ -46,7 +46,9 @@ Dependencies are aligned with MXL's devcontainer setup:
 
 A devcontainer is provided to match the MXL Ubuntu 24.04 toolchain and build
 requirements. It includes clang, CMake/Ninja, GStreamer dev/runtime packages,
-vcpkg, and libfabric (installed during image build).
+vcpkg, and libfabric (installed during image build). The required devcontainer
+scripts are vendored under `.devcontainer/scripts` so the build does not depend
+on submodule initialization.
 
 1. Open the repo in VS Code/Cursor.
 2. Reopen in container when prompted (or use the command palette).

@@ -8,7 +8,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN echo 'vm.swappiness=0' >> /etc/sysctl.conf
 
-COPY ./mxl/scripts/ /tmp/scripts
+COPY ./.devcontainer/scripts/ /tmp/scripts
 
 # Install basic and runtime dependencies
 RUN apt clean all && apt-get update \
@@ -101,5 +101,5 @@ RUN git clone https://github.com/microsoft/vcpkg \
 
 ENV VCPKG_ROOT="/home/${USERNAME}/vcpkg"
 
-COPY ./mxl/scripts/ /tmp/scripts/
+COPY ./.devcontainer/scripts/ /tmp/scripts/
 RUN /tmp/scripts/common/rust/install-rust.sh
