@@ -21,6 +21,7 @@ jobs:
             build-essential \
             ca-certificates \
             clang \
+            lld \
             cmake \
             ninja-build \
             pkg-config \
