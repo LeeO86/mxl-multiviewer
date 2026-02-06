@@ -38,7 +38,7 @@ ENV VCPKG_ROOT=/opt/vcpkg
 WORKDIR /src
 COPY . .
 
-RUN /src/.devcontainer/scripts/common/libfabric/install.sh
+RUN rm -rf /tmp/libfabric && cd /tmp && /src/.devcontainer/scripts/common/libfabric/install.sh
 
 RUN cargo build -p gst-mxl-rs --release --manifest-path /src/mxl/rust/Cargo.toml
 RUN cargo build -p multiviewer-mf --release
