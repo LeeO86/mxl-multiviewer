@@ -4,11 +4,13 @@
 #include "media/alarm.hpp"
 #include "domain/scan.hpp"
 #include "layout/geometry.hpp"
+#include "media/cuda_compose.hpp"
 #include "media/flowtext.hpp"
 #include "media/jpeg.hpp"
 #include "media/overlay.hpp"
 #include "media/ppm.hpp"
 #include "media/scale.hpp"
+#include "media/timebase.hpp"
 #include "nmos/ids.hpp"
 #include "util/httpclient.hpp"
 #include "util/jsonutil.hpp"
@@ -60,6 +62,9 @@ struct SavedGrain
     bool interlaced = false;
     bool alpha = false;
     std::string mediaType;
+    std::shared_ptr<std::vector<std::uint8_t>> packed;
+    int v210Bytes = 0;
+    int alphaBytes = 0;
 };
 
 struct AudioWindow
@@ -82,6 +87,7 @@ struct Snap
     std::uint64_t grainsRead = 0;
     std::uint64_t resyncs = 0;
     std::array<double, 16> ppm{};
+    std::array<double, 16> rms{};
     std::array<bool, 16> clip{};
     bool alarmNoSignal = false;
     bool alarmBlack = false;
@@ -281,6 +287,7 @@ struct Engine::Impl
     int tslUdp = -1;
     int tslListen = -1;
     Frame422 background;
+    bool useCuda = false;
 
     explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn)
         : config(std::move(cfg))
@@ -295,6 +302,7 @@ struct Engine::Impl
         {
             snap = std::make_shared<Snap>();
             snap->ppm.fill(-120);
+            snap->rms.fill(-120);
         }
     }
 
@@ -398,6 +406,7 @@ struct Engine::Impl
                 }
             }
             view.ppmDbfs = snap->ppm;
+            view.rmsDbfs = snap->rms;
             view.clip = snap->clip;
             view.alarmNoSignal = snap->alarmNoSignal;
             view.alarmBlack = snap->alarmBlack;
@@ -586,6 +595,17 @@ struct Engine::Impl
             saved.interlaced = meta.interlaced;
             saved.alpha = meta.alpha;
             saved.mediaType = meta.mediaType;
+            if (useCuda)
+            {
+                auto const fillBytes = static_cast<std::size_t>(v210RowBytes(width)) * static_cast<std::size_t>(height);
+                auto const keyBytes = meta.alpha ? static_cast<std::size_t>(alpha10RowBytes(width)) * static_cast<std::size_t>(height) : 0;
+                auto buffer = std::make_shared<std::vector<std::uint8_t>>(fillBytes + keyBytes);
+                std::size_t const have = std::min(buffer->size(), static_cast<std::size_t>(grain.grainSize));
+                std::memcpy(buffer->data(), payload, have);
+                saved.packed = std::move(buffer);
+                saved.v210Bytes = static_cast<int>(fillBytes);
+                saved.alphaBytes = static_cast<int>(keyBytes);
+            }
             next->grains.push_back(saved);
             if (next->grains.size() > 4)
             {
@@ -617,6 +637,7 @@ struct Engine::Impl
                         int const take = std::min<int>(static_cast<int>(samples.size()), 960);
                         meters[ch].process(samples.data() + samples.size() - static_cast<std::size_t>(take), take, 48000.0, ppm);
                         next->ppm[ch] = meters[ch].levelDbfs();
+                        next->rms[ch] = meters[ch].rmsDbfs();
                         next->clip[ch] = meters[ch].clip;
                     }
                 }
@@ -738,6 +759,7 @@ struct Engine::Impl
         std::uint64_t index = mxlGetCurrentIndex(&rate);
         Frame422 canvas;
         canvas.allocate(format.width, format.height, false);
+        Frame422 coveredBackground;
         Overlay overlay;
         overlay.resize(format.width, format.height);
         auto lastOverlay = std::chrono::steady_clock::now() - std::chrono::seconds(1);
@@ -787,12 +809,16 @@ struct Engine::Impl
             auto layout = layouts.layout(layoutToken);
             std::vector<Tile> tiles = layout ? layout->tiles : std::vector<Tile>{};
             std::sort(tiles.begin(), tiles.end(), [](Tile const& a, Tile const& b) { return a.z < b.z; });
-            struct Job
+            struct Source
             {
-                PixelRect dst;
-                Frame422 image;
+                Placement place;
+                std::shared_ptr<Frame422> frame;
+                std::shared_ptr<std::vector<std::uint8_t>> packed;
+                int v210Bytes = 0;
+                int alphaBytes = 0;
+                bool bob = false;
             };
-            std::vector<std::future<Job>> jobs;
+            std::vector<Source> sources;
             std::uint64_t const frameDur = mxlIndexToTimestamp(&rate, 1);
             std::uint64_t const offset = frameDur * static_cast<std::uint64_t>(config.inputOffsetGrains);
             std::uint64_t const outputTime = when;
@@ -818,39 +844,26 @@ struct Engine::Impl
                     metrics.inc("input_late_grains_total", {{"input", std::to_string(tile.input)}});
                 }
                 auto const px = rectToPixels(tile.rect, format.width, format.height);
-                auto place = best != nullptr ? placeTile(px, best->width, best->height, tile.scale) : Placement{};
+                Source source;
+                source.place = best != nullptr ? placeTile(px, best->width, best->height, tile.scale) : Placement{};
                 if (best == nullptr)
                 {
-                    place.dst = px;
+                    source.place.dst = px;
                 }
-                auto source = best != nullptr ? best->frame : nullptr;
-                bool const bob = best != nullptr && best->interlaced;
-                jobs.push_back(std::async(std::launch::async, [place, source, bob] {
-                    Job job;
-                    job.dst = place.dst;
-                    job.image.allocate(std::max(2, place.dst.w), std::max(1, place.dst.h), false);
-                    if (source == nullptr)
-                    {
-                        job.image.fill(64, 512, 512);
-                        return job;
-                    }
-                    Placement local = place;
-                    local.dst = {0, 0, job.image.width, job.image.height};
-                    scaleInto(job.image, local, *source, bob);
-                    return job;
-                }));
+                if (best != nullptr)
+                {
+                    source.frame = best->frame;
+                    source.packed = best->packed;
+                    source.v210Bytes = best->v210Bytes;
+                    source.alphaBytes = best->alphaBytes;
+                    source.bob = best->interlaced;
+                }
+                sources.push_back(std::move(source));
             }
-            canvas.fill(64, 512, 512);
-            if (background.width == canvas.width && background.height == canvas.height)
+            if (background.width > 0 && (coveredBackground.width != format.width || coveredBackground.height != format.height))
             {
-                canvas.y = background.y;
-                canvas.cb = background.cb;
-                canvas.cr = background.cr;
-            }
-            for (auto& job : jobs)
-            {
-                auto piece = job.get();
-                blit(canvas, piece.dst, piece.image);
+                coveredBackground.allocate(format.width, format.height, false);
+                coverFrame(coveredBackground, background);
             }
             auto const overlayNow = std::chrono::steady_clock::now();
             if (overlayNow - lastOverlay >= std::chrono::milliseconds(1000 / std::max(1, config.overlayHz)))
@@ -884,6 +897,7 @@ struct Engine::Impl
                     item.tallyLamp = tile.tallyLamp;
                     item.umdFg = tallyRgba(item.tally);
                     item.bars = tile.audioBars;
+                    item.showRms = tile.audioBarRms;
                     item.barChannels = tile.audioBarChannels;
                     item.barsPosition = tile.audioBarPosition;
                     item.zoneGreen = tile.zoneGreen;
@@ -894,6 +908,7 @@ struct Engine::Impl
                         {
                             int const src = tile.audioBarFirst + c;
                             item.ppmDbfs[c] = src < 16 ? current->ppm[static_cast<std::size_t>(src)] : -120;
+                            item.rmsDbfs[c] = src < 16 ? current->rms[static_cast<std::size_t>(src)] : -120;
                             item.clip[c] = src < 16 && current->clip[static_cast<std::size_t>(src)];
                         }
                         if (tile.formatLabel && !current->grains.empty())
@@ -957,20 +972,144 @@ struct Engine::Impl
                         char buf[32];
                         std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
                         item.clockText = buf;
+                        item.clockHour = tm.tm_hour;
+                        item.clockMinute = tm.tm_min;
+                        item.clockSecond = tm.tm_sec;
+                        int rateNum = 0;
+                        int rateDen = 1;
+                        if (parseRateToken(tile.timecodeRate, rateNum, rateDen))
+                        {
+                            item.timecodeText = formatTimecode(mxlGetTime(), rateNum, rateDen);
+                        }
                     }
                     drawn.push_back(std::move(item));
                 }
                 overlay.clear();
                 renderOverlay(overlay, drawn);
             }
-            blendStraightRgba(canvas, overlay.rgba.data(), format.width * 4);
+            std::vector<std::uint8_t> packedOut(static_cast<std::size_t>(v210RowBytes(format.width)) * static_cast<std::size_t>(format.height));
+            bool cudaFrame = false;
+            if (useCuda)
+            {
+                std::vector<CudaTileView> views;
+                views.reserve(sources.size());
+                for (auto const& source : sources)
+                {
+                    CudaTileView viewTile;
+                    viewTile.dstX = source.place.dst.x;
+                    viewTile.dstY = source.place.dst.y;
+                    viewTile.dstW = source.place.dst.w;
+                    viewTile.dstH = source.place.dst.h;
+                    viewTile.srcX = source.place.srcX;
+                    viewTile.srcY = source.place.srcY;
+                    viewTile.srcW = source.place.srcW;
+                    viewTile.srcH = source.place.srcH;
+                    viewTile.bob = source.bob;
+                    if (source.frame == nullptr)
+                    {
+                        viewTile.solid = true;
+                    }
+                    else
+                    {
+                        viewTile.srcWidth = source.frame->width;
+                        viewTile.srcHeight = source.frame->height;
+                        viewTile.y = source.frame->y.data();
+                        viewTile.cb = source.frame->cb.data();
+                        viewTile.cr = source.frame->cr.data();
+                        if (source.frame->hasAlpha && !source.frame->a.empty())
+                        {
+                            viewTile.a = source.frame->a.data();
+                        }
+                        if (source.packed != nullptr && source.v210Bytes > 0 && static_cast<int>(source.packed->size()) >= source.v210Bytes)
+                        {
+                            viewTile.v210 = source.packed->data();
+                            viewTile.v210RowBytes = static_cast<int>(v210RowBytes(source.frame->width));
+                            if (source.alphaBytes > 0 && static_cast<int>(source.packed->size()) >= source.v210Bytes + source.alphaBytes)
+                            {
+                                viewTile.alpha10 = source.packed->data() + source.v210Bytes;
+                                viewTile.alphaRowBytes = static_cast<int>(alpha10RowBytes(source.frame->width));
+                            }
+                        }
+                    }
+                    views.push_back(viewTile);
+                }
+                CudaComposeDesc desc;
+                desc.width = format.width;
+                desc.height = format.height;
+                desc.bgY = 64;
+                desc.bgCb = 512;
+                desc.bgCr = 512;
+                if (coveredBackground.width == format.width && coveredBackground.height == format.height)
+                {
+                    desc.backgroundY = coveredBackground.y.data();
+                    desc.backgroundCb = coveredBackground.cb.data();
+                    desc.backgroundCr = coveredBackground.cr.data();
+                    desc.backgroundWidth = coveredBackground.width;
+                    desc.backgroundHeight = coveredBackground.height;
+                }
+                desc.tiles = views.data();
+                desc.tileCount = static_cast<int>(views.size());
+                desc.rgba = overlay.rgba.data();
+                desc.rgbaStride = format.width * 4;
+                desc.v210Out = packedOut.data();
+                desc.v210RowBytes = static_cast<int>(v210RowBytes(format.width));
+                cudaFrame = cudaComposeFrame(desc) == CudaComposeStatus::Ok;
+                if (!cudaFrame)
+                {
+                    static std::atomic<int> logged{0};
+                    if (logged.fetch_add(1) == 0)
+                    {
+                        logError("cuda_compose_fallback", {{"head", std::to_string(head)}});
+                    }
+                }
+            }
+            if (!cudaFrame)
+            {
+                struct Job
+                {
+                    PixelRect dst;
+                    Frame422 image;
+                };
+                std::vector<std::future<Job>> jobs;
+                for (auto const& source : sources)
+                {
+                    jobs.push_back(std::async(std::launch::async, [source] {
+                        Job job;
+                        job.dst = source.place.dst;
+                        job.image.allocate(std::max(2, job.dst.w), std::max(1, job.dst.h), false);
+                        if (source.frame == nullptr)
+                        {
+                            job.image.fill(64, 512, 512);
+                            return job;
+                        }
+                        Placement local = source.place;
+                        local.dst = {0, 0, job.image.width, job.image.height};
+                        scaleInto(job.image, local, *source.frame, source.bob);
+                        return job;
+                    }));
+                }
+                canvas.fill(64, 512, 512);
+                if (coveredBackground.width == canvas.width && coveredBackground.height == canvas.height)
+                {
+                    canvas.y = coveredBackground.y;
+                    canvas.cb = coveredBackground.cb;
+                    canvas.cr = coveredBackground.cr;
+                }
+                for (auto& job : jobs)
+                {
+                    auto piece = job.get();
+                    blit(canvas, piece.dst, piece.image);
+                }
+                blendStraightRgba(canvas, overlay.rgba.data(), format.width * 4);
+                packV210(canvas, packedOut.data(), static_cast<int>(v210RowBytes(format.width)));
+            }
             if (videoWriter != nullptr)
             {
                 mxlGrainInfo outGrain{};
                 std::uint8_t* outPayload = nullptr;
                 if (mxlFlowWriterOpenGrain(videoWriter, index, &outGrain, &outPayload) == MXL_STATUS_OK && outPayload != nullptr)
                 {
-                    packV210(canvas, outPayload, static_cast<int>(v210RowBytes(format.width)));
+                    std::memcpy(outPayload, packedOut.data(), packedOut.size());
                     outGrain.validSlices = outGrain.totalSlices;
                     outGrain.flags = 0;
                     mxlFlowWriterCommitGrain(videoWriter, &outGrain);
@@ -1030,8 +1169,16 @@ struct Engine::Impl
                 }
             }
             auto const elapsed = std::chrono::steady_clock::now() - started;
+            view.backend = cudaFrame ? "cuda" : "cpu";
             view.composeMs = std::chrono::duration<double, std::milli>(elapsed).count();
-            metrics.observe("compose_seconds", {{"head", std::to_string(head)}, {"backend", "cpu"}}, std::chrono::duration<double>(elapsed).count());
+            metrics.observe("compose_seconds", {{"head", std::to_string(head)}, {"backend", view.backend}}, std::chrono::duration<double>(elapsed).count());
+            if (cudaFrame)
+            {
+                std::uint64_t freeBytes = 0;
+                std::uint64_t totalBytes = 0;
+                cudaDeviceMemory(&freeBytes, &totalBytes);
+                metrics.set("gpu_memory_bytes", {}, totalBytes >= freeBytes ? static_cast<double>(totalBytes - freeBytes) : 0);
+            }
             auto const after = mxlGetTime();
             if (after > mxlIndexToTimestamp(&rate, index + 1))
             {
@@ -1043,6 +1190,10 @@ struct Engine::Impl
             if (head == 1 && ++previewDiv >= std::max(1, format.rateNum / std::max(1, format.rateDen) / std::max(1, config.previewFps)))
             {
                 previewDiv = 0;
+                if (cudaFrame)
+                {
+                    unpackV210(packedOut.data(), static_cast<int>(v210RowBytes(format.width)), canvas);
+                }
                 runtime.setPreview(encodePreviewJpeg(canvas, config.previewWidth, 60));
             }
             ++index;
@@ -1097,6 +1248,12 @@ struct Engine::Impl
                 }
             }
         };
+        struct TslClient
+        {
+            int fd = -1;
+            std::vector<std::uint8_t> buffer;
+        };
+        std::vector<TslClient> clients;
         while (run.load())
         {
             fd_set fds;
@@ -1111,6 +1268,14 @@ struct Engine::Impl
             {
                 FD_SET(tslListen, &fds);
                 maxFd = std::max(maxFd, tslListen);
+            }
+            std::vector<int> watched;
+            watched.reserve(clients.size());
+            for (auto const& client : clients)
+            {
+                FD_SET(client.fd, &fds);
+                watched.push_back(client.fd);
+                maxFd = std::max(maxFd, client.fd);
             }
             if (maxFd < 0)
             {
@@ -1145,25 +1310,47 @@ struct Engine::Impl
                 int const client = ::accept(tslListen, nullptr, nullptr);
                 if (client >= 0)
                 {
-                    timeval once{};
-                    once.tv_sec = 1;
-                    ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &once, sizeof(once));
-                    std::vector<std::uint8_t> buffer;
-                    std::uint8_t chunk[2048];
-                    auto const n = ::recv(client, chunk, sizeof(chunk), 0);
-                    if (n > 0)
+                    if (static_cast<int>(clients.size()) >= 8)
                     {
-                        buffer.insert(buffer.end(), chunk, chunk + n);
-                        bool ok = false;
-                        auto const body = unwrapDle(buffer.data(), buffer.size(), ok);
-                        if (ok)
-                        {
-                            apply(parseTsl5(body.data(), body.size()), "tcp");
-                        }
+                        ::close(client);
                     }
-                    ::close(client);
+                    else
+                    {
+                        clients.push_back(TslClient{client, {}});
+                    }
                 }
             }
+            for (std::size_t i = 0; i < clients.size();)
+            {
+                if (std::find(watched.begin(), watched.end(), clients[i].fd) == watched.end() || !FD_ISSET(clients[i].fd, &fds))
+                {
+                    ++i;
+                    continue;
+                }
+                std::uint8_t chunk[2048];
+                auto const n = ::recv(clients[i].fd, chunk, sizeof(chunk), 0);
+                if (n <= 0)
+                {
+                    ::close(clients[i].fd);
+                    clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(i));
+                    continue;
+                }
+                auto& buffer = clients[i].buffer;
+                buffer.insert(buffer.end(), chunk, chunk + n);
+                if (buffer.size() > 1024 * 1024)
+                {
+                    buffer.clear();
+                }
+                for (auto const& body : pullTslFrames(buffer))
+                {
+                    apply(parseTsl5(body.data(), body.size()), "tcp");
+                }
+                ++i;
+            }
+        }
+        for (auto const& client : clients)
+        {
+            ::close(client.fd);
         }
         if (tslUdp >= 0)
         {
@@ -1194,8 +1381,23 @@ void Engine::start()
     {
         loadImageFile(impl_->config.backgroundFile, impl_->background);
     }
-    impl_->metrics.set("info", {{"version", "0.1.0"}, {"mxl_revision", "218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7"}, {"backend", "cpu"}}, 1);
-    impl_->metrics.set("gpu_memory_bytes", {}, 0);
+    if (impl_->config.backend != "cpu")
+    {
+        impl_->useCuda = cudaRuntimeAvailable();
+    }
+    if (impl_->config.backend == "cuda" && !impl_->useCuda)
+    {
+        throw std::runtime_error("MV_BACKEND=cuda but no CUDA device is visible");
+    }
+    impl_->runtime.setGpu(cudaSupportCompiled(), cudaDeviceCount());
+    impl_->metrics.set("info", {{"version", "0.1.0"}, {"mxl_revision", "218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7"}, {"backend", impl_->useCuda ? "cuda" : "cpu"}}, 1);
+    std::uint64_t freeBytes = 0;
+    std::uint64_t totalBytes = 0;
+    if (impl_->useCuda)
+    {
+        cudaDeviceMemory(&freeBytes, &totalBytes);
+    }
+    impl_->metrics.set("gpu_memory_bytes", {}, totalBytes >= freeBytes ? static_cast<double>(totalBytes - freeBytes) : 0);
     impl_->run.store(true);
     impl_->runtime.touch();
     for (int input = 1; input <= impl_->config.maxInputs; ++input)

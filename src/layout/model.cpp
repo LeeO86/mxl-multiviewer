@@ -483,6 +483,7 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.tallyBorder = flag(tileObj, "tally_border", true);
         tile.tallyLamp = flag(tileObj, "tally_lamp", true);
         tile.audioBars = flag(tileObj, "audio_bars", false);
+        tile.audioBarRms = flag(tileObj, "audio_bar_rms", false);
         tile.audioBarChannels = static_cast<int>(num(tileObj, "audio_bar_channels", 2));
         tile.audioBarFirst = static_cast<int>(num(tileObj, "audio_bar_first", 0));
         auto const bars = barsFromString(str(tileObj, "audio_bar_position", "right"));
@@ -539,6 +540,7 @@ std::string layoutToJson(Layout const& layout)
             << umdSourceToString(tile.umdSource) << "\",\"umd_text\":\"" << tile.umdText << "\",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
             << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":\"" << tile.umdBg << "\",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
             << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
+            << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
             << barsToString(tile.audioBarPosition) << "\",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber
             << ",\"format_label\":" << (tile.formatLabel ? "true" : "false") << ",\"latency\":" << (tile.latency ? "true" : "false")

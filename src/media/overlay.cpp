@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnarrowing"
@@ -318,16 +319,35 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
                 int const cx = tile.rect.x + tile.rect.w / 2;
                 int const cy = tile.rect.y + tile.rect.h / 2;
                 int const radius = std::max(8, std::min(tile.rect.w, tile.rect.h) / 2 - 4);
-                for (int a = 0; a < 360; a += 6)
+                auto polar = [&](double degrees, int length) {
+                    double const rad = (degrees - 90.0) * 3.141592653589793 / 180.0;
+                    return std::pair<int, int>{cx + static_cast<int>(std::lround(std::cos(rad) * length)), cy + static_cast<int>(std::lround(std::sin(rad) * length))};
+                };
+                auto hand = [&](double degrees, int length, Rgba color) {
+                    auto const tip = polar(degrees, length);
+                    overlay.line(cx, cy, tip.first, tip.second, color);
+                };
+                for (int hour = 0; hour < 12; ++hour)
                 {
-                    double const rad = a * 3.141592653589793 / 180.0;
-                    overlay.line(cx, cy, cx + static_cast<int>(std::cos(rad) * radius), cy + static_cast<int>(std::sin(rad) * radius), {255, 255, 255, 40});
+                    int const outer = radius;
+                    int const inner = radius - std::max(4, radius / 8);
+                    auto const a = polar(hour * 30.0, inner);
+                    auto const b = polar(hour * 30.0, outer);
+                    overlay.line(a.first, a.second, b.first, b.second, {255, 255, 255, 220});
                 }
-                overlay.text(cx - 16, cy - 8, tile.clockText, 16, {255, 255, 255, 255});
+                double const minutes = tile.clockMinute + tile.clockSecond / 60.0;
+                double const hours = (tile.clockHour % 12) + minutes / 60.0;
+                hand(hours * 30.0, radius / 2, {255, 255, 255, 255});
+                hand(minutes * 6.0, radius * 3 / 4, {255, 255, 255, 255});
+                hand(tile.clockSecond * 6.0, radius - 4, {255, 64, 64, 255});
             }
             else
             {
                 overlay.text(tile.rect.x + 8, tile.rect.y + tile.rect.h / 2 - 8, tile.clockText, std::max(16, tile.umdFont), {255, 255, 255, 255});
+            }
+            if (!tile.timecodeText.empty())
+            {
+                overlay.text(tile.rect.x + 8, tile.rect.y + tile.rect.h - 20, tile.timecodeText, 16, {255, 220, 120, 255});
             }
         }
         if (tile.bars && tile.barChannels > 0)
@@ -354,6 +374,12 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
                 overlay.fillRect(x, top, barW, height, {0, 0, 0, 120});
                 auto const color = zoneColor(dbfs, tile.zoneGreen, tile.zoneAmber);
                 overlay.fillRect(x, top + height - filled, barW, filled, color);
+                if (tile.showRms)
+                {
+                    double const rms = std::clamp(tile.rmsDbfs[c], -60.0, 0.0);
+                    int const mark = top + height - static_cast<int>(std::lround((rms + 60.0) / 60.0 * height));
+                    overlay.fillRect(x, std::clamp(mark, top, top + height - 2), barW, 2, {255, 255, 255, 230});
+                }
                 if (tile.clip[c])
                 {
                     overlay.fillRect(x, top, barW, 3, {255, 0, 0, 255});

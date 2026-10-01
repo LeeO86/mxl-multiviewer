@@ -26,6 +26,10 @@ struct TslMessage
 // Unwrap a DLE/STX ... DLE/ETX frame. A buffer that is not wrapped is returned unchanged.
 std::vector<std::uint8_t> unwrapDle(std::uint8_t const* data, std::size_t size, bool& ok);
 
+// Pull every complete DLE/STX ... DLE/ETX frame out of a TCP buffer. Incomplete bytes stay in `buffer`.
+// Each returned vector is the unwrapped body.
+std::vector<std::vector<std::uint8_t>> pullTslFrames(std::vector<std::uint8_t>& buffer);
+
 TslMessage parseTsl5(std::uint8_t const* body, std::size_t size);
 TslMessage parseTsl31(std::uint8_t const* data, std::size_t size);
 

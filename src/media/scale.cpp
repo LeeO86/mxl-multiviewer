@@ -136,6 +136,21 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool 
     }
 }
 
+void coverFrame(Frame422& dst, Frame422 const& src)
+{
+    if (dst.width <= 0 || dst.height <= 0)
+    {
+        return;
+    }
+    dst.fill(64, 512, 512);
+    if (src.width <= 0 || src.height <= 0)
+    {
+        return;
+    }
+    auto const place = placeTile(PixelRect{0, 0, dst.width, dst.height}, src.width, src.height, ScaleMode::Fill);
+    scaleInto(dst, place, src, false);
+}
+
 void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::uint16_t bgCr, Frame422 const* background, int backgroundCount,
     ComposeTile const* tiles, int tileCount)
 {
@@ -145,6 +160,10 @@ void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::
         canvas.y = background->y;
         canvas.cb = background->cb;
         canvas.cr = background->cr;
+    }
+    else if (background != nullptr && background->width > 0 && background->height > 0)
+    {
+        coverFrame(canvas, *background);
     }
     else
     {

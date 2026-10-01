@@ -7,6 +7,7 @@
 #include "media/overlay.hpp"
 #include "media/ppm.hpp"
 #include "media/scale.hpp"
+#include "media/timebase.hpp"
 #include "ops/metrics.hpp"
 
 #include <algorithm>
@@ -195,6 +196,66 @@ TEST_CASE("overlay draws umd pixels")
         }
     }
     CHECK(ink > 20);
+}
+
+TEST_CASE("timecode comes from the TAI index")
+{
+    int num = 0;
+    int den = 1;
+    CHECK(parseRateToken("25", num, den));
+    CHECK(num == 25);
+    CHECK(den == 1);
+    CHECK(parseRateToken("30000/1001", num, den));
+    CHECK(num == 30000);
+    CHECK(den == 1001);
+    CHECK(parseRateToken("2997", num, den));
+    CHECK(num == 30000);
+    auto const text = formatTimecode(1500000000ull, 25, 1);
+    CHECK(text == "00:00:01:13");
+}
+
+TEST_CASE("background cover scales into the canvas")
+{
+    Frame422 src;
+    src.allocate(4, 2, false);
+    src.fill(200, 512, 512);
+    Frame422 dst;
+    dst.allocate(8, 8, false);
+    coverFrame(dst, src);
+    CHECK(dst.y[static_cast<std::size_t>(4 * 8 + 4)] == 200);
+}
+
+TEST_CASE("analogue clock draws hands and timecode")
+{
+    Overlay overlay;
+    overlay.resize(200, 200);
+    OverlayTile tile;
+    tile.rect = {0, 0, 200, 200};
+    tile.clock = true;
+    tile.analogue = true;
+    tile.clockHour = 0;
+    tile.clockMinute = 0;
+    tile.clockSecond = 0;
+    tile.timecodeText = "00:00:00:00";
+    renderOverlay(overlay, {tile});
+    auto ink = [&](int x, int y) {
+        auto const* px = overlay.rgba.data() + static_cast<std::size_t>((y * 200 + x) * 4);
+        return px[3] != 0;
+    };
+    CHECK(ink(100, 20));
+    CHECK_FALSE(ink(20, 100));
+    int textInk = 0;
+    for (int y = 170; y < 198; ++y)
+    {
+        for (int x = 0; x < 160; ++x)
+        {
+            if (ink(x, y))
+            {
+                ++textInk;
+            }
+        }
+    }
+    CHECK(textInk > 10);
 }
 
 TEST_CASE("metrics prefix")

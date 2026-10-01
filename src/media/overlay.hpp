@@ -46,8 +46,10 @@ struct OverlayTile
     bool tallyBorder = false;
     bool tallyLamp = false;
     bool bars = false;
+    bool showRms = false;
     int barChannels = 2;
     double ppmDbfs[16] = {};
+    double rmsDbfs[16] = {};
     bool clip[16] = {};
     BarsPosition barsPosition = BarsPosition::Right;
     double zoneGreen = -18;
@@ -60,7 +62,11 @@ struct OverlayTile
     std::string badge;
     bool clock = false;
     bool analogue = false;
+    int clockHour = 0;
+    int clockMinute = 0;
+    int clockSecond = 0;
     std::string clockText;
+    std::string timecodeText;
     std::string labelText;
 };
 

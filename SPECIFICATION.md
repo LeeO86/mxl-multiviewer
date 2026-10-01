@@ -173,7 +173,7 @@ Interlaced inputs are bobbed: the composer scales field 0 (even lines) to the ti
 
 `MV_BACKEND=auto|cuda|cpu`.
 
-- `auto`: CUDA when the binary contains the CUDA backend and a device is present, otherwise CPU.
+- `auto`: CUDA when the binary contains the CUDA backend and a device is present, otherwise CPU. The container image contains the backend. A device is present when the NVIDIA container toolkit or a Kubernetes `nvidia` runtime has injected the host driver (`libcuda`). The image starts without that driver and stays on CPU.
 - `cuda`: required. If the binary has no CUDA backend, exit 78. If no device is visible, exit 75.
 - `cpu`: CPU backend. 2160p output is legal but not the sizing target.
 
@@ -247,6 +247,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
 | `tally_border`, `tally_lamp` | bool | true |
 | `audio_bars` | bool | false for presets, editable |
+| `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
 | `audio_bar_channels` | 1–16 | 2 |
 | `audio_bar_first` | 0-based channel | 0 |
 | `audio_bar_position` | `left`, `right`, `overlay` | `right` |
@@ -456,9 +457,9 @@ The container runs as uid/gid 1000.
 ## 12. Deployment and CI
 
 - Image `ghcr.io/leeo86/mxl-multiviewer`. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`, `latest`. Branch `main`: `nightly-dev`. Every published build: `git-<sha>`. Label `io.dmf.mxl.revision` is the MXL pin.
-- CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration test, container build. CUDA is not required in CI.
-- `docker/docker-compose.demo.yaml`: registry stand-in, pattern writers, the multiviewer, and a note for attaching `mxl-webrtc-monitor` to the output flow. `docker/docker-compose.host.yaml`: host network, MXL root bind, ports 8110 and 3262/3263.
-- `deploy/mxl-multiviewer.yaml`: Deployment `hostNetwork`, MXL root `hostPath`, optional `runtimeClassName: nvidia` and `nvidia.com/gpu`, ConfigMap, probes, ServiceMonitor. Written so `mxl-poc-platform` can vendor it.
+- CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration test, container build. The `ci.yaml` job does not install nvcc, so that binary is CPU-only. The container build compiles the CUDA compositor. A GPU is not required to build or to start the image.
+- `docker/docker-compose.demo.yaml`: registry stand-in, pattern writers, the multiviewer, and a note for attaching `mxl-webrtc-monitor` to the output flow. `docker/docker-compose.host.yaml`: host network, MXL root bind, ports 8110 and 3262/3263. `docker/docker-compose.gpu.yaml`: overlay that requests one NVIDIA GPU so the container toolkit injects the driver.
+- `deploy/mxl-multiviewer.yaml`: Deployment `hostNetwork`, MXL root `hostPath`, ConfigMap, probes, ServiceMonitor, no GPU request. `deploy/mxl-multiviewer-gpu.yaml` is the same Deployment with `runtimeClassName: nvidia` and `nvidia.com/gpu: 1`. Written so `mxl-poc-platform` can vendor either file.
 - `tests/nmos/amwa.sh`: runs the AMWA NMOS Testing tool suites IS-04-01, IS-05-01, and IS-05-02 against `NMOS_PORT`. Not part of the default CI job (the harness image is large and the suite is long). It is the supported way to run those tests.
 
 ---

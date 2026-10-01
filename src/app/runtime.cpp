@@ -13,6 +13,7 @@ RuntimeModel::RuntimeModel(Config const& config)
     {
         inputs_[static_cast<std::size_t>(i)].index = i + 1;
         inputs_[static_cast<std::size_t>(i)].ppmDbfs.fill(-120);
+        inputs_[static_cast<std::size_t>(i)].rmsDbfs.fill(-120);
     }
     for (int i = 0; i < config.outputs; ++i)
     {
@@ -80,6 +81,13 @@ void RuntimeModel::setNmosUp(bool up)
     nmosUp_ = up;
 }
 
+void RuntimeModel::setGpu(bool compiled, int devices)
+{
+    std::lock_guard lock{mutex_};
+    cudaCompiled_ = compiled;
+    cudaDevices_ = devices;
+}
+
 void RuntimeModel::touch()
 {
     std::lock_guard lock{mutex_};
@@ -118,6 +126,18 @@ bool RuntimeModel::nmosUp() const
 {
     std::lock_guard lock{mutex_};
     return nmosUp_;
+}
+
+bool RuntimeModel::cudaCompiled() const
+{
+    std::lock_guard lock{mutex_};
+    return cudaCompiled_;
+}
+
+int RuntimeModel::cudaDevices() const
+{
+    std::lock_guard lock{mutex_};
+    return cudaDevices_;
 }
 
 std::uint64_t RuntimeModel::heartbeatNs() const

@@ -2,6 +2,8 @@
 
 The targets in `SPECIFICATION.md` §13 have not been measured on an RTX A4000, an L4, or a Precision 3930-class CPU in this tree. CI runs the CPU backend on a small raster (`192x108p50`) and checks pixels, not the 16×1080p50 budget.
 
+The CUDA compositor is compiled into the container image (unpack, scale, blend, pack, pinned buffers, two streams). A hardware run still has to time it. `mxl_multiviewer_compose_seconds` is labelled `backend=cuda` or `backend=cpu`, and `mxl_multiviewer_gpu_memory_bytes` is `cudaMemGetInfo` total minus free while CUDA is in use.
+
 When a hardware run is taken, record:
 
 - GPU, driver, and `MV_BACKEND`

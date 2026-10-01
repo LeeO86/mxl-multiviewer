@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <string>
 
 #include "layout/geometry.hpp"
 #include "layout/model.hpp"
@@ -40,6 +41,10 @@ TEST_CASE("layout json round trip and rejection")
     CHECK_FALSE(parseLayout(body, parsed, 16).has_value());
     CHECK(parsed.name == book.layouts[1].name);
     CHECK(parsed.tiles.size() == book.layouts[1].tiles.size());
+    Layout rms;
+    CHECK_FALSE(parseLayout("{\"version\":1,\"name\":\"rms\",\"tiles\":[{\"id\":\"a\",\"content\":\"input\",\"input\":1,\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1},\"audio_bars\":true,\"audio_bar_rms\":true}]}", rms, 4).has_value());
+    CHECK(rms.tiles[0].audioBarRms);
+    CHECK(layoutToJson(rms).find("\"audio_bar_rms\":true") != std::string::npos);
     Layout bad;
     CHECK(parseLayout("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"content\":\"input\",\"input\":99,\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}", bad, 4)
               .has_value());

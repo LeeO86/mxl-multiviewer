@@ -38,6 +38,7 @@ struct InputView
     LegView video;
     LegView audio;
     std::array<double, 16> ppmDbfs{};
+    std::array<double, 16> rmsDbfs{};
     std::array<bool, 16> clip{};
     bool alarmNoSignal = false;
     bool alarmBlack = false;
@@ -77,6 +78,7 @@ public:
     void setOutput(OutputView view);
     void setPreview(std::string jpeg);
     void setNmosUp(bool up);
+    void setGpu(bool compiled, int devices);
     void touch();
 
     [[nodiscard]] std::vector<InputView> inputs() const;
@@ -84,6 +86,8 @@ public:
     [[nodiscard]] OutputView output(int index) const;
     [[nodiscard]] std::string preview() const;
     [[nodiscard]] bool nmosUp() const;
+    [[nodiscard]] bool cudaCompiled() const;
+    [[nodiscard]] int cudaDevices() const;
     [[nodiscard]] std::uint64_t heartbeatNs() const;
     void setHeadLayout(int index, std::string layout);
     void setHeadFormat(int index, VideoFormat format);
@@ -100,6 +104,8 @@ private:
     std::vector<VideoFormat> formats_;
     std::string preview_;
     bool nmosUp_ = false;
+    bool cudaCompiled_ = false;
+    int cudaDevices_ = 0;
     std::uint64_t heartbeatNs_ = 0;
 };
 } // namespace mv
