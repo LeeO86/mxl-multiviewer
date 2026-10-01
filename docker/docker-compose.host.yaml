@@ -1,0 +1,19 @@
+# One host of a real platform. Host network, MXL root bind, ports 8110 and 3262/3263.
+services:
+  multiviewer:
+    image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+    network_mode: host
+    user: "1000:1000"
+    volumes:
+      - /Volumes/mxl:/Volumes/mxl
+    environment:
+      MXL_DOMAIN_SCAN_PATH: /Volumes/mxl
+      MV_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+      MV_BACKEND: auto
+      NMOS_REGISTRY_ADDRESS: ${NMOS_REGISTRY_ADDRESS:-127.0.0.1}
+      NMOS_REGISTRY_PORT: ${NMOS_REGISTRY_PORT:-3210}
+      NMOS_DNS_SD: "false"
+      NMOS_PORT: "3262"
+      WEB_PORT: "8110"
+      TSL_UDP_PORT: "8910"
+      TSL_TCP_PORT: "8911"

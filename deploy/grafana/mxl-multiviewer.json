@@ -1,0 +1,35 @@
+{
+  "title": "mxl-multiviewer",
+  "uid": "mxl-multiviewer",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Output frames",
+      "targets": [{ "expr": "sum by (head) (rate(mxl_multiviewer_output_frames_total[1m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Late and missed",
+      "targets": [
+        { "expr": "sum by (head) (rate(mxl_multiviewer_output_frames_late_total[1m]))" },
+        { "expr": "sum by (head) (rate(mxl_multiviewer_output_frames_missed_total[1m]))" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Compose time",
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, head, backend) (rate(mxl_multiviewer_compose_seconds_bucket[1m])))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Input resyncs",
+      "targets": [{ "expr": "sum by (input) (rate(mxl_multiviewer_input_resyncs_total[1m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Alarms",
+      "targets": [{ "expr": "sum by (name) (mxl_multiviewer_alarms)" }]
+    }
+  ]
+}

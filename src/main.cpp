@@ -1,0 +1,188 @@
+#include "app/runtime.hpp"
+#include "config/store.hpp"
+#include "layout/book.hpp"
+#include "mxlio/engine.hpp"
+#include "nmos/node.hpp"
+#include "ops/api.hpp"
+#include "ops/httpserver.hpp"
+#include "ops/metrics.hpp"
+#include "util/logging.hpp"
+#include "version.hpp"
+
+#ifdef MV_HAS_UI
+#include "ops/webui_generated.hpp"
+#endif
+
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <thread>
+#include <unistd.h>
+
+extern char** environ;
+
+namespace
+{
+std::atomic<bool> gStop{false};
+
+void onSignal(int)
+{
+    gStop.store(true);
+}
+
+std::map<std::string, std::string> environmentMap()
+{
+    std::map<std::string, std::string> env;
+    for (char** cursor = environ; cursor != nullptr && *cursor != nullptr; ++cursor)
+    {
+        std::string entry(*cursor);
+        auto const eq = entry.find('=');
+        if (eq != std::string::npos)
+        {
+            env.emplace(entry.substr(0, eq), entry.substr(eq + 1));
+        }
+    }
+    return env;
+}
+} // namespace
+
+int main(int argc, char** argv)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0)
+        {
+            std::cout << "mxl-multiviewer " << MV_VERSION << "\n"
+                      << "MXL pin " << MV_MXL_REVISION << "\n"
+                      << "Usage: mxl-multiviewer [--config FILE]\n"
+                      << "Configuration: environment > MV_CONFIG_FILE > defaults. See SPECIFICATION.md.\n";
+            return 0;
+        }
+    }
+    auto env = environmentMap();
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc && env.count("MV_CONFIG_FILE") == 0)
+        {
+            env["MV_CONFIG_FILE"] = argv[++i];
+        }
+    }
+    mv::setLogFormatJson(true);
+    try
+    {
+        mv::ConfigStore store(env, std::nullopt);
+        auto config = store.effectiveConfig();
+        mv::setLogLevel(mv::parseLogLevel(config.logLevel));
+        mv::setLogFormatJson(config.logFormat != "text");
+#if !defined(MV_WITH_NMOS)
+        if (config.nmosEnable)
+        {
+            mv::logError("config", {{"error", "NMOS_ENABLE=true but this binary was built without nmos-cpp"}});
+            return 78;
+        }
+#endif
+        if (config.backend == "cuda")
+        {
+#if !defined(MV_WITH_CUDA)
+            mv::logError("config", {{"error", "MV_BACKEND=cuda but this binary has no CUDA backend"}});
+            return 78;
+#endif
+        }
+        mv::RuntimeModel runtime(config);
+        auto layoutsPath = config.layoutsFile;
+        if (layoutsPath.empty() && !config.configFile.empty())
+        {
+            auto const slash = config.configFile.find_last_of('/');
+            layoutsPath = (slash == std::string::npos ? std::string{} : config.configFile.substr(0, slash + 1)) + "layouts.json";
+        }
+        mv::LayoutBookStore layouts(config.maxInputs, config.activeLayout, layoutsPath);
+        mv::Metrics metrics;
+        mv::Engine engine(config, runtime, layouts, metrics);
+        mv::NmosNode node(config, [&](int input, bool video, bool enable, std::string domain, std::string flow, std::string sender) {
+            engine.setRoute(input, video, enable, std::move(domain), std::move(flow), std::move(sender));
+        });
+        engine.setFlowCallback([&](int head, std::string const& videoFlow, std::string const& audioFlow, mv::VideoFormat const& format) {
+            node.updateOutputFlow(head, videoFlow, audioFlow, format);
+        });
+        mv::Api api(config, store, layouts, runtime, metrics);
+        mv::HttpServer http;
+        try
+        {
+            node.start();
+            engine.start();
+            http.start(config.webPort, [&](mv::HttpRequest const& request) {
+                if (request.path == "/" || request.path == "/index.html")
+                {
+                    mv::HttpResponse page;
+                    page.contentType = "text/html; charset=utf-8";
+#ifdef MV_HAS_UI
+                    page.body = std::string(mv::webui::indexHtml());
+#else
+                    page.body = "<!doctype html><title>mxl-multiviewer</title><p>UI was not embedded. API is at /api/v1/info.</p>";
+#endif
+                    return page;
+                }
+                auto response = api.handle(request);
+                if (request.path == "/livez" || request.path == "/readyz" || request.path == "/statusz" || request.path == "/metrics" ||
+                    request.path.rfind("/api/", 0) == 0 || request.path == "/" || request.path == "/preview.jpg" || request.path == "/index.html")
+                {
+                    return response;
+                }
+                if (!config.webEnable && request.path.rfind("/api/", 0) == 0)
+                {
+                    response.status = 404;
+                }
+                return response;
+            });
+        }
+        catch (mv::ConfigError const& ex)
+        {
+            mv::logError("startup", {{"error", ex.what()}});
+            return 78;
+        }
+        catch (std::exception const& ex)
+        {
+            mv::logError("startup", {{"error", ex.what()}});
+            return 75;
+        }
+        std::signal(SIGINT, onSignal);
+        std::signal(SIGTERM, onSignal);
+        mv::logInfo("ready", {{"web", std::to_string(config.webPort)}, {"nmos", std::to_string(config.nmosPort)}});
+        while (!gStop.load())
+        {
+            runtime.setNmosUp(node.registered());
+            metrics.set("nmos_registry_up", {}, runtime.nmosUp() ? 1 : 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        std::atomic<bool> finished{false};
+        std::thread watchdog([&] {
+            for (int i = 0; i < config.shutdownTimeoutS * 10 && !finished.load(); ++i)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!finished.load())
+            {
+                _exit(143);
+            }
+        });
+        http.stop();
+        node.stop();
+        engine.stop();
+        finished.store(true);
+        watchdog.join();
+        return 0;
+    }
+    catch (mv::ConfigError const& ex)
+    {
+        mv::logError("config", {{"error", ex.what()}});
+        return 78;
+    }
+    catch (std::exception const& ex)
+    {
+        mv::logError("fatal", {{"error", ex.what()}});
+        return 75;
+    }
+}

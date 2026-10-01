@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mxl-multiviewer
+data:
+  MXL_DOMAIN_SCAN_PATH: /Volumes/mxl
+  MV_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+  MV_BACKEND: auto
+  MV_MAX_INPUTS: "16"
+  MV_OUTPUT_FORMAT: 1920x1080p50
+  NMOS_ENABLE: "true"
+  NMOS_DNS_SD: "false"
+  NMOS_REGISTRY_ADDRESS: nmos-registry.nmos.svc
+  NMOS_REGISTRY_PORT: "3210"
+  NMOS_PORT: "3262"
+  WEB_PORT: "8110"
+  TSL_UDP_PORT: "8910"
+  TSL_TCP_PORT: "8911"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mxl-multiviewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mxl-multiviewer
+  template:
+    metadata:
+      labels:
+        app: mxl-multiviewer
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # GPU nodes: set runtimeClassName: nvidia and a nvidia.com/gpu limit.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: mxl-multiviewer
+          image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+          envFrom:
+            - configMapRef:
+                name: mxl-multiviewer
+          ports:
+            - name: web
+              containerPort: 8110
+            - name: nmos
+              containerPort: 3262
+            - name: nmos-ws
+              containerPort: 3263
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8110
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8110
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: mxl
+              mountPath: /Volumes/mxl
+      volumes:
+        - name: mxl
+          hostPath:
+            path: /Volumes/mxl
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mxl-multiviewer
+  labels:
+    app: mxl-multiviewer
+spec:
+  selector:
+    app: mxl-multiviewer
+  ports:
+    - name: web
+      port: 8110
+      targetPort: 8110
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mxl-multiviewer
+spec:
+  selector:
+    matchLabels:
+      app: mxl-multiviewer
+  endpoints:
+    - port: web
+      path: /metrics
+      interval: 15s

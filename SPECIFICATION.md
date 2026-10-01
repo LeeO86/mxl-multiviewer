@@ -1,0 +1,494 @@
+# mxl-multiviewer — Specification
+
+Status: v1.0 (implementation follows this document)
+Repository: `LeeO86/mxl-multiviewer`
+Sibling projects this spec aligns with: `LeeO86/mxl-decklink`, `LeeO86/mxl-fabrics-agent`, `LeeO86/mxl-webrtc-monitor`, and the platform meta repo `mxl-poc-platform`
+
+The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
+
+`docs/audit.md` records why this is a rewrite of the Rust/GStreamer 2×2 prototype. This document is the target behaviour.
+
+---
+
+## 1. Purpose and scope
+
+`mxl-multiviewer` is a media function that composites up to 32 MXL inputs into one or more uncompressed MXL outputs. Each input is a real NMOS receiver, so `mxl-fabrics-agent` replicates a remote flow when the receiver subscribes to it. The output is an NMOS sender. A controller (the Qvest NMOS crosspoint) routes senders to the multiviewer with ordinary IS-05. The multiviewer output can be routed to `mxl-decklink` for an SDI monitor wall or to `mxl-webrtc-monitor` for a browser.
+
+The multiviewer does no encoding and no WebRTC. The admin UI gets a low-rate JPEG preview only.
+
+Design principles:
+
+1. **Standards on the control surface.** IS-04 v1.3, IS-05 v1.2, BCP-007-03 (`transport: urn:x-nmos:transport:mxl`), BCP-004-01 receiver capabilities. Routing is IS-05 only. The UI has no source picker.
+2. **House time, not a pipeline clock.** For every output grain index derived from TAI, the composer reads the latest grain of each input that is not newer than `output_time − input_offset`, composites, and writes one output grain.
+3. **Readers never block the composer.** Each input has its own reader thread. A missing or late input shows its last frame for `MV_HOLD_MS`, then a "no signal" slate.
+4. **Layouts do not change routing.** A layout maps tiles to input numbers or to special content (clock, label, empty).
+5. **Conventions of the sibling repos:** env > JSON file > defaults, admin UI, `/metrics`, exit codes, CI, Compose and Kubernetes.
+
+Out of scope: compressed outputs, recording, IS-07, IS-08, IS-12, authentication, ST 2110 I/O, GStreamer in the media path.
+
+---
+
+## 2. Architecture
+
+```
+ NMOS controller (crosspoint)
+        │ IS-05 PATCH (mxl_domain_id, mxl_flow_id) on each receiver
+┌───────▼──────────────────────────────────────────────────────────┐
+│ mxl-multiviewer (C++)                                             │
+│  nmos-cpp Node                                                    │
+│    MV In <n> Video/Audio receivers (group hint)                   │
+│    MV Out <h> Video/Audio senders                                  │
+│  per input: reader thread                                         │
+│    domain scan → mxlFlowReader → latest grain + audio window      │
+│  per output head: composer thread (TAI paced)                     │
+│    CPU or CUDA: v210 unpack → scale → composite → overlay blend   │
+│                 → v210 pack → mxlFlowWriter                       │
+│    audio-follow of one selected input → audio/float32 writer      │
+│  overlay: RGBA bitmap, redrawn on change or at MV_OVERLAY_HZ     │
+│  TSL 5.0 (UDP and TCP DLE/STX), optional TSL 3.1                  │
+│  web: Vue 3 UI, REST, WebSocket, JPEG preview, /metrics           │
+└───────────────────────────────────────────────────────────────────┘
+        │ one video/v210 flow (+ optional audio/float32)
+        ▼
+ mxl-decklink  or  mxl-webrtc-monitor
+```
+
+One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), each with its own raster, layout, and optional audio-follow flow. Heads share the input receivers.
+
+---
+
+## 3. Technology and build
+
+- C++20, CMake ≥ 3.24, Ninja. GCC ≥ 12 or Clang ≥ 16.
+- MXL: `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, one pin variable in the Dockerfile and CI, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`. Public C API only (`mxl/mxl.h`, `mxl/flow.h`, `mxl/time.h`).
+- nmos-cpp: `fe303849527394b03bdedc8f161f377fe458bb62` (same commit as the siblings).
+- Overlay: in-tree RGBA rasteriser and the public-domain 8×8 font compiled into the binary. See `IMPLEMENTATION_PLAN.md` for why Blend2D was not linked.
+- CUDA backend: compiled when the CUDA toolkit is present. Kernels unpack v210, scale, blend the overlay, and pack v210. Pinned host memory and streams overlap upload, compute, and download.
+- CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
+- JPEG preview and background images: stb (public domain), bundled. No runtime download.
+- Web UI: Vue 3 built to one HTML file and embedded. No CDN.
+- Base image: Ubuntu 24.04. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
+- Tests: doctest (vendored). Integration tests are shell scripts.
+- Where the pinned MXL or nmos-cpp API differs from this text, follow the API and record the deviation.
+
+Repository layout mirrors the siblings: `.github/workflows`, `cmake`, `deploy`, `docker`, `src`, `tests`, `third_party`, `web`, `assets`, `AGENTS.md`, `IMPLEMENTATION_PLAN.md`, `README.md`, `SPECIFICATION.md`, `docs/audit.md`, Apache-2.0 `LICENSE`.
+
+---
+
+## 4. NMOS
+
+### 4.1 Node and resources
+
+- One nmos-cpp Node, one Device ("MXL Multiviewer").
+- `MV_MAX_INPUTS` (default 16, max 32). Input `n` (1-based) has:
+  - one video receiver, `urn:x-nmos:transport:mxl`, format video;
+  - one audio receiver, `urn:x-nmos:transport:mxl`, format audio;
+  - group hint `urn:x-nmos:tag:grouphint/v1.0` values `MV In <n>:Video` and `MV In <n>:Audio`;
+  - labels `MV In <n> Video` and `MV In <n> Audio`.
+- Each head `h` (1-based) has a video Source, Flow, and Sender, and, when audio output is enabled, an audio Source, Flow, and Sender. Group hint `MV Out <h>:Video` / `MV Out <h>:Audio`. Labels `MV Out <h> Video` / `MV Out <h> Audio`.
+- Receiver capabilities (BCP-004-01):
+  - video `video/v210` and `video/v210a`, progressive and interlaced, frame width 1–3840, height 1–2160, grain rates 24000/1001, 24/1, 25/1, 30000/1001, 30/1, 50/1, 60000/1001, 60/1. Colour sampling YCbCr-4:2:2, component depth 10.
+  - audio `audio/float32`, sample rate 48000/1, channel count 1–64, sample depth 32.
+- `video/v210a`: the key plane is straight alpha for that tile. It is not ignored.
+- Registration is unicast (`NMOS_REGISTRY_ADDRESS` / `NMOS_REGISTRY_PORT`). DNS-SD is off unless `NMOS_DNS_SD=true`.
+- Stable ids are UUIDv5 (RFC 4122 URL namespace `6ba7b811-9dad-11d1-80b4-00c04fd430c8`) from `NMOS_SEED`:
+
+| Resource | Name |
+| --- | --- |
+| Node | `mxl-multiviewer/<seed>/node` |
+| Device | `mxl-multiviewer/<seed>/device` |
+| Output domain id (when `MV_OUTPUT_DOMAIN_ID` is empty) | `mxl-multiviewer/<seed>/domain` |
+| Video receiver n | `mxl-multiviewer/<seed>/in/<n>/video` |
+| Audio receiver n | `mxl-multiviewer/<seed>/in/<n>/audio` |
+| Video source / sender head h | `.../out/<h>/video/source` and `.../sender` |
+| Video flow head h | `.../out/<h>/video/flow/<format-token>` |
+| Audio source / sender / flow | `.../out/<h>/audio/...` with channel count in the flow token |
+
+A raster or rate change changes the flow token, which mints a new flow id. The sender's flow id and active `mxl_flow_id` are updated. The crosspoint follows the sender.
+
+### 4.2 IS-05 behaviour
+
+- BCP-007-03 `transport_params[0]` carries `mxl_domain_id` and `mxl_flow_id`. No transport file.
+- An activation is accepted when the ids are UUIDs even if the domain or flow is not on disk yet. Non-UUID values are rejected with the IS-05 error response.
+- `master_enable: false` stops that leg. State `not_routed`. The other leg of the same input is independent. Video and audio MAY come from different senders.
+- On every activation the IS-04 receiver `subscription` (`sender_id`, `active`) is updated.
+- Senders' active transport params carry this process's output domain id and the current flow id. `master_enable` is true while the head is writing.
+- Output receivers are not exposed. Inputs are not senders.
+
+### 4.3 Sender label lookup
+
+UMD source `is04` reads the routed sender's `label` from the registry Query API. The query port is `NMOS_REGISTRY_PORT + 1` (nmos-cpp registry default). A failed lookup leaves the previous label, then falls back to the tile's manual text, then `MV In <n>`.
+
+---
+
+## 5. Domains and MXL I/O
+
+### 5.1 Scan
+
+- `MXL_DOMAIN_SCAN_PATH` (default `/Volumes/mxl`) is the MXL root. Direct subdirectories that contain `domain_def.json` are domains. The identity is the `id` field, never the directory name. Unknown JSON fields are ignored.
+- A domain whose `domain_def.json` contains an `x-mxl-fabrics-agent` object with `mirror: true` is a mirror domain. Mirror domains are valid sources. They are not valid output domains.
+- The scan runs on every resolve attempt. There is no negative cache.
+
+### 5.2 Output domain
+
+- `MV_OUTPUT_DOMAIN_DIR` is created if missing. `domain_def.json` is written with `MV_OUTPUT_DOMAIN_ID` or the UUIDv5 domain id from §4.1. `options.json` sets `urn:x-mxl:option:history_duration/v1.0` from `MV_HISTORY_DURATION_NS` (default 200 ms) only when this process creates the domain. An existing `options.json` is not rewritten.
+- If the directory is a mirror domain, startup fails with exit 78.
+- The process never writes flows into a mirror domain.
+
+### 5.3 Reader lifecycle
+
+- On activation: resolve domain → `mxlCreateInstance` on that directory → `mxlCreateFlowReader`. Each missing step retries with backoff 250 ms → 5 s while `master_enable` is true. State `waiting`, reason `domain_not_found` or `flow_not_found`.
+- The reader thread copies the newest complete grain (and a matching audio window) into a slot the composer can take without blocking. Grain bytes are copied out of the MXL mapping before the reader continues.
+- If `mxlFlowReaderGetGrain` returns too-late, the reader jumps to the current head and increments `resyncs`.
+- A format change (`flow_def.json` width, height, rate, media type, or channel count) rebuilds that input only. Other inputs and the output keep running.
+- State `running` when a grain newer than the hold deadline is in hand. State `holding` when the last good grain is still inside `MV_HOLD_MS`. State `no_signal` after that, or when the flow exists but no grain has arrived.
+
+### 5.4 Composer
+
+For each output head, for each output index `N` at the head's grain rate:
+
+1. `output_time = indexToTimestamp(rate, N)` using the MXL 128-bit rounding (see the implementation plan).
+2. Sleep until `output_time` unless the clock is already past it.
+3. If the clock has moved more than one index ahead, count the skipped indexes as missed, count the frame late, and continue at the current index.
+4. Take the layout pointer once (frame boundary).
+5. For each input tile, select the newest copied grain whose origin timestamp is `≤ output_time − MV_INPUT_OFFSET_GRAINS × output_frame_duration`. A grain newer than that is not used. Frame-rate conversion (for example 60000/1001 into 50) is this comparison.
+6. Compose, blend the overlay, pack v210, `mxlFlowWriterOpenGrain` / `CommitGrain` with `validSlices = totalSlices`.
+7. If audio-follow is on, write the selected input's float32 samples covering that output frame (2 or 16 channels). Missing channels are silence. Extra channels are dropped from the front of the tile's channel window.
+8. A frame whose commit time is later than the next index's timestamp is late.
+
+`MV_INPUT_OFFSET_GRAINS` defaults to 2. Added latency from input grain origin to the output grain that first displays it MUST be ≤ 2 output frames plus this offset, when the input grain is available at the reader.
+
+Interlaced inputs are bobbed: the composer scales field 0 (even lines) to the tile. The output flow is progressive.
+
+### 5.5 Pixel path
+
+- Unpack v210 to planar 10-bit samples stored in `uint16_t` (Y full width, Cb/Cr half width). Row stride of v210 is `ceil(width/48)×128`, matching MXL and DeckLink.
+- v210a key plane follows the MXL layout: 3×10-bit samples per little-endian 32-bit word, 4-byte line alignment, immediately after the fill plane. Alpha is straight. 0 is transparent, 1023 is opaque.
+- Scale is bilinear. `fit` letterboxes or pillarboxes (limited-range black Y=64, Cb=Cr=512). `fill` crops the source equally on the overflowing axis.
+- Composite in ascending z-order. Overlapping tiles are allowed; the higher z wins.
+- Pack back to v210. A pack/unpack of active pixels is bit-exact.
+- Overlay is an RGBA layer the size of the canvas, blended every output frame. It is redrawn only when content changes or at `MV_OVERLAY_HZ` (default 25). Meter ballistics are part of that redraw.
+
+### 5.6 Backends
+
+`MV_BACKEND=auto|cuda|cpu`.
+
+- `auto`: CUDA when the binary contains the CUDA backend and a device is present, otherwise CPU.
+- `cuda`: required. If the binary has no CUDA backend, exit 78. If no device is visible, exit 75.
+- `cpu`: CPU backend. 2160p output is legal but not the sizing target.
+
+GPU memory is reported from `cudaMemGetInfo` when CUDA is active, otherwise 0.
+
+### 5.7 Audio metering
+
+Per input channel, peak programme meter:
+
+- IEC 60268-10 type IIa attack: a step reaches `1 − exp(−t/τ)` with `τ = 10 ms`.
+- Decay: 24 dB in 2.8 s (linear-amplitude exponential), the type IIa return time.
+- Scale is dBFS. 0 dBFS is full scale. The UI draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60. Colour zones default to green below −18 dBFS, amber below −9, red at and above −9. Zones are configurable per tile.
+- Peak hold default 2 s, then the same decay.
+- Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
+- EBU R 128 momentary loudness is not in this version.
+
+Bars: 1–16 channels, first channel selectable, position left, right, or overlay, clip indicator when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999).
+
+---
+
+## 6. Layouts and tiles
+
+### 6.1 Document
+
+A layout is JSON, `version: 1`:
+
+```json
+{
+  "version": 1,
+  "name": "2x2",
+  "background": "#101010",
+  "tiles": [
+    {
+      "id": "t1",
+      "content": "input",
+      "input": 1,
+      "rect": {"x": 0, "y": 0, "w": 0.5, "h": 0.5},
+      "z": 0,
+      "scale": "fit"
+    }
+  ]
+}
+```
+
+`rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
+
+The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). Import and export are the same document with a `layouts` array and an `active` name. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
+
+Preset geometry:
+
+| Name | Tiles |
+| --- | --- |
+| `1` | one full-frame input 1 |
+| `2x2`, `3x3`, `4x4`, `5x5` | equal grid, inputs in reading order |
+| `2+8` | two stacked tiles on the left half (inputs 1–2), eight tiles in a 2×4 grid on the right (inputs 3–10) |
+| `1+5` | input 1 on the left two-thirds, inputs 2–6 stacked in the right third |
+| `1+7` | input 1 in the top-left 3/4 by 3/4, seven tiles along the right column and the bottom row |
+| `2+6` | inputs 1–2 side by side on the top half (PVW/PGM), inputs 3–8 in a row along the bottom half |
+
+Activating a layout swaps the pointer the composer reads at the next frame boundary. The output grain stream does not stop and the flow id does not change.
+
+### 6.2 Per-tile display
+
+| Option | Values | Default on input tiles |
+| --- | --- | --- |
+| `umd` | on/off | on |
+| `umd_source` | `is04`, `manual`, `tsl` | `is04` |
+| `umd_text` | string | empty |
+| `umd_position` | `top-inside`, `top-outside`, `bottom-inside`, `bottom-outside` | `bottom-inside` |
+| `umd_font` | px at a 1080-tall canvas, scaled with the canvas | 28 |
+| `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
+| `tally_border`, `tally_lamp` | bool | true |
+| `audio_bars` | bool | false for presets, editable |
+| `audio_bar_channels` | 1–16 | 2 |
+| `audio_bar_first` | 0-based channel | 0 |
+| `audio_bar_position` | `left`, `right`, `overlay` | `right` |
+| `audio_zones` | three dBFS thresholds | −18 / −9 / 0 |
+| `format_label` | bool | true |
+| `latency` | bool, grain origin versus now | false |
+| `safe_area` | 90% and 80% rectangles | false |
+| `centre` | centre cross | false |
+| `aspect_markers` | any of `16:9`, `4:3`, `1:1`, `9:16` | none |
+| `scale` | `fit`, `fill` | `fit` |
+
+Clock tiles: `clock_style` `analogue` or `digital`, `clock_zone` `tai`, `utc`, or `local`, optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate.
+
+Label tiles: `label_text`.
+
+Background: `background` colour. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles.
+
+Tally colours: red, green, amber, off. Border width is 8 px at 1080 and scales. Lamps sit at the two ends of the UMD.
+
+### 6.3 Alarms
+
+Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear `MV_ALARM_CLEAR_MS` (default 500):
+
+| Alarm | Condition |
+| --- | --- |
+| `no_signal` | state `no_signal` or `waiting` while enabled |
+| `black` | mean Y of the tile's source ≤ `MV_BLACK_Y` (default 32, 10-bit) |
+| `freeze` | 64-bit hash of a luma downsample unchanged |
+| `silence` | peak of the metered channels < `MV_SILENCE_DBFS` (default −60) |
+| `clip` | clip latch on a metered channel |
+| `format_mismatch` | routed video is outside the receiver caps (rate or raster the node did not advertise, or not v210/v210a) |
+
+An alarm shows a badge and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally. Active alarms increment `mxl_multiviewer_alarms_total`.
+
+### 6.4 Slate
+
+After the hold time the tile is limited-range black with the text `NO SIGNAL` and the input label. `not_routed` uses `NOT ROUTED`. `waiting` uses `WAITING`.
+
+---
+
+## 7. TSL
+
+- `TSL_ENABLE=true` listens on `TSL_UDP_PORT` (default 8910) and `TSL_TCP_PORT` (default 8911).
+- TSL UMD 5.0. UDP packets are the little-endian body (`PBC`, `VER`, `FLAGS`, `SCREEN`, then display messages). A DLE/STX … DLE/ETX wrapper (DLE = 0xFE, STX = 0x02, ETX = 0x03, stuffed DLE DLE) is accepted on UDP and required on TCP. `PBC` is the number of bytes after the PBC field. `VER` 0. `FLAGS` bit 0 selects UTF-16LE, otherwise ASCII. Bit 1 (screen control) is ignored. Display message: `INDEX`, `CONTROL`, `LENGTH`, `TEXT`. Tally in `CONTROL` bits 0–1 (RH), 2–3 (text), 4–5 (LH): 0 off, 1 red, 2 green, 3 amber. Brightness bits 6–7 are stored and not required for the drawing. Bit 15 (control data) skips that display.
+- The tally colour for an input is the text tally if it is not off, otherwise RH if not off, otherwise LH.
+- Display index maps to inputs through `TSL_MAP` (`0:1,1:2` means display 0 → input 1). Empty map means display `i` → input `i+1`. `TSL_SCREEN` default −1 accepts every screen; otherwise only that screen index is applied.
+- `TSL_V31=true` also parses 18-byte TSL 3.1 datagrams on the UDP port: address in byte 0 bits 0–6, byte 1 bit 0 red, bit 1 green, bit 2 amber (both red and green without amber is shown as amber), bytes 2–17 ASCII text. The same index map applies.
+
+---
+
+## 8. Web UI and API
+
+Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protected networks only. `WEB_ENABLE=false` removes the UI and mutating routes. Health and metrics stay.
+
+### 8.1 Pages
+
+- **Preview.** JPEG of head 1 at `MV_PREVIEW_FPS` (default 5) and `MV_PREVIEW_WIDTH` (default 480). Status badges from the WebSocket.
+- **Layout.** Canvas editor. Drag and resize with snapping to a grid of `MV_GRID` (default 24). Assign content and the options in §6.2. Save as a named layout. Activate. Import and export the book.
+- **Inputs.** For each input: state, routed sender id, source label, format, audio channel count. No source picker.
+- **Alarms.** Active and recent alarms.
+- **Settings.** Effective config with provenance. Env-set keys are read-only. Import/export of the flat JSON file. `KEY=value` export.
+
+### 8.2 REST
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/info` | version, MXL pin, backend, max inputs, heads |
+| GET | `/api/v1/inputs` | per-input state |
+| GET | `/api/v1/outputs` | per-head frames, late, missed, flow ids, layout |
+| GET | `/api/v1/layouts` | the book |
+| PUT | `/api/v1/layouts/{name}` | create or replace one layout |
+| DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active |
+| POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head that uses it |
+| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}` |
+| GET | `/api/v1/alarms` | alarm list |
+| GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
+| GET | `/preview.jpg` | latest JPEG of head 1 |
+| GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
+| GET | `/api/v1/config/env` | `KEY=value` text |
+
+`PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
+
+### 8.3 Ops
+
+On `WEB_PORT` (default 8110):
+
+- `/livez` — 200 while the heartbeat is younger than 5 s.
+- `/readyz` — 200 when the output domain is usable, the composer heartbeat is fresh, and (if `NMOS_ENABLE=true` and a registry address is set) the node has registered at least once. Otherwise 503 with a JSON reason. Inputs in `waiting` do not by themselves fail readiness: the wall is producing slates and the output flow exists.
+- `/statusz` — 200, JSON snapshot.
+- `/metrics` — Prometheus text, prefix `mxl_multiviewer_`.
+
+---
+
+## 9. Configuration
+
+Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the variable names, values are strings) > built-in default. Invalid configuration exits 78. The file is written atomically (temporary file and rename).
+
+| Key | Default | Restart | Meaning |
+| --- | --- | --- | --- |
+| `HOST_ID` | hostname | yes | label and seed material |
+| `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes | MXL root |
+| `MV_OUTPUT_DOMAIN_DIR` | `/Volumes/mxl/multiviewer` | yes | output domain directory |
+| `MV_OUTPUT_DOMAIN_ID` | empty (UUIDv5) | yes | `domain_def.json` id |
+| `MV_BACKEND` | `auto` | yes | `auto`, `cuda`, `cpu` |
+| `MV_MAX_INPUTS` | 16 | yes | 1–32 |
+| `MV_OUTPUTS` | 1 | yes | 1–3 |
+| `MV_OUTPUT_FORMAT` | `1920x1080p50` | no | head 1 raster and rate; progressive |
+| `MV_INPUT_OFFSET_GRAINS` | 2 | no | 0–30 |
+| `MV_HOLD_MS` | 1000 | no | slate delay |
+| `MV_HISTORY_DURATION_NS` | 200000000 | yes | new domain only |
+| `MV_LAYOUTS_FILE` | empty | no | layout book path; empty keeps the book in memory plus the config directory when `MV_CONFIG_FILE` is set (`layouts.json` beside it) |
+| `MV_ACTIVE_LAYOUT` | `2x2` | no | initial layout for every head |
+| `MV_AUDIO_CHANNELS` | 2 | no | `0`, `2`, or `16`; 0 disables audio flows |
+| `MV_AUDIO_FOLLOW` | 1 | no | input number whose audio is copied; 0 disables |
+| `MV_OVERLAY_HZ` | 25 | no | cap |
+| `MV_PREVIEW_FPS` | 5 | no | JPEG rate |
+| `MV_PREVIEW_WIDTH` | 480 | no | JPEG width |
+| `MV_GRID` | 24 | no | editor snap divisor |
+| `MV_BLACK_Y` | 32 | no | 10-bit |
+| `MV_SILENCE_DBFS` | −60 | no | |
+| `MV_CLIP_LINEAR` | 0.999 | no | |
+| `MV_ALARM_DEBOUNCE_MS` | 500 | no | |
+| `MV_ALARM_CLEAR_MS` | 500 | no | |
+| `MV_BACKGROUND_FILE` | empty | no | JPEG or PNG under the tiles |
+| `MV_CONFIG_FILE` | empty | yes | flat JSON |
+| `NMOS_ENABLE` | true | yes | |
+| `NMOS_REGISTRY_ADDRESS` | empty | yes | |
+| `NMOS_REGISTRY_PORT` | 3210 | yes | |
+| `NMOS_DNS_SD` | false | yes | |
+| `NMOS_PORT` | 3262 | yes | WebSocket on `NMOS_PORT+1` |
+| `NMOS_SEED` | `<HOST_ID>-multiviewer` | yes | |
+| `WEB_ENABLE` | true | yes | |
+| `WEB_PORT` | 8110 | yes | |
+| `TSL_ENABLE` | true | yes | |
+| `TSL_UDP_PORT` | 8910 | yes | |
+| `TSL_TCP_PORT` | 8911 | yes | |
+| `TSL_V31` | false | yes | also accept TSL 3.1 on UDP |
+| `TSL_SCREEN` | −1 | no | |
+| `TSL_MAP` | empty | no | `display:input` pairs |
+| `LOG_LEVEL` | `info` | no | `trace` `debug` `info` `warn` `error` |
+| `LOG_FORMAT` | `json` | yes | `json` or `text` |
+| `SHUTDOWN_TIMEOUT_S` | 10 | yes | then exit 143 |
+
+Per head `h` ≥ 2 (head 1 uses the unscoped keys):
+
+| Key | Meaning |
+| --- | --- |
+| `MV_OUT<h>_FORMAT` | defaults to `MV_OUTPUT_FORMAT` |
+| `MV_OUT<h>_LAYOUT` | defaults to `MV_ACTIVE_LAYOUT` |
+| `MV_OUT<h>_AUDIO_FOLLOW` | defaults to `MV_AUDIO_FOLLOW` |
+| `MV_OUT<h>_AUDIO_CHANNELS` | defaults to `MV_AUDIO_CHANNELS` |
+
+`MV_OUT1_*` is accepted as an alias of the unscoped keys.
+
+Format token: `<width>x<height>p<rate>` with rate `24`, `25`, `30`, `50`, `60`, `2398`, `2997`, `5994`, or `N/D`. `2398` → 24000/1001, `2997` → 30000/1001, `5994` → 60000/1001. Interlaced output tokens are rejected. Width and height even, width ≤ 3840, height ≤ 2160, width multiple of 2. 3840×2160 is supported; the CUDA backend is the one sized for 16×1080p50 into 2160p50.
+
+Ports MUST NOT collide with each other. Defaults are chosen to miss 8080, 3212/3213, 8090, 8095, 3232/3233, 23500–23599, 8100, 3242/3243, 8554, 8888, 8889, 8189, 9997, 9998, 9610, 9620, 3252/3253, and 9100.
+
+Runtime changes of restart-flagged keys are persisted and reported as `restart_required`. They do not apply until the next process start.
+
+---
+
+## 10. Metrics
+
+Prefix `mxl_multiviewer_`.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `info` | gauge 1 | `version`, `mxl_revision`, `backend` |
+| `output_frames_total` | counter | `head` |
+| `output_frames_late_total` | counter | `head` |
+| `output_frames_missed_total` | counter | `head` |
+| `compose_seconds` | histogram | `head`, `backend` |
+| `gpu_memory_bytes` | gauge | |
+| `input_state` | gauge 1 for the current state | `input`, `kind` (`video`/`audio`), `state` |
+| `input_late_grains_total` | counter | `input` |
+| `input_resyncs_total` | counter | `input` |
+| `alarms` | gauge 0/1 | `input`, `name` |
+| `alarms_total` | counter | `input`, `name` |
+| `tsl_messages_total` | counter | `transport` (`udp`/`tcp`) |
+| `nmos_registry_up` | gauge 0/1 | |
+| `nmos_activations_total` | counter | `input`, `kind` |
+
+Histogram buckets for compose time: 1, 2, 5, 10, 20, 40, 80 ms.
+
+`deploy/grafana/mxl-multiviewer.json` graphs frames, late, missed, compose time, input states, resyncs, and alarms.
+
+---
+
+## 11. Process lifecycle
+
+Startup: validate config (else 78) → create output domain (else 78 if the path is a mirror or cannot be created) → bind web and TSL (else 75) → start reader slots → start composers → start NMOS (else 75). Card-level hardware does not apply. Failure to open the MXL domain after retries is exit 75.
+
+SIGTERM/SIGINT: stop composers, release writers and readers, destroy MXL instances, stop NMOS, exit 0. If `SHUTDOWN_TIMEOUT_S` elapses, exit 143.
+
+| Code | Meaning |
+| --- | --- |
+| 0 | clean shutdown |
+| 75 | startup failed (`EX_TEMPFAIL`) |
+| 78 | invalid configuration (`EX_CONFIG`) |
+| 143 | shutdown grace exceeded |
+
+The container runs as uid/gid 1000.
+
+---
+
+## 12. Deployment and CI
+
+- Image `ghcr.io/leeo86/mxl-multiviewer`. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`, `latest`. Branch `main`: `nightly-dev`. Every published build: `git-<sha>`. Label `io.dmf.mxl.revision` is the MXL pin.
+- CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration test, container build. CUDA is not required in CI.
+- `docker/docker-compose.demo.yaml`: registry stand-in, pattern writers, the multiviewer, and a note for attaching `mxl-webrtc-monitor` to the output flow. `docker/docker-compose.host.yaml`: host network, MXL root bind, ports 8110 and 3262/3263.
+- `deploy/mxl-multiviewer.yaml`: Deployment `hostNetwork`, MXL root `hostPath`, optional `runtimeClassName: nvidia` and `nvidia.com/gpu`, ConfigMap, probes, ServiceMonitor. Written so `mxl-poc-platform` can vendor it.
+- `tests/nmos/amwa.sh`: runs the AMWA NMOS Testing tool suites IS-04-01, IS-05-01, and IS-05-02 against `NMOS_PORT`. Not part of the default CI job (the harness image is large and the suite is long). It is the supported way to run those tests.
+
+---
+
+## 13. Performance targets
+
+Measured on hardware, not in CI. Results are recorded in `docs/performance.md` when a run exists. Until then that file states that the run has not been taken.
+
+| Case | Target |
+| --- | --- |
+| CUDA, RTX A4000 or L4, 16×1080p50 → 1080p50 | compose time < 50% of the frame period (10 ms at 50p), zero late frames over 1 hour |
+| CUDA, same GPUs, 16×1080p50 → 2160p50 | same |
+| CPU, Precision 3930 class, 4×1080p50 → 1080p50 | same |
+| Latency | input grain origin → output grain ≤ 2 frames + `MV_INPUT_OFFSET_GRAINS` |
+
+---
+
+## 14. Testing
+
+- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing and a TSL 3.1 datagram, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`.
+- NMOS: `tests/nmos/amwa.sh`.
+- Hardware: §13, not in CI.
+
+---
+
+## 15. References
+
+- MXL `218ddaa` — https://github.com/dmf-mxl/mxl
+- AMWA IS-04 v1.3, IS-05 v1.2, BCP-007-03, BCP-004-01
+- TSL UMD protocol 5.0 — https://tslproducts.com/wp-content/uploads/TSL-UMD-protocol.pdf
+- IEC 60268-10 type IIa, EBU Tech 3205
+- Sibling specifications in `LeeO86/mxl-decklink`, `LeeO86/mxl-fabrics-agent`, `LeeO86/mxl-webrtc-monitor`

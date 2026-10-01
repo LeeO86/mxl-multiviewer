@@ -1,136 +1,81 @@
 # mxl-multiviewer
 
-DMF multiviewer MediaFunction implemented in Rust + GStreamer, using the
-official MXL SDK and gst-mxl-rs for DMF I/O. The MXL SDK is included as a git
-submodule and built alongside the multiviewer. Upstream reference:
-[dmf-mxl/mxl](https://github.com/dmf-mxl/mxl).
+Broadcast multiviewer for the MXL proof-of-concept platform. It composites up to 32 NMOS inputs into one uncompressed `video/v210` MXL output (and an optional `audio/float32` follow), timed from TAI rather than a media-framework clock.
 
-## Repository layout
+The previous Rust/GStreamer 2×2 prototype is gone. `docs/audit.md` says why. Behaviour is `SPECIFICATION.md`. How this tree differs from that text is `IMPLEMENTATION_PLAN.md`.
 
-```
-.
-├── mxl/                           # MXL SDK submodule (upstream)
-├── crates/
-│   ├── multiviewer-mf/            # MediaFunction runtime (CLI + lifecycle)
-│   └── multiviewer-pipeline/      # GStreamer pipeline builder
-├── config/
-│   └── multiviewer.json           # Default runtime configuration
-├── manifests/
-│   └── multiviewer-mediafunction.json
-├── docker/
-├── scripts/
-│   └── build.sh
-├── Dockerfile
-└── .github/workflows/ci.yml
-```
+The output is an NMOS sender. Route it to `mxl-decklink` for an SDI wall or to `mxl-webrtc-monitor` for a browser. This process does not encode and does not speak WebRTC. The admin UI only gets a low-rate JPEG.
 
-## Build prerequisites (Linux)
+## Build
 
-This repository builds:
-- MXL native library (via `mxl-sys` build script in the submodule).
-- gst-mxl-rs GStreamer plugin.
-- Multiviewer MediaFunction binary.
-
-Dependencies are aligned with MXL's devcontainer setup:
-- build tools: `clang`, `cmake`, `ninja-build`, `pkg-config`, `git`
-- GStreamer dev/runtime: `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`,
-  `gstreamer1.0-plugins-{good,bad,ugly}`
-- GTK/GStreamer headers for plugin builds: `libglib2.0-dev`, `libgirepository1.0-dev`,
-  `libgdk-pixbuf2.0-dev`, `libcairo2-dev`, `libpango1.0-dev`, `libgraphene-1.0-dev`,
-  `libgtk-4-dev`, `libatk1.0-dev`
-- `librdmacm-dev`
-- `vcpkg` (required by MXL CMake presets)
-- `libfabric` (install via `mxl/scripts/common/libfabric/install.sh`)
-
-## Devcontainer
-
-A devcontainer is provided to match the MXL Ubuntu 24.04 toolchain and build
-requirements. It includes clang, CMake/Ninja, GStreamer dev/runtime packages,
-vcpkg, and libfabric (installed during image build). The required devcontainer
-scripts are vendored under `.devcontainer/scripts` so the build does not depend
-on submodule initialization.
-
-1. Open the repo in VS Code/Cursor.
-2. Reopen in container when prompted (or use the command palette).
-3. The container runs `git submodule update --init --recursive` automatically.
-4. Build with `./scripts/build.sh`.
-
-## Build (local)
-
-1. Initialize the submodule:
-   ```bash
-   git submodule update --init --recursive
-   ```
-2. Ensure `VCPKG_ROOT` is set (example):
-   ```bash
-   export VCPKG_ROOT="$HOME/vcpkg"
-   ```
-3. Build:
-   ```bash
-   ./scripts/build.sh
-   ```
-
-This builds:
-- `mxl/rust/target/release/libgstmxl.so` (gst-mxl-rs plugin)
-- `target/release/multiviewer-mf` (MediaFunction)
-
-## Run (local)
-
-The GStreamer plugin and `libmxl.so` must be discoverable at runtime.
-If you built via `./scripts/build.sh`:
+Linux, CMake ≥ 3.24, GCC ≥ 12 or Clang ≥ 16, Node.js ≥ 20 (admin UI). MXL is `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`.
 
 ```bash
-export GST_PLUGIN_PATH="$(pwd)/mxl/rust/target/release"
-export LD_LIBRARY_PATH="$(pwd)/mxl/rust/target/release/build/mxl-sys-*/out/build/lib:$(pwd)/mxl/rust/target/release/build/mxl-sys-*/out/build/lib/internal"
-
-./target/release/multiviewer-mf --config config/multiviewer.json
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/mxl \
+  -DMV_WITH_NMOS=ON -DNMOS_CPP_DIR=/path/to/nmos-cpp/Development
+cmake --build build -j
 ```
 
-Update `config/multiviewer.json` to match your input/output flow IDs.
-
-## MediaFunction definition
-
-- Inputs: 4x DMF video flows (`video/v210`)
-- Output: 1x DMF video flow (`video/v210`)
-- Configuration: domain path, 4 input flow IDs, output flow ID, output resolution,
-  framerate, interlace mode, colorimetry.
-
-Example config file: `config/multiviewer.json`.
-
-## GStreamer pipeline (conceptual)
-
-```
-mxlsrc (x4) -> queue -> videoconvert -> videoscale -> caps(I420 half res)
-     -> compositor (2x2) -> videoconvert -> caps(v210 full res) -> mxlsink
-```
-
-The pipeline is built in `crates/multiviewer-pipeline`.
-
-## Container build & run
+`MV_WITH_NMOS=ON` needs the same nmos-cpp commit as the siblings (`fe303849527394b03bdedc8f161f377fe458bb62`). Without it, `NMOS_ENABLE=true` is rejected.
 
 ```bash
-docker build -t mxl-multiviewer .
-docker run --rm \
-  -v /dev/shm/mxl:/domain \
-  -e GST_PLUGIN_PATH=/app \
-  -e LD_LIBRARY_PATH=/app \
-  mxl-multiviewer --config /app/config/multiviewer.json
+docker build -f docker/Dockerfile .
 ```
 
-## CI
+Image `ghcr.io/leeo86/mxl-multiviewer`. Tags: `vX.Y.Z` → `X.Y.Z`, `X.Y`, `X`, `latest`; `main` → `nightly-dev`; every build → `git-<sha>`. Label `io.dmf.mxl.revision` is the MXL pin.
 
-`.github/workflows/ci.yml` builds:
-- MXL + gst-mxl-rs (via Cargo in `mxl/rust`)
-- multiviewer MediaFunction
-- container image + basic `--help` smoke test
+## Run
 
-## Deployment notes
+Host networking. MXL root mounted read-write (the process creates its output domain and reads every other domain, including fabrics mirrors). uid/gid 1000, same as the domain owner.
 
-- Deploy alongside other DMF MediaFunctions with `/dev/shm/mxl` (or equivalent)
-  mounted into the container as `/domain`.
-- Wire 4 producer flows into the input flow IDs configured, and consume the
-  output flow ID downstream.
-- Scaling: one instance handles a single 2x2 layout. For more sources, run
-  multiple instances or extend to NxN layouts.
-- Limitations: CPU-bound compositor/scaler, fixed v210 formats, no dynamic flow
-  discovery or hot-plug.
+```bash
+MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
+MV_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
+NMOS_REGISTRY_ADDRESS=127.0.0.1 \
+NMOS_ENABLE=true \
+./build/mxl-multiviewer
+```
+
+Web, REST, health, and metrics: `WEB_PORT` **8110**. NMOS Node/Connection: `NMOS_PORT` **3262**, WebSocket **3263**. TSL UMD 5.0: UDP **8910**, TCP **8911**. These miss the ports already used by mxl-decklink, mxl-st2110-gateway, mxl-fabrics-agent, mxl-webrtc-monitor, and FlowXer.
+
+Routing is IS-05 only. The UI has no source picker. A layout names input numbers; changing the layout does not change the route.
+
+```bash
+# after the node is up, receiver id is in GET /api/v1/info
+curl -X PATCH -H 'Content-Type: application/json' \
+  -d '{"master_enable":true,"activation":{"mode":"activate_immediate"},"transport_params":[{"mxl_domain_id":"<domain>","mxl_flow_id":"<flow>"}]}' \
+  http://127.0.0.1:3262/x-nmos/connection/v1.2/single/receivers/<id>/staged
+```
+
+Open `http://<host>:8110/` for the preview, the layout editor, inputs, alarms, and a `KEY=value` export.
+
+`MV_BACKEND=auto` uses CUDA when the binary was built with the toolkit and a device is visible, otherwise CPU. `MV_BACKEND=cuda` on a binary without CUDA exits 78.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | clean shutdown |
+| 75 | startup failed |
+| 78 | invalid configuration |
+| 143 | shutdown grace exceeded |
+
+## Tests
+
+```bash
+./build/unit-tests
+MXL_LIB_DIR=/opt/mxl/lib tests/integration/mosaic.sh \
+  build/mxl-multiviewer build/mxl-mv-writer build/mxl-mv-sample
+tests/nmos/amwa.sh   # IS-04-01, IS-05-01, IS-05-02; needs Docker, not default CI
+```
+
+Hardware targets are in `docs/performance.md`. They have not been measured on an A4000, an L4, or a Precision 3930-class CPU yet.
+
+## Deploy
+
+`docker/docker-compose.demo.yaml` is a registry stand-in, a pattern writer, and the multiviewer. `docker/docker-compose.host.yaml` is one platform host. `deploy/mxl-multiviewer.yaml` is the Kubernetes Deployment (`hostNetwork`, MXL root hostPath, probes, ServiceMonitor) for `mxl-poc-platform` to vendor. Add `runtimeClassName: nvidia` and `nvidia.com/gpu` on GPU nodes.
+
+## License
+
+Apache-2.0. Vendored `third_party/doctest`, `picojson`, `stb`, and `font8x8_basic.h` keep their own notices.
