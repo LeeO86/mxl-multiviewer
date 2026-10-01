@@ -1,0 +1,206 @@
+#include "control/tsl.hpp"
+
+#include <cstdlib>
+#include <sstream>
+
+namespace mv
+{
+namespace
+{
+std::uint16_t read16(std::uint8_t const* p)
+{
+    return static_cast<std::uint16_t>(p[0] | (p[1] << 8));
+}
+} // namespace
+
+std::vector<std::uint8_t> unwrapDle(std::uint8_t const* data, std::size_t size, bool& ok)
+{
+    ok = true;
+    if (data == nullptr || size < 2 || data[0] != 0xfe || data[1] != 0x02)
+    {
+        return std::vector<std::uint8_t>(data, data + size);
+    }
+    std::vector<std::uint8_t> out;
+    for (std::size_t i = 2; i < size; ++i)
+    {
+        if (data[i] == 0xfe)
+        {
+            if (i + 1 >= size)
+            {
+                ok = false;
+                return {};
+            }
+            if (data[i + 1] == 0xfe)
+            {
+                out.push_back(0xfe);
+                ++i;
+                continue;
+            }
+            if (data[i + 1] == 0x03)
+            {
+                return out;
+            }
+            ok = false;
+            return {};
+        }
+        out.push_back(data[i]);
+    }
+    ok = false;
+    return {};
+}
+
+TslMessage parseTsl5(std::uint8_t const* body, std::size_t size)
+{
+    TslMessage message;
+    if (body == nullptr || size < 6)
+    {
+        message.error = "short";
+        return message;
+    }
+    std::uint16_t const pbc = read16(body);
+    if (static_cast<std::size_t>(pbc) + 2 > size)
+    {
+        message.error = "pbc";
+        return message;
+    }
+    std::size_t const end = static_cast<std::size_t>(pbc) + 2;
+    bool const unicode = (body[3] & 0x01) != 0;
+    if ((body[3] & 0x02) != 0)
+    {
+        return message;
+    }
+    int const screen = read16(body + 4);
+    std::size_t cursor = 6;
+    while (cursor + 4 <= end)
+    {
+        int const index = read16(body + cursor);
+        std::uint16_t const control = read16(body + cursor + 2);
+        cursor += 4;
+        if ((control & 0x8000) != 0)
+        {
+            if (cursor + 2 > end)
+            {
+                message.error = "control-length";
+                return message;
+            }
+            int const length = read16(body + cursor);
+            cursor += 2 + static_cast<std::size_t>(length);
+            continue;
+        }
+        if (cursor + 2 > end)
+        {
+            message.error = "length";
+            return message;
+        }
+        int const length = read16(body + cursor);
+        cursor += 2;
+        if (cursor + static_cast<std::size_t>(length) > end)
+        {
+            message.error = "text";
+            return message;
+        }
+        TallyUpdate update;
+        update.screen = screen;
+        update.index = index;
+        update.rh = control & 0x3;
+        update.text = (control >> 2) & 0x3;
+        update.lh = (control >> 4) & 0x3;
+        update.brightness = (control >> 6) & 0x3;
+        if (unicode)
+        {
+            for (int i = 0; i + 1 < length; i += 2)
+            {
+                char const ch = static_cast<char>(body[cursor + static_cast<std::size_t>(i)]);
+                if (ch != 0)
+                {
+                    update.textValue.push_back(ch);
+                }
+            }
+        }
+        else
+        {
+            update.textValue.assign(reinterpret_cast<char const*>(body + cursor), reinterpret_cast<char const*>(body + cursor + length));
+            while (!update.textValue.empty() && update.textValue.back() == '\0')
+            {
+                update.textValue.pop_back();
+            }
+        }
+        cursor += static_cast<std::size_t>(length);
+        message.displays.push_back(std::move(update));
+    }
+    return message;
+}
+
+TslMessage parseTsl31(std::uint8_t const* data, std::size_t size)
+{
+    TslMessage message;
+    if (data == nullptr || size < 18)
+    {
+        message.error = "short";
+        return message;
+    }
+    TallyUpdate update;
+    update.index = data[0] & 0x7f;
+    bool const red = (data[1] & 0x01) != 0;
+    bool const green = (data[1] & 0x02) != 0;
+    bool const amber = (data[1] & 0x04) != 0;
+    int tally = 0;
+    if (amber || (red && green))
+    {
+        tally = 3;
+    }
+    else if (red)
+    {
+        tally = 1;
+    }
+    else if (green)
+    {
+        tally = 2;
+    }
+    update.rh = tally;
+    update.text = tally;
+    update.textValue.assign(reinterpret_cast<char const*>(data + 2), reinterpret_cast<char const*>(data + 18));
+    while (!update.textValue.empty() && (update.textValue.back() == '\0' || update.textValue.back() == ' '))
+    {
+        update.textValue.pop_back();
+    }
+    message.displays.push_back(std::move(update));
+    return message;
+}
+
+int effectiveTally(TallyUpdate const& update)
+{
+    if (update.text != 0)
+    {
+        return update.text;
+    }
+    if (update.rh != 0)
+    {
+        return update.rh;
+    }
+    return update.lh;
+}
+
+int inputForDisplay(std::string const& map, int display)
+{
+    if (map.empty())
+    {
+        return display + 1;
+    }
+    std::stringstream stream(map);
+    std::string item;
+    while (std::getline(stream, item, ','))
+    {
+        auto const colon = item.find(':');
+        if (colon == std::string::npos)
+        {
+            continue;
+        }
+        if (std::atoi(item.c_str()) == display)
+        {
+            return std::atoi(item.c_str() + colon + 1);
+        }
+    }
+    return 0;
+}
+} // namespace mv

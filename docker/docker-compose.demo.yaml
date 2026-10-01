@@ -1,0 +1,41 @@
+# Single-host demo: registry stand-in, one pattern writer, the multiviewer.
+# Route the writer to input 1 with the curl in the README, then open :8110.
+services:
+  registry:
+    image: python:3.12-slim
+    network_mode: host
+    volumes:
+      - ../tests/integration/fake_registry.py:/registry.py:ro
+    command: ["python3", "/registry.py", "3210"]
+  writer:
+    image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+    network_mode: host
+    user: "1000:1000"
+    volumes:
+      - mxl:/volumes/mxl
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /volumes/mxl/demo && \
+        printf '%s\n' '{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","label":"demo"}' > /volumes/mxl/demo/domain_def.json && \
+        printf '%s\n' '{"urn:x-mxl:option:history_duration/v1.0":200000000}' > /volumes/mxl/demo/options.json && \
+        exec mxl-mv-writer --domain /volumes/mxl/demo --flow bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb --width 1920 --height 1080 --rate 50 --y 200 --cb 512 --cr 512
+  multiviewer:
+    image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+    network_mode: host
+    user: "1000:1000"
+    depends_on:
+      - registry
+    volumes:
+      - mxl:/volumes/mxl
+    environment:
+      MXL_DOMAIN_SCAN_PATH: /volumes/mxl
+      MV_OUTPUT_DOMAIN_DIR: /volumes/mxl/multiviewer
+      MV_BACKEND: cpu
+      NMOS_REGISTRY_ADDRESS: 127.0.0.1
+      NMOS_REGISTRY_PORT: "3210"
+      NMOS_PORT: "3262"
+      WEB_PORT: "8110"
+      TSL_ENABLE: "false"
+volumes:
+  mxl:
