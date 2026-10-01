@@ -39,6 +39,8 @@ TEST_CASE("config precedence and validation")
     CHECK(cfg.outputFormat.height == 720);
     CHECK(cfg.nmosSeed.find("multiviewer") != std::string::npos);
     CHECK_THROWS_AS(loadConfig({}, {{"MV_NO_SUCH", "1"}}), ConfigError);
+    auto const withPins = loadConfig({{"NMOS_CPP_REF", "fe30384"}, {"MXL_REF", "218ddaa"}, {"PATH", "/usr/bin"}, {"MV_BACKEND", "cpu"}}, {});
+    CHECK(withPins.backend == "cpu");
     CHECK_THROWS_AS(loadConfig({{"MV_MAX_INPUTS", "100"}}, {}), ConfigError);
     CHECK_THROWS_AS(loadConfig({{"WEB_PORT", "8110"}, {"NMOS_PORT", "8110"}, {"NMOS_ENABLE", "true"}}, {}), ConfigError);
 }

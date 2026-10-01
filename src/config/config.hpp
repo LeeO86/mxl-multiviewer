@@ -94,14 +94,12 @@ struct SettingDef
 
 std::vector<SettingDef> const& settingSchema();
 bool knownSetting(std::string const& key);
-bool claimedSetting(std::string const& key);
 
 VideoFormat parseVideoFormat(std::string const& token);
 std::string formatLabel(int width, int height, int rateNum, int rateDen, bool interlaced);
 
-// env overrides file. Unknown keys in `file` throw. Unknown claimed keys in `env` throw.
-// Unrelated environment variables must not be passed in `env` or they are ignored only when
-// claimedSetting() is false — pass the full environment; unrelated keys are skipped.
+// env overrides file. Unknown keys in `file` throw. Environment variables that are not
+// in the schema are ignored, so CI pins such as NMOS_CPP_REF do not fail startup.
 Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::string, std::string> const& file);
 
 std::string hostnameString();

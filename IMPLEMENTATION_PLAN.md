@@ -73,6 +73,7 @@ docker/ deploy/ assets/ third_party/
 18. **Default TSL ports are 8910 and 8911.** The prompt did not assign numbers. These miss the host ports listed in the platform notes.
 19. **Background images are JPEG or PNG** via stb. Other formats are rejected.
 20. **DNS-SD off** sets nmos-cpp `pri` and `highest_pri` to the maximum integer, which disables advertisement and discovery. Same as mxl-webrtc-monitor.
+21. **Unknown environment variables are ignored.** The config file still rejects unknown keys. CI exports `NMOS_CPP_REF` (and `MXL_REF`) on every step, including the process under test; treating every `NMOS_` name as configuration made that step exit 78.
 
 ## 5. Process
 

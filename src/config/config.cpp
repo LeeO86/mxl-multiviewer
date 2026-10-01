@@ -348,12 +348,6 @@ bool knownSetting(std::string const& key)
     return false;
 }
 
-bool claimedSetting(std::string const& key)
-{
-    return key.rfind("MV_", 0) == 0 || key.rfind("NMOS_", 0) == 0 || key.rfind("TSL_", 0) == 0 || key.rfind("WEB_", 0) == 0 || key.rfind("LOG_", 0) == 0 ||
-           key == "HOST_ID" || key == "SHUTDOWN_TIMEOUT_S" || key == "MXL_DOMAIN_SCAN_PATH";
-}
-
 std::string hostnameString()
 {
     char buffer[256] = {};
@@ -374,15 +368,6 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
             throw ConfigError("unknown config key " + key);
         }
     }
-    for (auto const& [key, value] : env)
-    {
-        (void)value;
-        if (claimedSetting(key) && !knownSetting(key))
-        {
-            throw ConfigError("unknown config key " + key);
-        }
-    }
-
     auto raw = [&](char const* key) {
         char const* fallback = nullptr;
         for (auto const& def : settingSchema())
