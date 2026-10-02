@@ -5,6 +5,12 @@
 #include <cstring>
 #include <utility>
 
+#ifdef MV_WITH_BLEND2D
+#include <blend2d/blend2d.h>
+
+#include "media/dejavu_sans.hpp"
+#endif
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnarrowing"
 #include "font8x8_basic.h"
@@ -60,6 +66,74 @@ Rgba zoneColor(double dbfs, double green, double amber)
     }
     return {40, 190, 70, 255};
 }
+
+#ifdef MV_WITH_BLEND2D
+BLContext* blendContext(Overlay const& overlay)
+{
+    return static_cast<BLContext*>(overlay.blContext);
+}
+
+BLRgba32 blendColor(Rgba color)
+{
+    return BLRgba32(color.r, color.g, color.b, color.a);
+}
+
+BLFontFace const& dejavuFace()
+{
+    static BLFontFace face = [] {
+        BLFontData data;
+        BLFontFace created;
+        if (data.create_from_data(mv::font::dejavuSans, mv::font::dejavuSansSize) == BL_SUCCESS)
+        {
+            created.create_from_data(data, 0);
+        }
+        return created;
+    }();
+    return face;
+}
+
+void copyPremultipliedBgra(BLImage const& image, Overlay& overlay)
+{
+    BLImageData data;
+    if (image.get_data(&data) != BL_SUCCESS || data.pixel_data == nullptr || data.stride < 0)
+    {
+        return;
+    }
+    auto const* base = static_cast<unsigned char const*>(data.pixel_data);
+    for (int y = 0; y < overlay.height; ++y)
+    {
+        auto const* src = base + static_cast<std::ptrdiff_t>(y) * data.stride;
+        auto* dst = overlay.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(overlay.width) * 4u;
+        for (int x = 0; x < overlay.width; ++x)
+        {
+            unsigned const b = src[0];
+            unsigned const g = src[1];
+            unsigned const r = src[2];
+            unsigned const a = src[3];
+            if (a == 0)
+            {
+                dst[0] = dst[1] = dst[2] = dst[3] = 0;
+            }
+            else if (a == 255)
+            {
+                dst[0] = static_cast<std::uint8_t>(r);
+                dst[1] = static_cast<std::uint8_t>(g);
+                dst[2] = static_cast<std::uint8_t>(b);
+                dst[3] = 255;
+            }
+            else
+            {
+                dst[0] = static_cast<std::uint8_t>((r * 255u + a / 2u) / a);
+                dst[1] = static_cast<std::uint8_t>((g * 255u + a / 2u) / a);
+                dst[2] = static_cast<std::uint8_t>((b * 255u + a / 2u) / a);
+                dst[3] = static_cast<std::uint8_t>(a);
+            }
+            src += 4;
+            dst += 4;
+        }
+    }
+}
+#endif
 
 void drawAspect(Overlay& overlay, PixelRect const& rect, std::string const& marker)
 {
@@ -156,6 +230,16 @@ void Overlay::clear()
 
 void Overlay::fillRect(int x, int y, int w, int h, Rgba color)
 {
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        if (w > 0 && h > 0 && color.a != 0)
+        {
+            ctx->fill_rect(static_cast<double>(x), static_cast<double>(y), static_cast<double>(w), static_cast<double>(h), blendColor(color));
+        }
+        return;
+    }
+#endif
     for (int row = y; row < y + h; ++row)
     {
         for (int col = x; col < x + w; ++col)
@@ -167,6 +251,19 @@ void Overlay::fillRect(int x, int y, int w, int h, Rgba color)
 
 void Overlay::strokeRect(int x, int y, int w, int h, int thickness, Rgba color)
 {
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        if (w > 0 && h > 0 && thickness > 0 && color.a != 0)
+        {
+            double const inset = thickness * 0.5;
+            ctx->set_stroke_width(thickness);
+            ctx->stroke_rect(static_cast<double>(x) + inset, static_cast<double>(y) + inset, std::max(0.0, static_cast<double>(w - thickness)),
+                std::max(0.0, static_cast<double>(h - thickness)), blendColor(color));
+        }
+        return;
+    }
+#endif
     fillRect(x, y, w, thickness, color);
     fillRect(x, y + h - thickness, w, thickness, color);
     fillRect(x, y, thickness, h, color);
@@ -175,6 +272,21 @@ void Overlay::strokeRect(int x, int y, int w, int h, int thickness, Rgba color)
 
 void Overlay::text(int x, int y, std::string const& value, int pixelSize, Rgba color)
 {
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        auto const& face = dejavuFace();
+        if (!value.empty() && pixelSize > 0 && color.a != 0 && face.is_valid())
+        {
+            BLFont font;
+            if (font.create_from_face(face, static_cast<float>(pixelSize)) == BL_SUCCESS)
+            {
+                ctx->fill_utf8_text(BLPoint(static_cast<double>(x), static_cast<double>(y) + font.metrics().ascent), font, value.c_str(), value.size(), blendColor(color));
+            }
+        }
+        return;
+    }
+#endif
     int const scale = std::max(1, pixelSize / 8);
     int pen = x;
     for (unsigned char ch : value)
@@ -207,6 +319,18 @@ void Overlay::text(int x, int y, std::string const& value, int pixelSize, Rgba c
 
 void Overlay::line(int x0, int y0, int x1, int y1, Rgba color)
 {
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        if (color.a != 0)
+        {
+            ctx->set_stroke_width(1.6);
+            ctx->set_stroke_caps(BL_STROKE_CAP_ROUND);
+            ctx->stroke_line(static_cast<double>(x0) + 0.5, static_cast<double>(y0) + 0.5, static_cast<double>(x1) + 0.5, static_cast<double>(y1) + 0.5, blendColor(color));
+        }
+        return;
+    }
+#endif
     int const dx = std::abs(x1 - x0);
     int const dy = -std::abs(y1 - y0);
     int const sx = x0 < x1 ? 1 : -1;
@@ -235,6 +359,20 @@ void Overlay::line(int x0, int y0, int x1, int y1, Rgba color)
 
 void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
 {
+#ifdef MV_WITH_BLEND2D
+    BLImage image;
+    BLContext ctx;
+    if (overlay.width > 0 && overlay.height > 0 && image.create(overlay.width, overlay.height, BL_FORMAT_PRGB32) == BL_SUCCESS && ctx.begin(image) == BL_SUCCESS)
+    {
+        // A new image is uninitialized. Clear before drawing so untouched pixels stay transparent.
+        ctx.clear_all();
+        // ctx outlives every draw in this function and is cleared before return.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+        overlay.blContext = &ctx;
+#pragma GCC diagnostic pop
+    }
+#endif
     int const thickness = std::max(2, overlay.height / 135);
     for (auto const& tile : tiles)
     {
@@ -283,25 +421,28 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
                 y = tile.rect.y - band;
             }
             overlay.fillRect(tile.rect.x, y, tile.rect.w, band, tile.umdBg);
-            overlay.text(tile.rect.x + 4, y + 2, tile.umdText, tile.umdFont, tile.umdFg);
+            int const lamp = std::max(6, band / 2);
+            int const textX = tile.rect.x + (tile.tallyLamp ? lamp + 8 : 8);
+            overlay.text(textX, y + (band - tile.umdFont) / 2, tile.umdText, tile.umdFont, tile.umdFg);
             if (tile.tallyLamp)
             {
                 auto const color = tallyColor(tile.tally);
                 if (color.a != 0)
                 {
-                    int const lamp = std::max(6, band / 2);
-                    overlay.fillRect(tile.rect.x + 2, y + 2, lamp, lamp, color);
-                    overlay.fillRect(tile.rect.x + tile.rect.w - lamp - 2, y + 2, lamp, lamp, color);
+                    int const lampY = y + (band - lamp) / 2;
+                    overlay.fillRect(tile.rect.x + 4, lampY, lamp, lamp, color);
+                    overlay.fillRect(tile.rect.x + tile.rect.w - lamp - 4, lampY, lamp, lamp, color);
                 }
             }
         }
+        int const caption = std::max(8, overlay.height * 16 / 1080);
         if (!tile.formatText.empty())
         {
-            overlay.text(tile.rect.x + 4, tile.rect.y + 4, tile.formatText, 16, {255, 255, 255, 220});
+            overlay.text(tile.rect.x + 4, tile.rect.y + 4, tile.formatText, caption, {255, 255, 255, 220});
         }
         if (!tile.latencyText.empty())
         {
-            overlay.text(tile.rect.x + 4, tile.rect.y + 20, tile.latencyText, 16, {180, 220, 255, 220});
+            overlay.text(tile.rect.x + 4, tile.rect.y + caption + 6, tile.latencyText, caption, {180, 220, 255, 220});
         }
         if (!tile.badge.empty())
         {
@@ -388,6 +529,14 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             }
         }
     }
+#ifdef MV_WITH_BLEND2D
+    if (overlay.blContext != nullptr)
+    {
+        ctx.end();
+        overlay.blContext = nullptr;
+        copyPremultipliedBgra(image, overlay);
+    }
+#endif
 }
 
 bool overlayUsesBlend2d()

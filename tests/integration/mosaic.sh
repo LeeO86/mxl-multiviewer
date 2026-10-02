@@ -139,7 +139,8 @@ assert doc["media_type"] == "video/v210"
 assert doc["grain_rate"]["numerator"] == 50
 PY
 
-PIXEL="$("$SAMPLE" --domain "$WORK/mv" --flow "$FLOW_OUT" --x 24 --y 20 --width 192)"
+# Centre of the top-left 2×2 tile. The format caption sits on the top edge and the UMD on the bottom.
+PIXEL="$("$SAMPLE" --domain "$WORK/mv" --flow "$FLOW_OUT" --x 48 --y 28 --width 192)"
 echo "pixel=$PIXEL"
 if [[ "$PIXEL" != "200" ]]; then
   echo "expected tile colour 200" >&2

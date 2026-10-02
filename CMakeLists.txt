@@ -7,7 +7,25 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MV_BUILD_TESTS "Build unit tests" ON)
 option(MV_WITH_NMOS "Link Sony nmos-cpp" OFF)
-option(MV_WITH_BLEND2D "Rasterise overlays with Blend2D" OFF)
+option(MV_WITH_BLEND2D "Rasterise overlays with Blend2D" ON)
+
+if(MV_WITH_BLEND2D)
+    include(FetchContent)
+    FetchContent_Declare(blend2d_src
+        URL https://blend2d.com/download/blend2d-0.21.2.tar.gz
+        URL_HASH SHA256=234ba57a64153c96885a6271f15fdcf6c594ac8cb03adaad19abb8d3b2b533fa
+    )
+    FetchContent_GetProperties(blend2d_src)
+    if(NOT blend2d_src_POPULATED)
+        FetchContent_Populate(blend2d_src)
+    endif()
+    set(BLEND2D_STATIC ON CACHE BOOL "" FORCE)
+    set(BLEND2D_TEST OFF CACHE BOOL "" FORCE)
+    set(BLEND2D_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BLEND2D_NO_INSTALL ON CACHE BOOL "" FORCE)
+    set(BLEND2D_NO_JIT_LOGGING ON CACHE BOOL "" FORCE)
+    add_subdirectory(${blend2d_src_SOURCE_DIR} ${CMAKE_BINARY_DIR}/blend2d EXCLUDE_FROM_ALL)
+endif()
 set(NMOS_CPP_DIR "" CACHE PATH "Path to sony/nmos-cpp Development/")
 
 find_package(Threads REQUIRED)
@@ -41,6 +59,25 @@ add_library(mv-core STATIC
 target_include_directories(mv-core PUBLIC src third_party)
 target_link_libraries(mv-core PUBLIC Threads::Threads)
 target_compile_options(mv-core PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+if(MV_WITH_BLEND2D)
+    set(DEJAVU_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/media/dejavu_sans.hpp)
+    add_custom_command(
+        OUTPUT ${DEJAVU_HEADER}
+        COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/third_party/dejavu/DejaVuSans.ttf
+                -DOUTPUT=${DEJAVU_HEADER}
+                -DNAMESPACE=mv::font
+                -DVAR=dejavuSans
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedBytes.cmake
+        DEPENDS third_party/dejavu/DejaVuSans.ttf cmake/EmbedBytes.cmake
+        COMMENT "Embedding DejaVu Sans"
+        VERBATIM
+    )
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/media/overlay.cpp PROPERTIES OBJECT_DEPENDS "${DEJAVU_HEADER}")
+    target_include_directories(mv-core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_link_libraries(mv-core PUBLIC blend2d::blend2d)
+    target_compile_definitions(mv-core PUBLIC MV_WITH_BLEND2D=1)
+endif()
 
 if(MV_BUILD_TESTS)
     enable_testing()
