@@ -50,7 +50,16 @@ curl -X PATCH -H 'Content-Type: application/json' \
 
 Open `http://<host>:8110/` for the preview, the layout editor, inputs, alarms, and a `KEY=value` export.
 
-`MV_BACKEND=auto` uses CUDA when the binary was built with the toolkit and a device is visible, otherwise CPU. `MV_BACKEND=cuda` on a binary without CUDA exits 78.
+`MV_BACKEND=auto` uses the CUDA compositor when the binary was built with nvcc and a device is visible, otherwise CPU. The image from `docker/Dockerfile` is built with CUDA 12.8 (`sm_75`, `sm_86`, `sm_89`) and links the CUDA runtime statically, so it still starts on a machine with no GPU. A GPU host also needs the NVIDIA container toolkit to inject the driver:
+
+```bash
+docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+  -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
+  -e MV_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
+  -v /Volumes/mxl:/Volumes/mxl ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+```
+
+`docker/docker-compose.gpu.yaml` is the Compose form of that (`--gpus` via a device reservation). `deploy/mxl-multiviewer-gpu.yaml` is the Kubernetes form (`runtimeClassName: nvidia`, `nvidia.com/gpu: 1`). `deploy/mxl-multiviewer.yaml` does not request a GPU; `auto` stays on CPU. `MV_BACKEND=cuda` with no device exits 75. `MV_BACKEND=cuda` on a binary built without nvcc (the CI job, not the image) exits 78.
 
 ### Exit codes
 
@@ -74,7 +83,7 @@ Hardware targets are in `docs/performance.md`. They have not been measured on an
 
 ## Deploy
 
-`docker/docker-compose.demo.yaml` is a registry stand-in, a pattern writer, and the multiviewer. `docker/docker-compose.host.yaml` is one platform host. `deploy/mxl-multiviewer.yaml` is the Kubernetes Deployment (`hostNetwork`, MXL root hostPath, probes, ServiceMonitor) for `mxl-poc-platform` to vendor. Add `runtimeClassName: nvidia` and `nvidia.com/gpu` on GPU nodes.
+`docker/docker-compose.demo.yaml` is a registry stand-in, a pattern writer, and the multiviewer. `docker/docker-compose.host.yaml` is one platform host. `docker/docker-compose.gpu.yaml` adds one NVIDIA GPU on top of the host file. `deploy/mxl-multiviewer.yaml` is the Kubernetes Deployment (`hostNetwork`, MXL root hostPath, probes, ServiceMonitor) for `mxl-poc-platform` to vendor. `deploy/mxl-multiviewer-gpu.yaml` is that Deployment with `runtimeClassName: nvidia` and a `nvidia.com/gpu` limit.
 
 ## License
 

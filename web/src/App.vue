@@ -12,7 +12,10 @@ const envText = ref("");
 const error = ref("");
 const selected = ref(0);
 const grid = 24;
+const wsState = ref("offline");
 let timer = 0;
+let socket = null;
+let wsTimer = 0;
 
 async function load() {
   const [i, inn, out, lay, al, env] = await Promise.all([
@@ -37,17 +40,22 @@ function snap(v) {
   return Math.round(v * grid) / grid;
 }
 
-function onPointerDown(event, tile) {
-  selected.value = tile;
-  const canvas = event.currentTarget.parentElement.getBoundingClientRect();
+function trackPointer(event, tile, resize) {
+  selected.value = activeLayout.value.tiles.indexOf(tile);
+  const canvas = event.currentTarget.closest(".canvas").getBoundingClientRect();
   const startX = event.clientX;
   const startY = event.clientY;
   const orig = { ...tile.rect };
   const move = (ev) => {
     const dx = (ev.clientX - startX) / canvas.width;
     const dy = (ev.clientY - startY) / canvas.height;
-    tile.rect.x = Math.min(1 - tile.rect.w, Math.max(0, snap(orig.x + dx)));
-    tile.rect.y = Math.min(1 - tile.rect.h, Math.max(0, snap(orig.y + dy)));
+    if (resize) {
+      tile.rect.w = Math.min(1 - tile.rect.x, Math.max(1 / grid, snap(orig.w + dx)));
+      tile.rect.h = Math.min(1 - tile.rect.y, Math.max(1 / grid, snap(orig.h + dy)));
+    } else {
+      tile.rect.x = Math.min(1 - tile.rect.w, Math.max(0, snap(orig.x + dx)));
+      tile.rect.y = Math.min(1 - tile.rect.h, Math.max(0, snap(orig.y + dy)));
+    }
   };
   const up = () => {
     window.removeEventListener("pointermove", move);
@@ -55,6 +63,39 @@ function onPointerDown(event, tile) {
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
+}
+
+function onPointerDown(event, tile) {
+  if (event.target.classList.contains("handle")) return;
+  trackPointer(event, tile, false);
+}
+
+function onResizeDown(event, tile) {
+  trackPointer(event, tile, true);
+}
+
+function connectEvents() {
+  if (socket) {
+    socket.onclose = null;
+    socket.close();
+  }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(proto + "://" + location.host + "/api/v1/events");
+  socket.onopen = () => (wsState.value = "live");
+  socket.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.inputs) inputs.value = msg.inputs;
+      if (msg.outputs) outputs.value = msg.outputs;
+      if (msg.alarms) alarms.value = msg.alarms;
+    } catch (err) {
+      error.value = String(err);
+    }
+  };
+  socket.onclose = () => {
+    wsState.value = "offline";
+    wsTimer = setTimeout(connectEvents, 2000);
+  };
 }
 
 async function saveLayout() {
@@ -87,19 +128,24 @@ function exportLayouts() {
 
 onMounted(() => {
   load().catch((err) => (error.value = String(err)));
+  connectEvents();
   timer = setInterval(() => {
     previewSrc.value = "/preview.jpg?t=" + Date.now();
-    load().catch(() => {});
+    if (wsState.value !== "live") load().catch(() => {});
   }, 1000);
 });
-onUnmounted(() => clearInterval(timer));
+onUnmounted(() => {
+  clearInterval(timer);
+  clearTimeout(wsTimer);
+  if (socket) socket.close();
+});
 </script>
 
 <template>
   <main>
     <header>
       <strong>mxl-multiviewer</strong>
-      <span v-if="info">{{ info.version }} · {{ info.backend }} · {{ info.max_inputs }} inputs</span>
+      <span v-if="info">{{ info.version }} · {{ info.backend }} · cuda {{ info.cuda_devices || 0 }} · {{ info.max_inputs }} inputs · {{ wsState }}</span>
       <nav>
         <button :class="{ on: tab === 'preview' }" @click="tab = 'preview'">Preview</button>
         <button :class="{ on: tab === 'layout' }" @click="tab = 'layout'">Layout</button>
@@ -123,6 +169,7 @@ onUnmounted(() => clearInterval(timer));
           @pointerdown="onPointerDown($event, tile)"
         >
           {{ tile.content }} {{ tile.content === "input" ? tile.input : "" }}
+          <span class="handle" @pointerdown.stop="onResizeDown($event, tile)"></span>
         </div>
       </div>
       <aside>
@@ -183,6 +230,7 @@ img { max-width: 100%; background: #000; }
 .editor { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
 .canvas { position: relative; background: #0a0c10; aspect-ratio: 16/9; }
 .tile { position: absolute; border: 1px solid #6cf; background: rgba(60, 120, 220, 0.25); box-sizing: border-box; padding: 4px; cursor: move; }
+.handle { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; background: #6cf; cursor: nwse-resize; }
 aside label { display: block; margin: 0.4rem 0; }
 textarea { width: 100%; min-height: 16rem; background: #0a0c10; color: inherit; }
 table { border-collapse: collapse; width: 100%; }

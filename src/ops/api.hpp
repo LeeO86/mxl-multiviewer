@@ -25,6 +25,7 @@ public:
     Api(Config config, ConfigStore& store, LayoutBookStore& layouts, RuntimeModel& runtime, Metrics& metrics);
     void setFlowCallback(std::function<void(OutputFlowNote const&)> callback);
     [[nodiscard]] HttpResponse handle(HttpRequest const& request);
+    [[nodiscard]] std::string eventsJson() const;
 
 private:
     Config config_;

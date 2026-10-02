@@ -5,6 +5,7 @@
 #include "nmos/node.hpp"
 #include "ops/api.hpp"
 #include "ops/httpserver.hpp"
+#include "media/cuda_compose.hpp"
 #include "ops/metrics.hpp"
 #include "util/logging.hpp"
 #include "version.hpp"
@@ -84,12 +85,10 @@ int main(int argc, char** argv)
             return 78;
         }
 #endif
-        if (config.backend == "cuda")
+        if (config.backend == "cuda" && !mv::cudaSupportCompiled())
         {
-#if !defined(MV_WITH_CUDA)
             mv::logError("config", {{"error", "MV_BACKEND=cuda but this binary has no CUDA backend"}});
             return 78;
-#endif
         }
         mv::RuntimeModel runtime(config);
         auto layoutsPath = config.layoutsFile;
@@ -151,11 +150,19 @@ int main(int argc, char** argv)
         std::signal(SIGINT, onSignal);
         std::signal(SIGTERM, onSignal);
         mv::logInfo("ready", {{"web", std::to_string(config.webPort)}, {"nmos", std::to_string(config.nmosPort)}});
+        auto nextEvents = std::chrono::steady_clock::now();
+        int const eventMs = std::max(20, 1000 / std::max(1, config.overlayHz));
         while (!gStop.load())
         {
             runtime.setNmosUp(node.registered());
             metrics.set("nmos_registry_up", {}, runtime.nmosUp() ? 1 : 0);
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            auto const now = std::chrono::steady_clock::now();
+            if (now >= nextEvents)
+            {
+                http.broadcast(api.eventsJson());
+                nextEvents = now + std::chrono::milliseconds(eventMs);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         std::atomic<bool> finished{false};
         std::thread watchdog([&] {

@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
 # Pins: IMPLEMENTATION_PLAN.md. MXL_REF is the single MXL pin.
+# The build stage has the CUDA toolkit so the published binary contains the GPU
+# compositor. libcudart is linked statically. The runtime stage does not ship a
+# driver: on a GPU host, the NVIDIA container toolkit injects libcuda when the
+# container is started with `--gpus all` (or a Kubernetes nvidia runtime).
+# Without that device, MV_BACKEND=auto stays on the CPU path and the process still starts.
 
 FROM node:22-bookworm AS webui
 WORKDIR /web
@@ -8,7 +13,8 @@ RUN npm ci --no-fund --no-audit
 COPY web/ ./
 RUN npm run build
 
-FROM ubuntu:24.04 AS build
+ARG CUDA_IMAGE=nvidia/cuda:12.8.2-devel-ubuntu24.04
+FROM ${CUDA_IMAGE} AS build
 ARG MXL_REF=218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7
 ARG NMOS_CPP_REF=fe303849527394b03bdedc8f161f377fe458bb62
 

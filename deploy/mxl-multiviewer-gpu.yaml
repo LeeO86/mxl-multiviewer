@@ -1,3 +1,9 @@
+# Same process as deploy/mxl-multiviewer.yaml, scheduled onto a node whose
+# runtime class is nvidia (GPU Operator) or another runtime that injects the
+# host driver the way the NVIDIA container toolkit does for Docker.
+# The image itself contains the CUDA compositor and still starts on CPU if the
+# device is missing and MV_BACKEND=auto. This manifest requests one GPU so the
+# runtime injects libcuda and MV_BACKEND=auto selects it.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,6 +12,7 @@ data:
   MXL_DOMAIN_SCAN_PATH: /Volumes/mxl
   MV_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
   MV_BACKEND: auto
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
   MV_MAX_INPUTS: "16"
   MV_OUTPUT_FORMAT: 1920x1080p50
   NMOS_ENABLE: "true"
@@ -33,8 +40,7 @@ spec:
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      # CPU nodes. For a GPU host with the NVIDIA container toolkit / GPU operator,
-      # apply deploy/mxl-multiviewer-gpu.yaml instead (runtimeClassName: nvidia, nvidia.com/gpu).
+      runtimeClassName: nvidia
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -44,6 +50,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: mxl-multiviewer
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
           ports:
             - name: web
               containerPort: 8110

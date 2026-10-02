@@ -49,6 +49,85 @@ std::vector<std::uint8_t> unwrapDle(std::uint8_t const* data, std::size_t size, 
     return {};
 }
 
+std::vector<std::vector<std::uint8_t>> pullTslFrames(std::vector<std::uint8_t>& buffer)
+{
+    std::vector<std::vector<std::uint8_t>> frames;
+    while (true)
+    {
+        std::size_t start = 0;
+        bool found = false;
+        for (; start + 1 < buffer.size(); ++start)
+        {
+            if (buffer[start] == 0xfe && buffer[start + 1] == 0x02)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            if (!buffer.empty() && buffer.back() == 0xfe)
+            {
+                buffer.erase(buffer.begin(), buffer.end() - 1);
+            }
+            else
+            {
+                buffer.clear();
+            }
+            break;
+        }
+        if (start > 0)
+        {
+            buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(start));
+        }
+        bool complete = false;
+        bool resync = false;
+        std::size_t end = 0;
+        for (std::size_t i = 2; i < buffer.size(); ++i)
+        {
+            if (buffer[i] != 0xfe)
+            {
+                continue;
+            }
+            if (i + 1 >= buffer.size())
+            {
+                complete = false;
+                break;
+            }
+            if (buffer[i + 1] == 0xfe)
+            {
+                ++i;
+                continue;
+            }
+            if (buffer[i + 1] == 0x03)
+            {
+                complete = true;
+                end = i + 2;
+                break;
+            }
+            buffer.erase(buffer.begin(), buffer.begin() + 2);
+            resync = true;
+            break;
+        }
+        if (resync)
+        {
+            continue;
+        }
+        if (!complete)
+        {
+            break;
+        }
+        bool ok = false;
+        auto body = unwrapDle(buffer.data(), end, ok);
+        buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(end));
+        if (ok)
+        {
+            frames.push_back(std::move(body));
+        }
+    }
+    return frames;
+}
+
 TslMessage parseTsl5(std::uint8_t const* body, std::size_t size)
 {
     TslMessage message;

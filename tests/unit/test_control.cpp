@@ -57,6 +57,38 @@ TEST_CASE("tsl 5.0 display message and dle stuffing")
     CHECK(effectiveTally(message.displays[0]) == 3);
 }
 
+TEST_CASE("tcp tsl frames reassemble across reads")
+{
+    std::vector<std::uint8_t> body;
+    put16(body, 4);
+    body.push_back(0);
+    body.push_back(0);
+    put16(body, 1);
+    put16(body, 2);
+    put16(body, 1);
+    put16(body, 1);
+    body.push_back('A');
+    body[0] = static_cast<std::uint8_t>((body.size() - 2) & 0xff);
+    body[1] = static_cast<std::uint8_t>(((body.size() - 2) >> 8) & 0xff);
+    std::vector<std::uint8_t> framed{0xfe, 0x02};
+    framed.insert(framed.end(), body.begin(), body.end());
+    framed.push_back(0xfe);
+    framed.push_back(0x03);
+    std::vector<std::uint8_t> pending(framed.begin(), framed.begin() + 5);
+    auto const first = pullTslFrames(pending);
+    CHECK(first.empty());
+    CHECK_FALSE(pending.empty());
+    pending.insert(pending.end(), framed.begin() + 5, framed.end());
+    pending.insert(pending.end(), framed.begin(), framed.end());
+    auto const frames = pullTslFrames(pending);
+    CHECK(frames.size() == 2);
+    CHECK(pending.empty());
+    auto const message = parseTsl5(frames[0].data(), frames[0].size());
+    CHECK(message.error.empty());
+    REQUIRE(message.displays.size() == 1);
+    CHECK(message.displays[0].textValue == "A");
+}
+
 TEST_CASE("tsl 3.1 datagram")
 {
     std::uint8_t packet[18] = {};

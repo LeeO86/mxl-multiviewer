@@ -1,0 +1,17 @@
+# Overlay for a host that has a GPU and the NVIDIA container toolkit.
+#   docker compose -f docker/docker-compose.host.yaml -f docker/docker-compose.gpu.yaml up
+# The toolkit mounts the host driver (libcuda). MV_BACKEND=auto then uses the
+# CUDA compositor. Without this file the same image stays on the CPU path.
+services:
+  multiviewer:
+    environment:
+      MV_BACKEND: auto
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

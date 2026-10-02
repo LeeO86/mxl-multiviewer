@@ -74,6 +74,7 @@ struct Tile
     bool tallyBorder = true;
     bool tallyLamp = true;
     bool audioBars = false;
+    bool audioBarRms = false;
     int audioBarChannels = 2;
     int audioBarFirst = 0;
     BarsPosition audioBarPosition = BarsPosition::Right;

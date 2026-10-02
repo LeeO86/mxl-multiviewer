@@ -82,7 +82,8 @@ HttpResponse Api::handle(HttpRequest const& request)
         auto const ids = makeNmosIds(config_.nmosSeed);
         std::ostringstream out;
         out << "{\"version\":\"" << MV_VERSION << "\",\"mxl_revision\":\"" << MV_MXL_REVISION << "\",\"backend\":\"" << config_.backend
-            << "\",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
+            << "\",\"cuda_compiled\":" << (runtime_.cudaCompiled() ? "true" : "false") << ",\"cuda_devices\":" << runtime_.cudaDevices()
+            << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
             << ids.device << "\",\"domain_id\":\"" << (config_.outputDomainId.empty() ? ids.domain : config_.outputDomainId) << "\",\"overlay_blend2d\":"
             << (overlayUsesBlend2d() ? "true" : "false") << ",\"receivers\":[";
         for (int i = 1; i <= config_.maxInputs; ++i)
@@ -117,6 +118,15 @@ HttpResponse Api::handle(HttpRequest const& request)
                     out << ',';
                 }
                 out << input.ppmDbfs[static_cast<std::size_t>(c)];
+            }
+            out << "],\"rms_dbfs\":[";
+            for (int c = 0; c < 16; ++c)
+            {
+                if (c != 0)
+                {
+                    out << ',';
+                }
+                out << input.rmsDbfs[static_cast<std::size_t>(c)];
             }
             out << "],\"alarms\":{\"no_signal\":" << (input.alarmNoSignal ? "true" : "false") << ",\"black\":" << (input.alarmBlack ? "true" : "false")
                 << ",\"freeze\":" << (input.alarmFreeze ? "true" : "false") << ",\"silence\":" << (input.alarmSilence ? "true" : "false")
@@ -373,5 +383,21 @@ HttpResponse Api::handle(HttpRequest const& request)
         return response;
     }
     return jsonResponse(404, "{\"error\":\"not found\"}");
+}
+
+std::string Api::eventsJson() const
+{
+    auto* self = const_cast<Api*>(this);
+    auto const inputs = self->handle(HttpRequest{"GET", "/api/v1/inputs", {}, {}, {}});
+    auto const outputs = self->handle(HttpRequest{"GET", "/api/v1/outputs", {}, {}, {}});
+    auto const alarms = self->handle(HttpRequest{"GET", "/api/v1/alarms", {}, {}, {}});
+    auto strip = [](std::string const& body) {
+        if (body.size() >= 2 && body.front() == '{' && body.back() == '}')
+        {
+            return body.substr(1, body.size() - 2);
+        }
+        return body;
+    };
+    return "{" + strip(inputs.body) + "," + strip(outputs.body) + "," + strip(alarms.body) + "}";
 }
 } // namespace mv

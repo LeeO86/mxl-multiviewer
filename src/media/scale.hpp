@@ -21,4 +21,7 @@ struct ComposeTile
 };
 
 void blendStraightRgba(Frame422& canvas, std::uint8_t const* rgba, int stride);
+
+// Scale src with fill (cover) into an already-allocated dst. Limited-range black shows only if the source is empty.
+void coverFrame(Frame422& dst, Frame422 const& src);
 } // namespace mv

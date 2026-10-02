@@ -1,6 +1,8 @@
 #include "media/timebase.hpp"
 
+#include <cstdio>
 #include <ctime>
+#include <string>
 
 namespace mv
 {
@@ -37,5 +39,76 @@ std::uint64_t taiNowNs()
         clock_gettime(CLOCK_REALTIME, &ts);
     }
     return static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<std::uint64_t>(ts.tv_nsec);
+}
+
+bool parseRateToken(std::string const& text, int& numerator, int& denominator)
+{
+    numerator = 0;
+    denominator = 1;
+    if (text.empty())
+    {
+        return false;
+    }
+    if (text == "2398")
+    {
+        numerator = 24000;
+        denominator = 1001;
+        return true;
+    }
+    if (text == "2997")
+    {
+        numerator = 30000;
+        denominator = 1001;
+        return true;
+    }
+    if (text == "5994")
+    {
+        numerator = 60000;
+        denominator = 1001;
+        return true;
+    }
+    auto const slash = text.find('/');
+    try
+    {
+        if (slash == std::string::npos)
+        {
+            numerator = std::stoi(text);
+            denominator = 1;
+        }
+        else
+        {
+            numerator = std::stoi(text.substr(0, slash));
+            denominator = std::stoi(text.substr(slash + 1));
+        }
+    }
+    catch (...)
+    {
+        return false;
+    }
+    return numerator > 0 && denominator > 0;
+}
+
+std::string formatTimecode(std::uint64_t timestampNs, int numerator, int denominator)
+{
+    if (numerator <= 0 || denominator <= 0)
+    {
+        return {};
+    }
+    std::uint64_t const sec = timestampNs / 1000000000ull;
+    std::uint64_t const secNs = sec * 1000000000ull;
+    auto const index = timestampToIndex(numerator, denominator, timestampNs);
+    auto const secIndex = timestampToIndex(numerator, denominator, secNs);
+    int frame = index >= secIndex ? static_cast<int>(index - secIndex) : 0;
+    int const nominal = (numerator + denominator - 1) / denominator;
+    if (nominal > 0 && frame >= nominal * 2)
+    {
+        frame = nominal - 1;
+    }
+    std::time_t const seconds = static_cast<std::time_t>(sec);
+    std::tm tm{};
+    gmtime_r(&seconds, &tm);
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec, frame);
+    return buf;
 }
 } // namespace mv
