@@ -92,7 +92,7 @@ Layout activation stores a `shared_ptr<const Layout>`. The composer copies that 
 Multi-stage Dockerfile:
 
 1. Node image builds the Vue file.
-2. `nvidia/cuda:12.8.2-devel-ubuntu24.04` builds MXL at `MXL_REF`, fetches nmos-cpp at `NMOS_CPP_REF`, builds this project with nvcc, runs unit tests. The unit tests do not call the GPU.
+2. `nvidia/cuda:12.8.2-devel-ubuntu24.04` builds MXL at `MXL_REF`, fetches nmos-cpp at `NMOS_CPP_REF`, builds this project with nvcc, runs unit tests. The unit tests do not call the GPU. `ARG CUDA_IMAGE` is declared before the first `FROM`; an `ARG` after the webui stage is not visible to the next `FROM`, and BuildKit then refuses the build with a blank base name.
 3. Runtime image: Ubuntu 24.04, the binary, libmxl, nmos-cpp shared libraries. User 1000:1000. No GStreamer packages and no NVIDIA driver. `libcudart` is inside the binary.
 
 `io.dmf.mxl.revision` is `MXL_REF`.
