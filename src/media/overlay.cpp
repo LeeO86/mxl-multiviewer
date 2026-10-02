@@ -364,6 +364,8 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
     BLContext ctx;
     if (overlay.width > 0 && overlay.height > 0 && image.create(overlay.width, overlay.height, BL_FORMAT_PRGB32) == BL_SUCCESS && ctx.begin(image) == BL_SUCCESS)
     {
+        // A new image is uninitialized. Clear before drawing so untouched pixels stay transparent.
+        ctx.clear_all();
         // ctx outlives every draw in this function and is cleared before return.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
@@ -433,13 +435,14 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
                 }
             }
         }
+        int const caption = std::max(8, overlay.height * 16 / 1080);
         if (!tile.formatText.empty())
         {
-            overlay.text(tile.rect.x + 4, tile.rect.y + 4, tile.formatText, 16, {255, 255, 255, 220});
+            overlay.text(tile.rect.x + 4, tile.rect.y + 4, tile.formatText, caption, {255, 255, 255, 220});
         }
         if (!tile.latencyText.empty())
         {
-            overlay.text(tile.rect.x + 4, tile.rect.y + 20, tile.latencyText, 16, {180, 220, 255, 220});
+            overlay.text(tile.rect.x + 4, tile.rect.y + caption + 6, tile.latencyText, caption, {180, 220, 255, 220});
         }
         if (!tile.badge.empty())
         {
