@@ -62,7 +62,7 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - C++20, CMake ≥ 3.24, Ninja. GCC ≥ 12 or Clang ≥ 16.
 - MXL: `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, one pin variable in the Dockerfile and CI, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`. Public C API only (`mxl/mxl.h`, `mxl/flow.h`, `mxl/time.h`).
 - nmos-cpp: `fe303849527394b03bdedc8f161f377fe458bb62` (same commit as the siblings).
-- Overlay: in-tree RGBA rasteriser and the public-domain 8×8 font compiled into the binary. See `IMPLEMENTATION_PLAN.md` for why Blend2D was not linked.
+- Overlay: Blend2D 0.21.2, statically linked, with DejaVu Sans 2.37 compiled into the binary. `MV_WITH_BLEND2D=OFF` keeps the 8×8 bitmap renderer. See `IMPLEMENTATION_PLAN.md`.
 - CUDA backend: compiled when the CUDA toolkit is present. Kernels unpack v210, scale, blend the overlay, and pack v210. Pinned host memory and streams overlap upload, compute, and download.
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.

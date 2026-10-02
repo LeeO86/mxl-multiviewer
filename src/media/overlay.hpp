@@ -31,6 +31,9 @@ struct Overlay
     void strokeRect(int x, int y, int w, int h, int thickness, Rgba color);
     void text(int x, int y, std::string const& value, int pixelSize, Rgba color);
     void line(int x0, int y0, int x1, int y1, Rgba color);
+
+    // Set by renderOverlay while a Blend2D context owns the frame. Null on the bitmap path.
+    void* blContext = nullptr;
 };
 
 struct OverlayTile
@@ -72,6 +75,6 @@ struct OverlayTile
 
 void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles);
 
-// Blend2D is selected at build time. The bitmap path is always available.
+// True when this binary rasterises the overlay with Blend2D. The 8×8 path remains for MV_WITH_BLEND2D=OFF.
 bool overlayUsesBlend2d();
 } // namespace mv

@@ -8,7 +8,7 @@ This document records how `SPECIFICATION.md` is implemented, including every dev
 | --- | --- |
 | MXL | `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, `-DMXL_ENABLE_FABRICS_OFI=OFF`. One `MXL_REF` in `docker/Dockerfile` and `.github/workflows/ci.yaml`. |
 | nmos-cpp | `fe303849527394b03bdedc8f161f377fe458bb62` (`NMOS_CPP_REF`), same commit as mxl-decklink, mxl-fabrics-agent, and mxl-webrtc-monitor |
-| Font | public-domain 8×8 bitmap, `third_party/font8x8_basic.h` |
+| Font | DejaVu Sans 2.37, `third_party/dejavu/DejaVuSans.ttf`, drawn by Blend2D 0.21.2. The 8×8 bitmap remains when `MV_WITH_BLEND2D=OFF` |
 | UI | Vue 3 + Vite, one embedded HTML file. No CDN |
 | JPEG | stb_image / stb_image_write (public domain), vendored |
 
@@ -22,7 +22,7 @@ with `__int128` rounding. The process calls `mxlTimestampToIndex` / `mxlGetTime`
 
 ## 2. Overlay library
 
-**In-tree RGBA renderer.** Blend2D was preferred to Skia (CPU raster into our buffer, Apache-2.0, no second GPU context, much smaller than Skia). It is not linked. asmjit makes it a second large C++ build, and the overlay this version needs is rectangles, tally borders, PPM bars, labels, and a clock. Those are drawn with the public-domain 8×8 font in `third_party/font8x8_basic.h`, compiled into the binary. No font is downloaded at runtime. `overlayUsesBlend2d()` is false. A later change can replace `renderOverlay` without touching the composer.
+**Blend2D.** It rasterises on the CPU into an RGBA buffer the compositor already blends, it is Zlib licensed, and it does not open a second GPU context. Skia was the larger alternative. The default build fetches Blend2D 0.21.2 (the source tarball, which includes its asmjit) and links it statically. Text is DejaVu Sans 2.37, compiled into the binary from `third_party/dejavu/DejaVuSans.ttf`. Nothing is downloaded at runtime. `MV_WITH_BLEND2D=OFF` keeps the public-domain 8×8 bitmap path. `overlayUsesBlend2d()` reports which path this binary uses. The composer still only calls `renderOverlay`.
 
 ## 3. Source layout
 
@@ -58,7 +58,7 @@ docker/ deploy/ assets/ third_party/
 4. **Query API port is `NMOS_REGISTRY_PORT + 1`.** Same as mxl-webrtc-monitor and the nmos-cpp registry defaults.
 5. **Ring depth is the domain `history_duration` option**, not a per-flow setting. This process writes `options.json` only when it creates the output domain. It does not rewrite a domain it did not create.
 6. **Layouts are a versioned JSON document** (`MV_LAYOUTS_FILE`), not a flat env blob. Flat `KEY=value` remains the config model for everything in the configuration table. The settings view exports `KEY=value` and a separate layout export.
-6a. **Overlay text is the bundled 8×8 bitmap**, not Blend2D. See §2.
+6a. **Blend2D is the default overlay.** See §2. `MV_WITH_BLEND2D=OFF` still builds the 8×8 bitmap renderer. The first cut left Blend2D unlinked because asmjit is a second C++ build; that cut is reversed. The published image and CI use Blend2D.
 7. **`MV_OUTPUTS` is implemented** up to 3. The prompt allowed deferring it. The composer loop is per head, so the extra heads are the same code path.
 8. **TSL 3.1 is implemented** behind `TSL_V31` (default false). TSL 5.0 is always the primary parser.
 9. **CPU inner loops are scalar plus SSE2 clear/blend** on x86_64, with one thread per tile. A third-party scaler is not linked. The planar `uint16_t` layout is the SIMD-friendly form. Hand-written AVX2 v210 unpack is not in this round; `docs/performance.md` is where a miss against the CPU target would be recorded.

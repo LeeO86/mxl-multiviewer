@@ -196,6 +196,33 @@ TEST_CASE("overlay draws umd pixels")
         }
     }
     CHECK(ink > 20);
+    CHECK(overlayUsesBlend2d());
+    Overlay word;
+    word.resize(160, 64);
+    OverlayTile label;
+    label.rect = {0, 0, 160, 64};
+    label.labelText = "Ag";
+    label.umdFont = 36;
+    renderOverlay(word, {label});
+    int partial = 0;
+    bool straightWhite = false;
+    for (int y = 0; y < word.height; ++y)
+    {
+        for (int x = 0; x < word.width; ++x)
+        {
+            auto const* px = word.rgba.data() + static_cast<std::size_t>((y * word.width + x) * 4);
+            if (px[3] > 8 && px[3] < 247 && px[0] > 180 && px[1] > 180 && px[2] > 180)
+            {
+                ++partial;
+                if (px[0] > px[3])
+                {
+                    straightWhite = true;
+                }
+            }
+        }
+    }
+    CHECK(partial > 20);
+    CHECK(straightWhite);
 }
 
 TEST_CASE("timecode comes from the TAI index")
