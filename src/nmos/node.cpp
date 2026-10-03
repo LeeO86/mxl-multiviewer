@@ -97,7 +97,7 @@ bool NmosNode::registered() const
     {
         return impl_->running.load();
     }
-    auto const url = "http://" + impl_->config.nmosRegistryAddress + ":" + std::to_string(impl_->config.nmosRegistryPort + 1) + "/x-nmos/query/v1.3/nodes/" +
+    auto const url = "http://" + impl_->config.nmosQueryAddress + ":" + std::to_string(impl_->config.nmosQueryPort) + "/x-nmos/query/v1.3/nodes/" +
                      impl_->ids.node;
     return httpGet(url, 700).status == 200;
 }
@@ -192,13 +192,19 @@ void NmosNode::start()
             nmos::node_model nodeModel;
             impl_->model = &nodeModel;
             web::json::value settings = web::json::value::object();
+            auto const nodeLabel = impl_->config.nmosLabel.empty() ? impl_->config.hostId : impl_->config.nmosLabel;
             settings[U("http_port")] = impl_->config.nmosPort;
-            settings[U("label")] = web::json::value::string(us(impl_->config.hostId));
+            settings[U("label")] = web::json::value::string(us(nodeLabel));
             settings[U("description")] = web::json::value::string(U("mxl-multiviewer"));
             settings[U("seed_id")] = web::json::value::string(us(impl_->ids.node));
             settings[U("service_name_prefix")] = web::json::value::string(U("mxl-multiviewer"));
             settings[U("logging_level")] = 20;
             settings[U("control_protocol_ws_port")] = -1;
+            if (!impl_->config.nmosHostAddress.empty())
+            {
+                settings[U("host_address")] = web::json::value::string(us(impl_->config.nmosHostAddress));
+                settings[U("host_addresses")] = web::json::value::array({web::json::value::string(us(impl_->config.nmosHostAddress))});
+            }
             if (!impl_->config.nmosDnsSd)
             {
                 settings[U("pri")] = std::numeric_limits<int>::max();
@@ -208,7 +214,11 @@ void NmosNode::start()
             {
                 settings[U("registry_address")] = web::json::value::string(us(impl_->config.nmosRegistryAddress));
                 settings[U("registration_port")] = impl_->config.nmosRegistryPort;
-                settings[U("query_port")] = impl_->config.nmosRegistryPort + 1;
+                if (!impl_->config.nmosQueryAddress.empty())
+                {
+                    settings[U("query_address")] = web::json::value::string(us(impl_->config.nmosQueryAddress));
+                }
+                settings[U("query_port")] = impl_->config.nmosQueryPort;
             }
             nodeModel.settings = settings;
             nmos::insert_node_default_settings(nodeModel.settings);
@@ -294,7 +304,7 @@ void NmosNode::start()
                     });
 
             auto server = nmos::experimental::make_node_server(nodeModel, implementation, logModel, gate);
-            server.thread_functions.push_back([this, &nodeModel] {
+            server.thread_functions.push_back([this, &nodeModel, nodeLabel] {
                 try
                 {
                     auto lock = nodeModel.write_lock();
@@ -302,8 +312,21 @@ void NmosNode::start()
                     auto const clocks = web::json::value_of({nmos::make_internal_clock(nmos::clock_names::clk0)});
                     auto const interfaces = nmos::experimental::node_interfaces(nmos::get_host_interfaces(nodeModel.settings));
                     auto node = nmos::make_node(us(impl_->ids.node), clocks, nmos::make_node_interfaces(interfaces), nodeModel.settings);
-                    node.data[U("label")] = value::string(us(impl_->config.hostId));
+                    node.data[U("label")] = value::string(us(nodeLabel));
                     node.data[U("description")] = value::string(U("MXL multiviewer"));
+                    if (!node.data.has_field(U("tags")))
+                    {
+                        node.data[U("tags")] = value::object();
+                    }
+                    for (auto const& [name, values] : impl_->config.nmosTags)
+                    {
+                        web::json::value list = value::array();
+                        for (auto const& item : values)
+                        {
+                            web::json::push_back(list, value::string(us(item)));
+                        }
+                        node.data[U("tags")][us(name)] = std::move(list);
+                    }
                     nmos::insert_resource(nodeModel.node_resources, std::move(node));
 
                     std::vector<nmos::id> senders;
@@ -322,7 +345,20 @@ void NmosNode::start()
                         receivers.push_back(us(impl_->ids.audioReceiver(i)));
                     }
                     auto device = nmos::make_device(us(impl_->ids.device), us(impl_->ids.node), senders, receivers, nodeModel.settings);
-                    device.data[U("label")] = value::string(U("MXL Multiviewer"));
+                    device.data[U("label")] = value::string(us(impl_->config.nmosLabel.empty() ? std::string("MXL Multiviewer") : impl_->config.nmosLabel + " multiviewer"));
+                    if (!device.data.has_field(U("tags")))
+                    {
+                        device.data[U("tags")] = value::object();
+                    }
+                    for (auto const& [name, values] : impl_->config.nmosTags)
+                    {
+                        web::json::value list = value::array();
+                        for (auto const& item : values)
+                        {
+                            web::json::push_back(list, value::string(us(item)));
+                        }
+                        device.data[U("tags")][us(name)] = std::move(list);
+                    }
                     nmos::insert_resource(nodeModel.node_resources, std::move(device));
 
                     auto const domain = us(impl_->config.outputDomainId.empty() ? impl_->ids.domain : impl_->config.outputDomainId);
@@ -491,6 +527,49 @@ void NmosNode::start()
                     impl_->model->notify();
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            {
+                auto lock = nodeModel.write_lock();
+                auto const announceable = [](nmos::type const& type) {
+                    return type == nmos::types::device || type == nmos::types::source || type == nmos::types::flow || type == nmos::types::sender ||
+                           type == nmos::types::receiver;
+                };
+                std::vector<nmos::id> ids;
+                nmos::id nodeId;
+                for (auto const& resource : nodeModel.node_resources)
+                {
+                    if (resource.type == nmos::types::node)
+                    {
+                        nodeId = resource.id;
+                    }
+                    else if (announceable(resource.type))
+                    {
+                        ids.push_back(resource.id);
+                    }
+                }
+                for (auto const& id : ids)
+                {
+                    nmos::erase_resource(nodeModel.node_resources, id, false);
+                }
+                if (!nodeId.empty())
+                {
+                    nmos::erase_resource(nodeModel.node_resources, nodeId, false);
+                }
+                nodeModel.notify();
+            }
+            if (!impl_->config.nmosRegistryAddress.empty())
+            {
+                auto const url = "http://" + impl_->config.nmosQueryAddress + ":" + std::to_string(impl_->config.nmosQueryPort) +
+                                 "/x-nmos/query/v1.3/nodes/" + impl_->ids.node;
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                while (std::chrono::steady_clock::now() < deadline)
+                {
+                    if (httpGet(url, 500).status == 404)
+                    {
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
             }
             {
                 auto lock = nodeModel.write_lock();

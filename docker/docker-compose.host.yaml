@@ -1,14 +1,18 @@
-# One host of a real platform. Host network, MXL root bind, ports 8110 and 3262/3263.
+# Single machine, not the platform Deployment. The platform uses the pod network
+# (deploy/mxl-multiviewer.yaml). This file uses the host network so the process
+# can share a host MXL root without a pod IP.
 services:
   multiviewer:
-    image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+    image: ghcr.io/leeo86/mxl-multiviewer:1.0.0
     network_mode: host
     user: "1000:1000"
     volumes:
       - /Volumes/mxl:/Volumes/mxl
+      - mv-config:/config
     environment:
       MXL_DOMAIN_SCAN_PATH: /Volumes/mxl
-      MV_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+      MXL_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+      MV_STATE_DIR: /config
       MV_BACKEND: auto
       NMOS_REGISTRY_ADDRESS: ${NMOS_REGISTRY_ADDRESS:-127.0.0.1}
       NMOS_REGISTRY_PORT: ${NMOS_REGISTRY_PORT:-3210}
@@ -17,3 +21,6 @@ services:
       WEB_PORT: "8110"
       TSL_UDP_PORT: "8910"
       TSL_TCP_PORT: "8911"
+      SHUTDOWN_TIMEOUT_S: "10"
+volumes:
+  mv-config:

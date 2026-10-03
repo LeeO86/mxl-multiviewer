@@ -1,10 +1,14 @@
 #include <doctest/doctest.h>
 
+#include "app/runtime.hpp"
 #include "config/config.hpp"
 #include "config/store.hpp"
 #include "domain/scan.hpp"
+#include "layout/book.hpp"
 #include "media/timebase.hpp"
 #include "nmos/ids.hpp"
+#include "ops/api.hpp"
+#include "ops/metrics.hpp"
 #include "util/uuid.hpp"
 
 #include <cstdlib>
@@ -43,6 +47,38 @@ TEST_CASE("config precedence and validation")
     CHECK(withPins.backend == "cpu");
     CHECK_THROWS_AS(loadConfig({{"MV_MAX_INPUTS", "100"}}, {}), ConfigError);
     CHECK_THROWS_AS(loadConfig({{"WEB_PORT", "8110"}, {"NMOS_PORT", "8110"}, {"NMOS_ENABLE", "true"}}, {}), ConfigError);
+    auto const aliased = loadConfig({{"MXL_OUTPUT_DOMAIN_DIR", "/tmp/mv-alias"}, {"NMOS_ENABLE", "false"}}, {});
+    CHECK(aliased.outputDomainDir == "/tmp/mv-alias");
+    auto const primary = loadConfig({{"MV_OUTPUT_DOMAIN_DIR", "/tmp/mv-primary"}, {"MXL_OUTPUT_DOMAIN_DIR", "/tmp/mv-alias"}, {"NMOS_ENABLE", "false"}}, {});
+    CHECK(primary.outputDomainDir == "/tmp/mv-primary");
+    auto const query = loadConfig({{"NMOS_REGISTRY_ADDRESS", "10.1.1.9"}, {"NMOS_REGISTRY_PORT", "4000"}, {"NMOS_HOST_ADDRESS", "10.1.1.8"}, {"NMOS_ENABLE", "true"}}, {});
+    CHECK(query.nmosQueryAddress == "10.1.1.9");
+    CHECK(query.nmosQueryPort == 4001);
+    auto const tags = loadConfig({{"NMOS_ENABLE", "false"}, {"NMOS_TAGS", "{\"urn:x-srf:production\":[\"sport-sa\"],\"urn:x-srf:function\":[\"mv1\"]}"}}, {});
+    CHECK(tags.nmosTags.at("urn:x-srf:production").at(0) == "sport-sa");
+    CHECK(tags.cleanupOnExit == false);
+    CHECK(tags.stateDir == "/config");
+    CHECK_THROWS_AS(loadConfig({{"NMOS_HOST_ADDRESS", "127.0.0.1"}, {"NMOS_ENABLE", "true"}}, {}), ConfigError);
+    CHECK_THROWS_AS(loadConfig({{"NMOS_HOST_ADDRESS", "0.0.0.0"}, {"NMOS_ENABLE", "true"}}, {}), ConfigError);
+    CHECK_THROWS_AS(loadConfig({{"NMOS_HOST_ADDRESS", "multiviewer.local"}, {"NMOS_ENABLE", "true"}}, {}), ConfigError);
+    CHECK_THROWS_AS(loadConfig({{"NMOS_TAGS", "[]"}, {"NMOS_ENABLE", "false"}}, {}), ConfigError);
+    CHECK_THROWS_AS(loadConfig({{"NMOS_REGISTRY_PORT", "65535"}, {"NMOS_ENABLE", "false"}}, {}), ConfigError);
+    auto const queryOverride = loadConfig(
+        {{"NMOS_REGISTRY_ADDRESS", "10.1.1.9"},
+         {"NMOS_REGISTRY_PORT", "4000"},
+         {"NMOS_QUERY_ADDRESS", "10.2.2.9"},
+         {"NMOS_QUERY_PORT", "4100"},
+         {"NMOS_HOST_ADDRESS", "10.1.1.8"},
+         {"NMOS_LABEL", "wall"},
+         {"MXL_OUTPUT_DOMAIN_ID", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
+         {"MXL_CLEANUP_ON_EXIT", "true"},
+         {"NMOS_ENABLE", "true"}},
+        {});
+    CHECK(queryOverride.nmosQueryAddress == "10.2.2.9");
+    CHECK(queryOverride.nmosQueryPort == 4100);
+    CHECK(queryOverride.nmosLabel == "wall");
+    CHECK(queryOverride.outputDomainId == "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    CHECK(queryOverride.cleanupOnExit);
 }
 
 TEST_CASE("config file layer")
@@ -65,6 +101,28 @@ TEST_CASE("config file layer")
     CHECK(store.effectiveConfig().holdMs == 250);
     auto const rejected = store.update({{"MV_MAX_INPUTS", std::string("3")}});
     CHECK(std::holds_alternative<std::string>(rejected));
+    ConfigStore envAlias({{"MXL_OUTPUT_DOMAIN_DIR", "/tmp/from-env"}, {"NMOS_ENABLE", "false"}}, path);
+    auto const blocked = envAlias.update({{"MV_OUTPUT_DOMAIN_DIR", std::string("/tmp/from-file")}});
+    CHECK(std::holds_alternative<std::string>(blocked));
+    CHECK(envAlias.effectiveConfig().outputDomainDir == "/tmp/from-env");
+    CHECK(envAlias.sourceOf("MV_OUTPUT_DOMAIN_DIR") == SettingSource::Env);
+}
+
+TEST_CASE("web disable keeps probes and blocks mutations")
+{
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"WEB_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, "");
+    RuntimeModel runtime(cfg);
+    Metrics metrics;
+    Api api(cfg, store, layouts, runtime, metrics);
+    CHECK(api.handle(HttpRequest{"GET", "/api/v1/info", {}, {}, {}}).status == 200);
+    CHECK(api.handle(HttpRequest{"GET", "/livez", {}, {}, {}}).status == 503);
+    CHECK(api.handle(HttpRequest{"GET", "/metrics", {}, {}, {}}).status == 200);
+    CHECK(api.handle(HttpRequest{"GET", "/preview.jpg", {}, {}, {}}).status == 404);
+    CHECK(api.handle(HttpRequest{"POST", "/api/v1/config/import", {}, "{}", {}}).status == 404);
+    CHECK(api.handle(HttpRequest{"GET", "/api/v1/config/export", {}, {}, {}}).status == 200);
 }
 
 TEST_CASE("uuid v5 ids")

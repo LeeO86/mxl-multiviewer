@@ -85,6 +85,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body or b"{}")
 
     def do_DELETE(self):
+        path = self.path.split("?", 1)[0].rstrip("/")
+        resource_id = path.split("/")[-1] if path else ""
+        with LOCK:
+            doomed = [key for key, value in RESOURCES.items() if key == path or key.endswith("/" + resource_id) or (isinstance(value, dict) and value.get("id") == resource_id)]
+            for key in doomed:
+                del RESOURCES[key]
         self._send(204, b"")
 
 

@@ -1,5 +1,11 @@
 #include "config/config.hpp"
 
+#include "util/jsonutil.hpp"
+
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -281,6 +287,8 @@ std::vector<SettingDef> const& settingSchema()
         {"MXL_DOMAIN_SCAN_PATH", "/Volumes/mxl", true},
         {"MV_OUTPUT_DOMAIN_DIR", "/Volumes/mxl/multiviewer", true},
         {"MV_OUTPUT_DOMAIN_ID", "", true},
+        {"MV_STATE_DIR", "/config", true},
+        {"MXL_CLEANUP_ON_EXIT", "false", true},
         {"MV_BACKEND", "auto", true},
         {"MV_MAX_INPUTS", "16", true},
         {"MV_OUTPUTS", "1", true},
@@ -306,9 +314,14 @@ std::vector<SettingDef> const& settingSchema()
         {"NMOS_ENABLE", "true", true},
         {"NMOS_REGISTRY_ADDRESS", "", true},
         {"NMOS_REGISTRY_PORT", "3210", true},
+        {"NMOS_QUERY_ADDRESS", "", true},
+        {"NMOS_QUERY_PORT", "", true},
         {"NMOS_DNS_SD", "false", true},
         {"NMOS_PORT", "3262", true},
         {"NMOS_SEED", "", true},
+        {"NMOS_LABEL", "", true},
+        {"NMOS_HOST_ADDRESS", "", true},
+        {"NMOS_TAGS", "{}", true},
         {"WEB_ENABLE", "true", true},
         {"WEB_PORT", "8110", true},
         {"TSL_ENABLE", "true", true},
@@ -336,16 +349,136 @@ std::vector<SettingDef> const& settingSchema()
     return schema;
 }
 
+std::string canonicalSetting(std::string const& key)
+{
+    if (key == "MXL_OUTPUT_DOMAIN_DIR")
+    {
+        return "MV_OUTPUT_DOMAIN_DIR";
+    }
+    if (key == "MXL_OUTPUT_DOMAIN_ID")
+    {
+        return "MV_OUTPUT_DOMAIN_ID";
+    }
+    return key;
+}
+
 bool knownSetting(std::string const& key)
 {
+    auto const name = canonicalSetting(key);
     for (auto const& def : settingSchema())
     {
-        if (key == def.name)
+        if (name == def.name)
         {
             return true;
         }
     }
     return false;
+}
+
+bool ipv4Literal(std::string const& text)
+{
+    int octets = 0;
+    int value = -1;
+    for (std::size_t i = 0; i <= text.size(); ++i)
+    {
+        bool const end = i == text.size();
+        if (!end && text[i] >= '0' && text[i] <= '9')
+        {
+            if (value < 0)
+            {
+                value = 0;
+            }
+            value = value * 10 + (text[i] - '0');
+            if (value > 255)
+            {
+                return false;
+            }
+            continue;
+        }
+        if ((end || text[i] == '.') && value >= 0)
+        {
+            ++octets;
+            value = -1;
+            if (end)
+            {
+                break;
+            }
+            continue;
+        }
+        return false;
+    }
+    return octets == 4 && text.find("..") == std::string::npos && text.back() != '.';
+}
+
+bool announceableIpv4(std::string const& text)
+{
+    if (!ipv4Literal(text) || text == "0.0.0.0" || text.rfind("127.", 0) == 0)
+    {
+        return false;
+    }
+    return true;
+}
+
+std::string firstNonLoopbackIpv4()
+{
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) != 0)
+    {
+        return {};
+    }
+    std::string found;
+    for (auto* item = list; item != nullptr; item = item->ifa_next)
+    {
+        if (item->ifa_addr == nullptr || item->ifa_addr->sa_family != AF_INET)
+        {
+            continue;
+        }
+        char buffer[INET_ADDRSTRLEN] = {};
+        auto const* address = reinterpret_cast<sockaddr_in const*>(item->ifa_addr);
+        if (inet_ntop(AF_INET, &address->sin_addr, buffer, sizeof(buffer)) == nullptr)
+        {
+            continue;
+        }
+        std::string const text(buffer);
+        if (announceableIpv4(text))
+        {
+            found = text;
+            break;
+        }
+    }
+    freeifaddrs(list);
+    return found;
+}
+
+std::map<std::string, std::vector<std::string>> parseNmosTags(std::string const& text)
+{
+    std::map<std::string, std::vector<std::string>> tags;
+    if (text.empty() || text == "{}")
+    {
+        return tags;
+    }
+    std::string error;
+    auto const root = json::parse(text, error);
+    if (!error.empty() || !root.is<picojson::object>())
+    {
+        throw ConfigError("NMOS_TAGS must be a JSON object of string arrays");
+    }
+    for (auto const& [name, value] : root.get<picojson::object>())
+    {
+        if (!value.is<picojson::array>())
+        {
+            throw ConfigError("NMOS_TAGS value for " + name + " must be an array of strings");
+        }
+        for (auto const& item : value.get<picojson::array>())
+        {
+            if (!item.is<std::string>())
+            {
+                throw ConfigError("NMOS_TAGS value for " + name + " must be an array of strings");
+            }
+            tags[name].push_back(item.get<std::string>());
+        }
+    }
+    return tags;
 }
 
 std::string hostnameString()
@@ -378,7 +511,38 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
                 break;
             }
         }
-        return pick(key, env, file, fallback).value_or("");
+        char const* alias = nullptr;
+        if (std::string(key) == "MV_OUTPUT_DOMAIN_DIR")
+        {
+            alias = "MXL_OUTPUT_DOMAIN_DIR";
+        }
+        else if (std::string(key) == "MV_OUTPUT_DOMAIN_ID")
+        {
+            alias = "MXL_OUTPUT_DOMAIN_ID";
+        }
+        if (auto const it = env.find(key); it != env.end())
+        {
+            return it->second;
+        }
+        if (alias != nullptr)
+        {
+            if (auto const it = env.find(alias); it != env.end())
+            {
+                return it->second;
+            }
+        }
+        if (auto const it = file.find(key); it != file.end())
+        {
+            return it->second;
+        }
+        if (alias != nullptr)
+        {
+            if (auto const it = file.find(alias); it != file.end())
+            {
+                return it->second;
+            }
+        }
+        return fallback == nullptr ? std::string{} : std::string(fallback);
     };
 
     Config cfg;
@@ -390,6 +554,12 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     cfg.scanPath = raw("MXL_DOMAIN_SCAN_PATH");
     cfg.outputDomainDir = raw("MV_OUTPUT_DOMAIN_DIR");
     cfg.outputDomainId = raw("MV_OUTPUT_DOMAIN_ID");
+    cfg.stateDir = raw("MV_STATE_DIR");
+    if (cfg.stateDir.empty())
+    {
+        throw ConfigError("MV_STATE_DIR must not be empty");
+    }
+    cfg.cleanupOnExit = requireBool("MXL_CLEANUP_ON_EXIT", raw("MXL_CLEANUP_ON_EXIT"));
     cfg.backend = lower(raw("MV_BACKEND"));
     requireEnum("MV_BACKEND", cfg.backend, {"auto", "cuda", "cpu"});
     cfg.maxInputs = requireInt("MV_MAX_INPUTS", raw("MV_MAX_INPUTS"), 1, 32);
@@ -435,6 +605,24 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     cfg.nmosEnable = requireBool("NMOS_ENABLE", raw("NMOS_ENABLE"));
     cfg.nmosRegistryAddress = raw("NMOS_REGISTRY_ADDRESS");
     cfg.nmosRegistryPort = requireInt("NMOS_REGISTRY_PORT", raw("NMOS_REGISTRY_PORT"), 1, 65535);
+    cfg.nmosQueryAddress = raw("NMOS_QUERY_ADDRESS");
+    if (cfg.nmosQueryAddress.empty())
+    {
+        cfg.nmosQueryAddress = cfg.nmosRegistryAddress;
+    }
+    auto const queryPortText = raw("NMOS_QUERY_PORT");
+    if (queryPortText.empty())
+    {
+        if (cfg.nmosRegistryPort >= 65535)
+        {
+            throw ConfigError("NMOS_QUERY_PORT defaults to NMOS_REGISTRY_PORT + 1, which is not a valid port; set NMOS_QUERY_PORT");
+        }
+        cfg.nmosQueryPort = cfg.nmosRegistryPort + 1;
+    }
+    else
+    {
+        cfg.nmosQueryPort = requireInt("NMOS_QUERY_PORT", queryPortText, 1, 65535);
+    }
     cfg.nmosDnsSd = requireBool("NMOS_DNS_SD", raw("NMOS_DNS_SD"));
     cfg.nmosPort = requireInt("NMOS_PORT", raw("NMOS_PORT"), 1, 65534);
     cfg.nmosSeed = raw("NMOS_SEED");
@@ -442,6 +630,17 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     {
         cfg.nmosSeed = cfg.hostId + "-multiviewer";
     }
+    cfg.nmosLabel = raw("NMOS_LABEL");
+    cfg.nmosHostAddress = raw("NMOS_HOST_ADDRESS");
+    if (cfg.nmosHostAddress.empty())
+    {
+        cfg.nmosHostAddress = firstNonLoopbackIpv4();
+    }
+    if (cfg.nmosEnable && !announceableIpv4(cfg.nmosHostAddress))
+    {
+        throw ConfigError("NMOS_HOST_ADDRESS must be a non-loopback IPv4 address");
+    }
+    cfg.nmosTags = parseNmosTags(raw("NMOS_TAGS"));
     cfg.webEnable = requireBool("WEB_ENABLE", raw("WEB_ENABLE"));
     cfg.webPort = requireInt("WEB_PORT", raw("WEB_PORT"), 1, 65535);
     cfg.tslEnable = requireBool("TSL_ENABLE", raw("TSL_ENABLE"));

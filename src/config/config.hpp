@@ -43,6 +43,8 @@ struct Config
     std::string scanPath = "/Volumes/mxl";
     std::string outputDomainDir = "/Volumes/mxl/multiviewer";
     std::string outputDomainId;
+    std::string stateDir = "/config";
+    bool cleanupOnExit = false;
     std::string backend = "auto";
     int maxInputs = 16;
     int outputs = 1;
@@ -68,9 +70,14 @@ struct Config
     bool nmosEnable = true;
     std::string nmosRegistryAddress;
     int nmosRegistryPort = 3210;
+    std::string nmosQueryAddress;
+    int nmosQueryPort = 3211;
     bool nmosDnsSd = false;
     int nmosPort = 3262;
     std::string nmosSeed;
+    std::string nmosLabel;
+    std::string nmosHostAddress;
+    std::map<std::string, std::vector<std::string>> nmosTags;
     bool webEnable = true;
     int webPort = 8110;
     bool tslEnable = true;
@@ -93,6 +100,8 @@ struct SettingDef
 };
 
 std::vector<SettingDef> const& settingSchema();
+// Maps platform aliases onto the canonical key. Unknown names are returned unchanged.
+std::string canonicalSetting(std::string const& key);
 bool knownSetting(std::string const& key);
 
 VideoFormat parseVideoFormat(std::string const& token);

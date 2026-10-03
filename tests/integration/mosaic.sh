@@ -29,7 +29,10 @@ REG_PORT=13210
 WEB_PORT=18110
 NMOS_PORT=13262
 
-mkdir -p "$WORK/src"
+mkdir -p "$WORK/src" "$WORK/config"
+cat > "$WORK/config/routes.json" <<EOF
+{"routes":[{"input":1,"video":true,"enable":true,"domain_id":"$DOMAIN_ID","flow_id":"$FLOW_ID","sender_id":""}]}
+EOF
 cat > "$WORK/src/domain_def.json" <<EOF
 {"id":"$DOMAIN_ID","label":"src","unused":true}
 EOF
@@ -41,6 +44,8 @@ REG_PID=$!
 export LD_LIBRARY_PATH="${LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 MXL_DOMAIN_SCAN_PATH="$WORK" \
 MV_OUTPUT_DOMAIN_DIR="$WORK/mv" \
+MV_STATE_DIR="$WORK/config" \
+MXL_CLEANUP_ON_EXIT=true \
 MV_BACKEND=cpu \
 MV_MAX_INPUTS=4 \
 MV_OUTPUT_FORMAT=192x108p50 \
@@ -69,6 +74,35 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 curl -sf "http://127.0.0.1:${WEB_PORT}/livez" >/dev/null
+
+restored=0
+for _ in $(seq 1 40); do
+  STATE="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/inputs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"][0]["video"]["state"])')"
+  if [[ "$STATE" == "waiting" || "$STATE" == "running" ]]; then
+    restored=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$restored" != 1 ]]; then
+  echo "persisted route was not restored, got ${STATE:-none}" >&2
+  exit 1
+fi
+
+ready=0
+for _ in $(seq 1 50); do
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/readyz")"
+  if [[ "$CODE" == "200" ]]; then
+    ready=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$ready" != 1 ]]; then
+  echo "readyz did not become 200" >&2
+  curl -s "http://127.0.0.1:${WEB_PORT}/readyz" >&2 || true
+  exit 1
+fi
 
 INFO="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/info")"
 RX="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["receivers"][0]["video"])' "$INFO")"
@@ -163,4 +197,26 @@ if [[ "$PIXEL2" != "200" ]]; then
 fi
 
 curl -sf "http://127.0.0.1:${WEB_PORT}/metrics" | grep -q "mxl_multiviewer_output_frames_total"
+NODE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["node_id"])' "$INFO")"
+EXPORT="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/config/export")"
+python3 -c 'import json,sys; doc=json.loads(sys.argv[1]); assert doc["version"]==1 and doc["secrets"] is False and "layouts" in doc and doc["routes"]["routes"][0]["flow_id"]' "$EXPORT"
+kill -TERM "$MV_PID"
+set +e
+wait "$MV_PID"
+CODE=$?
+set -e
+MV_PID=
+if [[ "$CODE" != "143" ]]; then
+  echo "expected SIGTERM exit 143, got $CODE" >&2
+  exit 1
+fi
+if [[ -e "$WORK/mv" ]]; then
+  echo "output domain was not removed" >&2
+  exit 1
+fi
+QUERY="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((REG_PORT + 1))/x-nmos/query/v1.3/nodes/${NODE}")"
+if [[ "$QUERY" != "404" ]]; then
+  echo "node still registered ($QUERY)" >&2
+  exit 1
+fi
 echo "integration ok"

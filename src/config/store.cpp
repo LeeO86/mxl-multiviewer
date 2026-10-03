@@ -99,7 +99,27 @@ ConfigStore::ConfigStore(std::map<std::string, std::string> env, std::optional<s
 
 void ConfigStore::loadFile()
 {
-    file_ = readFlatFile(*filePath_);
+    auto raw = readFlatFile(*filePath_);
+    file_.clear();
+    for (auto const& [key, value] : raw)
+    {
+        file_[canonicalSetting(key)] = value;
+    }
+}
+
+void ConfigStore::ensureFile(std::string path)
+{
+    std::lock_guard lock{mutex_};
+    if (filePath_)
+    {
+        return;
+    }
+    filePath_ = std::move(path);
+    std::ifstream probe(*filePath_);
+    if (probe)
+    {
+        loadFile();
+    }
 }
 
 Config ConfigStore::effectiveConfig() const
@@ -111,11 +131,13 @@ Config ConfigStore::effectiveConfig() const
 SettingSource ConfigStore::sourceOf(std::string const& key) const
 {
     std::lock_guard lock{mutex_};
-    if (env_.count(key) != 0)
+    auto const name = canonicalSetting(key);
+    if (env_.count(name) != 0 || (name == "MV_OUTPUT_DOMAIN_DIR" && env_.count("MXL_OUTPUT_DOMAIN_DIR") != 0) ||
+        (name == "MV_OUTPUT_DOMAIN_ID" && env_.count("MXL_OUTPUT_DOMAIN_ID") != 0))
     {
         return SettingSource::Env;
     }
-    if (file_.count(key) != 0)
+    if (file_.count(name) != 0)
     {
         return SettingSource::File;
     }
@@ -125,11 +147,26 @@ SettingSource ConfigStore::sourceOf(std::string const& key) const
 std::optional<std::string> ConfigStore::effectiveValue(std::string const& key) const
 {
     std::lock_guard lock{mutex_};
-    if (auto const it = env_.find(key); it != env_.end())
+    auto const name = canonicalSetting(key);
+    if (auto const it = env_.find(name); it != env_.end())
     {
         return it->second;
     }
-    if (auto const it = file_.find(key); it != file_.end())
+    if (name == "MV_OUTPUT_DOMAIN_DIR")
+    {
+        if (auto const it = env_.find("MXL_OUTPUT_DOMAIN_DIR"); it != env_.end())
+        {
+            return it->second;
+        }
+    }
+    if (name == "MV_OUTPUT_DOMAIN_ID")
+    {
+        if (auto const it = env_.find("MXL_OUTPUT_DOMAIN_ID"); it != env_.end())
+        {
+            return it->second;
+        }
+    }
+    if (auto const it = file_.find(name); it != file_.end())
     {
         return it->second;
     }
@@ -185,21 +222,23 @@ std::map<std::string, std::string> ConfigStore::mergedFile(std::map<std::string,
     auto next = file_;
     for (auto const& [key, value] : changes)
     {
-        if (!knownSetting(key))
+        auto const name = canonicalSetting(key);
+        if (!knownSetting(name))
         {
             throw ConfigError("unknown config key " + key);
         }
-        if (env_.count(key) != 0)
+        if (env_.count(name) != 0 || (name == "MV_OUTPUT_DOMAIN_DIR" && env_.count("MXL_OUTPUT_DOMAIN_DIR") != 0) ||
+            (name == "MV_OUTPUT_DOMAIN_ID" && env_.count("MXL_OUTPUT_DOMAIN_ID") != 0))
         {
-            throw ConfigError(key + " is set via the environment");
+            throw ConfigError(name + " is set via the environment");
         }
         if (!value)
         {
-            next.erase(key);
+            next.erase(name);
         }
         else
         {
-            next[key] = *value;
+            next[name] = *value;
         }
     }
     return next;
@@ -223,12 +262,13 @@ std::variant<ConfigStore::UpdateResult, std::string> ConfigStore::update(std::ma
         for (auto const& [key, value] : changes)
         {
             (void)value;
-            result.changedKeys.push_back(key);
+            auto const name = canonicalSetting(key);
+            result.changedKeys.push_back(name);
             for (auto const& def : settingSchema())
             {
-                if (key == def.name && def.restart)
+                if (name == def.name && def.restart)
                 {
-                    result.restartRequired.push_back(key);
+                    result.restartRequired.push_back(name);
                 }
             }
         }

@@ -15,6 +15,7 @@
 #include "util/httpclient.hpp"
 #include "util/jsonutil.hpp"
 #include "util/logging.hpp"
+#include "version.hpp"
 
 #include <mxl/flow.h>
 #include <mxl/mxl.h>
@@ -36,6 +37,8 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <sstream>
+#include <stdexcept>
 #include <thread>
 
 namespace mv
@@ -286,6 +289,7 @@ struct Engine::Impl
     std::function<void(int, std::string const&, std::string const&, VideoFormat const&)> onFlow;
     int tslUdp = -1;
     int tslListen = -1;
+    bool loadingRoutes = false;
     Frame422 background;
     bool useCuda = false;
 
@@ -351,6 +355,10 @@ struct Engine::Impl
         }
         else if (auto const existing = readDomainId(config.outputDomainDir))
         {
+            if (*existing != domainId)
+            {
+                logError("domain_id_mismatch", {{"path", defPath.string()}, {"file", *existing}, {"configured", domainId}});
+            }
             domainId = *existing;
         }
         auto const options = std::filesystem::path(config.outputDomainDir) / "options.json";
@@ -1209,26 +1217,137 @@ struct Engine::Impl
         mxlDestroyInstance(instance);
     }
 
-    void tslMain()
+    void openTsl()
     {
+        if (!config.tslEnable)
+        {
+            return;
+        }
         tslUdp = ::socket(AF_INET, SOCK_DGRAM, 0);
         tslListen = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (tslUdp < 0 || tslListen < 0)
+        {
+            throw std::runtime_error("TSL socket failed");
+        }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(static_cast<std::uint16_t>(config.tslUdpPort));
-        if (tslUdp >= 0)
+        if (::bind(tslUdp, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
         {
-            ::bind(tslUdp, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+            throw std::runtime_error("TSL UDP bind failed on port " + std::to_string(config.tslUdpPort));
         }
+        int one = 1;
+        ::setsockopt(tslListen, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         addr.sin_port = htons(static_cast<std::uint16_t>(config.tslTcpPort));
-        if (tslListen >= 0)
+        if (::bind(tslListen, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
         {
-            int one = 1;
-            ::setsockopt(tslListen, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-            ::bind(tslListen, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-            ::listen(tslListen, 8);
+            throw std::runtime_error("TSL TCP bind failed on port " + std::to_string(config.tslTcpPort));
         }
+        if (::listen(tslListen, 8) != 0)
+        {
+            throw std::runtime_error("TSL TCP listen failed on port " + std::to_string(config.tslTcpPort));
+        }
+    }
+
+    void persistRoutes()
+    {
+        if (loadingRoutes || config.stateDir.empty())
+        {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(config.stateDir, ec);
+        std::ostringstream out;
+        out << "{\"routes\":[";
+        bool first = true;
+        auto write = [&](int input, bool video, Route const& route) {
+            if (!route.enable && route.domainId.empty() && route.flowId.empty() && route.senderId.empty())
+            {
+                return;
+            }
+            if (!first)
+            {
+                out << ',';
+            }
+            first = false;
+            out << "{\"input\":" << input << ",\"video\":" << (video ? "true" : "false") << ",\"enable\":" << (route.enable ? "true" : "false")
+                << ",\"domain_id\":\"" << route.domainId << "\",\"flow_id\":\"" << route.flowId << "\",\"sender_id\":\"" << route.senderId << "\"}";
+        };
+        for (int input = 1; input <= config.maxInputs; ++input)
+        {
+            write(input, true, videoRoutes[static_cast<std::size_t>(input - 1)]);
+            write(input, false, audioRoutes[static_cast<std::size_t>(input - 1)]);
+        }
+        out << "]}";
+        auto const path = std::filesystem::path(config.stateDir) / "routes.json";
+        auto const tmp = path.string() + ".tmp";
+        std::ofstream file(tmp, std::ios::trunc);
+        if (!file)
+        {
+            return;
+        }
+        file << out.str();
+        file.close();
+        std::filesystem::rename(tmp, path, ec);
+    }
+
+    void loadRoutes()
+    {
+        auto const path = std::filesystem::path(config.stateDir) / "routes.json";
+        std::ifstream in(path);
+        if (!in)
+        {
+            return;
+        }
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string error;
+        auto const root = json::parse(body, error);
+        if (!error.empty() || !root.is<picojson::object>())
+        {
+            return;
+        }
+        auto const routes = root.get<picojson::object>().find("routes");
+        if (routes == root.get<picojson::object>().end() || !routes->second.is<picojson::array>())
+        {
+            return;
+        }
+        loadingRoutes = true;
+        for (auto const& item : routes->second.get<picojson::array>())
+        {
+            if (!item.is<picojson::object>())
+            {
+                continue;
+            }
+            auto const& obj = item.get<picojson::object>();
+            auto num = [&](char const* key) {
+                auto const it = obj.find(key);
+                return it != obj.end() && it->second.is<double>() ? static_cast<int>(it->second.get<double>()) : 0;
+            };
+            auto flag = [&](char const* key) {
+                auto const it = obj.find(key);
+                return it != obj.end() && it->second.is<bool>() && it->second.get<bool>();
+            };
+            auto str = [&](char const* key) {
+                auto const it = obj.find(key);
+                return it != obj.end() && it->second.is<std::string>() ? it->second.get<std::string>() : std::string{};
+            };
+            int const input = num("input");
+            if (input < 1 || input > config.maxInputs)
+            {
+                continue;
+            }
+            auto& route = flag("video") ? videoRoutes[static_cast<std::size_t>(input - 1)] : audioRoutes[static_cast<std::size_t>(input - 1)];
+            route.enable = flag("enable");
+            route.domainId = str("domain_id");
+            route.flowId = str("flow_id");
+            route.senderId = str("sender_id");
+        }
+        loadingRoutes = false;
+    }
+
+    void tslMain()
+    {
         auto apply = [&](TslMessage const& message, char const* transport) {
             if (!message.error.empty())
             {
@@ -1377,6 +1496,8 @@ Engine::~Engine()
 void Engine::start()
 {
     impl_->ensureDomain();
+    impl_->openTsl();
+    impl_->loadRoutes();
     if (!impl_->config.backgroundFile.empty())
     {
         loadImageFile(impl_->config.backgroundFile, impl_->background);
@@ -1390,7 +1511,7 @@ void Engine::start()
         throw std::runtime_error("MV_BACKEND=cuda but no CUDA device is visible");
     }
     impl_->runtime.setGpu(cudaSupportCompiled(), cudaDeviceCount());
-    impl_->metrics.set("info", {{"version", "0.1.0"}, {"mxl_revision", "218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7"}, {"backend", impl_->useCuda ? "cuda" : "cpu"}}, 1);
+    impl_->metrics.set("info", {{"version", MV_VERSION}, {"mxl_revision", MV_MXL_REVISION}, {"backend", impl_->useCuda ? "cuda" : "cpu"}}, 1);
     std::uint64_t freeBytes = 0;
     std::uint64_t totalBytes = 0;
     if (impl_->useCuda)
@@ -1454,6 +1575,28 @@ void Engine::setRoute(int input, bool video, bool enable, std::string domainId, 
     route.flowId = std::move(flowId);
     route.senderId = std::move(senderId);
     impl_->metrics.inc("nmos_activations_total", {{"input", std::to_string(input)}, {"kind", video ? "video" : "audio"}});
+    impl_->persistRoutes();
+}
+
+void Engine::removeOwnDomain()
+{
+    if (impl_ == nullptr || impl_->config.outputDomainDir.empty() || isMirrorDomain(impl_->config.outputDomainDir))
+    {
+        return;
+    }
+    std::error_code ec;
+    auto const output = std::filesystem::weakly_canonical(impl_->config.outputDomainDir, ec);
+    auto const scan = std::filesystem::weakly_canonical(impl_->config.scanPath, ec);
+    if (!output.empty() && output == scan)
+    {
+        logError("domain_cleanup_refused", {{"path", impl_->config.outputDomainDir}});
+        return;
+    }
+    std::filesystem::remove_all(impl_->config.outputDomainDir, ec);
+    if (ec)
+    {
+        logError("domain_cleanup_failed", {{"path", impl_->config.outputDomainDir}, {"error", ec.message()}});
+    }
 }
 
 std::string Engine::domainId() const
