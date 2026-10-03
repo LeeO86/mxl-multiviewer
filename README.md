@@ -188,7 +188,7 @@ MXL_LIB_DIR=/opt/mxl/lib tests/integration/mosaic.sh \
 tests/nmos/amwa.sh   # IS-04-01, IS-05-01, IS-05-02; needs Docker, not default CI
 ```
 
-Hardware targets are in `docs/performance.md`. They have not been measured on an A4000, an L4, or a Precision 3930-class CPU yet.
+Hardware targets are in `docs/performance.md`. They have not been measured on an A4000, an L4, or a Precision 3930-class CPU yet. A lab run on an NVIDIA A16 (2026-10-03) misses them; the numbers and the profile are in that file.
 
 ## Deploy
 
