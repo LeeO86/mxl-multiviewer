@@ -55,7 +55,7 @@ docker/ deploy/ assets/ third_party/
 1. **Rewrite.** The Rust/GStreamer 2×2 code is deleted. See `docs/audit.md`. Nothing in it implemented v210, NMOS, or TAI indexing.
 2. **v210a key is used as straight alpha.** The prompt allowed "ignored or used". Using it matches a fill+key input on a wall. Missing or full-scale key is opaque.
 3. **Interlaced inputs are bobbed** (field 0, even lines) onto the progressive output. There is no motion-adaptive deinterlacer.
-4. **Query API port is `NMOS_REGISTRY_PORT + 1`.** Same as mxl-webrtc-monitor and the nmos-cpp registry defaults.
+4. **Query API defaults to the registry address and `NMOS_REGISTRY_PORT + 1`.** `NMOS_QUERY_ADDRESS` and `NMOS_QUERY_PORT` override that. Same default as the nmos-cpp registry.
 5. **Ring depth is the domain `history_duration` option**, not a per-flow setting. This process writes `options.json` only when it creates the output domain. It does not rewrite a domain it did not create.
 6. **Layouts are a versioned JSON document** (`MV_LAYOUTS_FILE`), not a flat env blob. Flat `KEY=value` remains the config model for everything in the configuration table. The settings view exports `KEY=value` and a separate layout export.
 6a. **Blend2D is the default overlay.** See §2. `MV_WITH_BLEND2D=OFF` still builds the 8×8 bitmap renderer. The first cut left Blend2D unlinked because asmjit is a second C++ build; that cut is reversed. The published image and CI use Blend2D.
@@ -72,7 +72,7 @@ docker/ deploy/ assets/ third_party/
 17. **`/readyz` does not require every input to be `running`.** A multiviewer with unrouted inputs is a working wall of slates. Readiness is the output domain, a fresh composer heartbeat, and registry registration when a registry is configured.
 18. **Default TSL ports are 8910 and 8911.** The prompt did not assign numbers. These miss the host ports listed in the platform notes.
 19. **Background images are JPEG or PNG** via stb. Other formats are rejected. The image is scaled to cover the canvas (`fill`) once per output raster, then copied under the tiles.
-20. **DNS-SD off** sets nmos-cpp `pri` and `highest_pri` to the maximum integer, which disables advertisement and discovery. Same as mxl-webrtc-monitor.
+20. **DNS-SD off** sets nmos-cpp `pri` and `highest_pri` to the maximum integer, which skips advertisement and discovery. nmos-cpp still links its DNS-SD client library, so the image ships `libavahi-compat-libdnssd1`. avahi-daemon is not installed and is not required while `NMOS_DNS_SD=false`.
 21. **Unknown environment variables are ignored.** The config file still rejects unknown keys. CI exports `NMOS_CPP_REF` (and `MXL_REF`) on every step, including the process under test; treating every `NMOS_` name as configuration made that step exit 78.
 
 ## 5. Process
@@ -95,6 +95,27 @@ Multi-stage Dockerfile:
 2. `nvidia/cuda:12.8.2-devel-ubuntu24.04` builds MXL at `MXL_REF`, fetches nmos-cpp at `NMOS_CPP_REF`, builds this project with nvcc, runs unit tests. The unit tests do not call the GPU. `ARG CUDA_IMAGE` is declared before the first `FROM`; an `ARG` after the webui stage is not visible to the next `FROM`, and BuildKit then refuses the build with a blank base name.
 3. Runtime image: Ubuntu 24.04, the binary, libmxl, nmos-cpp shared libraries. User 1000:1000. No GStreamer packages and no NVIDIA driver. `libcudart` is inside the binary.
 
-`io.dmf.mxl.revision` is `MXL_REF`.
+`io.dmf.mxl.revision` is `MXL_REF`. `org.opencontainers.image.revision` is the git commit. Version tags `X.Y.Z`, `X.Y`, and `X` are not moved. `main` also publishes `nightly-dev` and `git-<sha>`. There is no `latest` tag.
+
+## 8. Platform guideline G1–G14
+
+Audit against the MXL PoC platform guideline. Status is met or N/A. Line numbers are the implementation that closes the item.
+
+| Item | Requirement | Status | Evidence | Change |
+| --- | --- | --- | --- | --- |
+| G1 | Env, then one JSON file, then defaults. Unknown env ignored. Invalid values exit 78. One settings table. State only under one directory, default `/config`. Secrets never logged. | met | `src/config/config.cpp:494`, `src/config/config.cpp:290`, `src/main.cpp:185`, `SPECIFICATION.md` §9 | `MV_STATE_DIR` default `/config` holds `config.json`, `layouts.json`, and `routes.json`. This process has no secrets. |
+| G2 | Scan `/Volumes/mxl`. Own output domain from `MXL_OUTPUT_DOMAIN_DIR` / `MXL_OUTPUT_DOMAIN_ID`, created if missing. A different id in `domain_def.json` is logged and not overwritten. No writes into other domains. No rewrite every start. `history_duration` configurable. | met | `src/mxlio/engine.cpp:337`, `src/mxlio/engine.cpp:360`, `src/config/config.cpp:352` | `MXL_OUTPUT_DOMAIN_*` are aliases of the existing `MV_OUTPUT_DOMAIN_*` keys. Mismatch logs `domain_id_mismatch` and keeps the file id. |
+| G3 | `NMOS_SEED` UUIDv5 for node, device, sources, flows, senders, receivers, and the default domain id. `NMOS_LABEL`. `NMOS_TAGS` on node and device. Group hints stay. | met | `src/nmos/ids.cpp`, `src/nmos/node.cpp:195`, `src/nmos/node.cpp:321` | Added `NMOS_LABEL` and `NMOS_TAGS`. Seed behaviour unchanged. |
+| G4 | Registry and query addresses. Query defaults to the registry and registration port + 1. `NMOS_DNS_SD` defaults false and disables browse and mDNS advertisement (`pri` and `highest_pri` = max int). No Avahi or D-Bus requirement while that is false. | met | `src/config/config.cpp:608`, `src/nmos/node.cpp:208` | Query host and port are settings. DNS-SD off does not call browse or register. The client library stays linked because nmos-cpp references it; the daemon is not required. |
+| G5 | Announced addresses are IP literals from `NMOS_HOST_ADDRESS`. Default is the first non-loopback IPv4. Never a hostname, `0.0.0.0`, or `127.0.0.1`. | met | `src/config/config.cpp:413`, `src/nmos/node.cpp:205` | `HOST_ID` remains the label and seed, not the href. SDP, ICE, and SRT are N/A: this process does not announce them. The UI has no address to copy. |
+| G6 | Every listen port is an env setting, including the NMOS WebSocket at `NMOS_PORT+1`. Bind failure exits 75. | met | `src/config/config.cpp:175`, `src/mxlio/engine.cpp:1220`, `src/main.cpp:142` | TSL `bind` failures throw before the threads start and the process exits 75. `WEB_ENABLE=false` no longer falls through. |
+| G7 | `/livez`, `/readyz` (serving, and registered when a registry is set), `/metrics` with prefix `mxl_multiviewer_`. | met | `src/ops/api.cpp:478`, `src/ops/api.cpp:487`, `src/ops/metrics.cpp:74` | Readiness uses the Query API at `NMOS_QUERY_ADDRESS`:`NMOS_QUERY_PORT`. |
+| G8 | SIGTERM within `SHUTDOWN_TIMEOUT_S`: stop media, DELETE the node, optionally remove only the output domain, exit 143. | met | `src/main.cpp:174`, `src/nmos/node.cpp:531`, `src/mxlio/engine.cpp:1581` | Tombstones are IS-04 resources only, so nmos-cpp sends the DELETEs. `MXL_CLEANUP_ON_EXIT` defaults false. |
+| G9 | Senders report `mxl_domain_id` and `mxl_flow_id`. Receivers accept the staged PATCH. `master_enable: false` stops the reader. SHOULD: the route survives a restart. | met | `src/nmos/node.cpp:417`, `src/mxlio/engine.cpp:1253` | Routes persist in `<MV_STATE_DIR>/routes.json` and the readers resume. The IS-05 active document is rebuilt inactive until the next PATCH. |
+| G10 | `GET /api/v1/config/export` and `POST /api/v1/config/import`. Secrets omitted unless requested. | met | `src/ops/api.cpp:358`, `src/ops/api.cpp:407` | The document is settings, layouts, and routes. There are no secrets, so `secrets` is false and nothing is omitted. Routes apply on the next start. |
+| G11 | Actions builds and pushes `ghcr.io/leeo86/mxl-multiviewer`. `main`: `git-<sha>` and `nightly-dev`. Tag `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`. uid 1000. OCI labels. Version tags are not moved. | met | `.github/workflows/container.yaml:38`, `docker/Dockerfile:85` | `latest` is not published. Example manifests reference `1.0.0`. |
+| G12 | Pod network, standard env, probes, grace period, MXL hostPath, writable `/config`, no `hostIPC`. | met | `deploy/mxl-multiviewer.yaml:42`, `deploy/mxl-multiviewer-gpu.yaml` | Host network removed. The GPU manifest adds the nvidia runtime and one GPU. |
+| G13 | README settings, ports, exit codes, API, platform run. CHANGELOG 1.0.0. SPEC matches the code. | met | `README.md`, `CHANGELOG.md`, `SPECIFICATION.md` | Written with this release. |
+| G14 | Unit tests for parsing and the new behaviour. Integration covers start, ready, SIGTERM, deregister, and domain removal. CI green. | met | `tests/unit/test_config.cpp:31`, `tests/integration/mosaic.sh:171` | The mosaic sets `MXL_CLEANUP_ON_EXIT=true` and requires exit 143, a removed domain, and query 404. |
 
 On a GPU host with the NVIDIA container toolkit the process needs the driver injected at start (`--gpus all`, `docker/docker-compose.gpu.yaml`, or `deploy/mxl-multiviewer-gpu.yaml`). The toolkit is what provides `libcuda`. The image already contains the compositor.

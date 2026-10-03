@@ -30,6 +30,8 @@ public:
     [[nodiscard]] std::optional<std::string> effectiveValue(std::string const& key) const;
     [[nodiscard]] bool hasFileLayer() const;
     [[nodiscard]] std::optional<std::string> filePath() const;
+    // Used when MV_CONFIG_FILE is unset. The path is the file layer, not an environment override.
+    void ensureFile(std::string path);
     [[nodiscard]] std::string renderEnvBlock() const;
 
     struct UpdateResult

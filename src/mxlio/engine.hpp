@@ -18,6 +18,8 @@ public:
 
     void start();
     void stop();
+    // Deletes this process's output domain directory. Refuses the scan root and mirror domains.
+    void removeOwnDomain();
     void setRoute(int input, bool video, bool enable, std::string domainId, std::string flowId, std::string senderId);
     [[nodiscard]] std::string domainId() const;
     void setFlowCallback(std::function<void(int head, std::string const& videoFlow, std::string const& audioFlow, VideoFormat const& format)> callback);

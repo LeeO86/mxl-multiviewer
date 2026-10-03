@@ -1,0 +1,44 @@
+# Changelog
+
+## 1.0.0
+
+Stable settings, HTTP API, and process behaviour for the MXL platform. A later break is 2.0.0.
+
+### Settings
+
+New names, all optional. Existing names keep working.
+
+| Name | Default | Notes |
+| --- | --- | --- |
+| `MV_STATE_DIR` | `/config` | `config.json`, `layouts.json`, and `routes.json` |
+| `MXL_CLEANUP_ON_EXIT` | `false` | remove this process's output domain on shutdown |
+| `NMOS_QUERY_ADDRESS` | registry address | Query API host |
+| `NMOS_QUERY_PORT` | registry port + 1 | Query API port |
+| `NMOS_LABEL` | empty (`HOST_ID`) | node label and device label prefix |
+| `NMOS_HOST_ADDRESS` | first non-loopback IPv4 | the only announced address |
+| `NMOS_TAGS` | `{}` | JSON object of string arrays on the node and device |
+| `MXL_OUTPUT_DOMAIN_DIR` | | alias of `MV_OUTPUT_DOMAIN_DIR` |
+| `MXL_OUTPUT_DOMAIN_ID` | | alias of `MV_OUTPUT_DOMAIN_ID` |
+
+`HOST_ID` is still the label and the default seed. It is not the node href. `NMOS_DNS_SD=false` skips DNS-SD browse and mDNS advertisement. The image links the DNS-SD client library and does not run avahi-daemon.
+
+Layouts used to be stored beside `MV_CONFIG_FILE` when that was set and `MV_LAYOUTS_FILE` was empty. They now default to `<MV_STATE_DIR>/layouts.json`. Set `MV_LAYOUTS_FILE` to keep the old path.
+
+### Behaviour
+
+- SIGTERM and SIGINT exit 143 after media is released, the NMOS node is deleted from the registry, and (when asked) the output domain directory is removed. Exit 0 remains `--help`.
+- A TCP or UDP port that cannot be bound, including TSL, exits 75.
+- An existing `domain_def.json` with a different id is logged and left as it is.
+- `WEB_ENABLE=false` returns 404 for the UI, the preview, and mutating methods. Probes, metrics, and GET APIs stay.
+- Active media routes are restored from `<MV_STATE_DIR>/routes.json`. The IS-05 active document is rebuilt inactive until the next PATCH.
+- `/readyz` is 200 only while the composer is fresh and, when a registry is configured, the Query API lists the node.
+
+### API
+
+- `GET /api/v1/config/export` returns one JSON document: `version`, `secrets`, `settings`, `layouts`, `routes`.
+- `POST /api/v1/config/import` restores that document. There are no secrets, so `secrets` is false and nothing is omitted. Routes apply on the next start.
+
+### Image and deploy
+
+- `ghcr.io/leeo86/mxl-multiviewer` on `vX.Y.Z` publishes `X.Y.Z`, `X.Y`, and `X`. Those tags are not moved. `main` publishes `nightly-dev` and `git-<sha>`. The `latest` tag is no longer published.
+- Kubernetes examples use the pod network, `/config`, `/livez` and `/readyz`, and `ghcr.io/leeo86/mxl-multiviewer:1.0.0`.

@@ -27,7 +27,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         libboost-system-dev libboost-thread-dev libboost-chrono-dev \
         libboost-date-time-dev libboost-regex-dev libboost-random-dev \
         libboost-filesystem-dev libcpprest-dev nlohmann-json3-dev \
-        libssl-dev libavahi-compat-libdnssd-dev uuid-dev \
+        libssl-dev uuid-dev libavahi-compat-libdnssd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg \

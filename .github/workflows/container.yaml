@@ -42,10 +42,12 @@ jobs:
             type=raw,value=nightly-dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
             type=sha,prefix=git-
           flavor: |
-            latest=${{ startsWith(github.ref, 'refs/tags/') }}
+            latest=false
           labels: |
             org.opencontainers.image.title=mxl-multiviewer
             org.opencontainers.image.description=MXL broadcast multiviewer
+            org.opencontainers.image.source=https://github.com/LeeO86/mxl-multiviewer
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
             io.dmf.mxl.revision=218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7
 

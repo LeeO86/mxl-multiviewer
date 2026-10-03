@@ -8,7 +8,10 @@
 #include "version.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <variant>
 
 namespace mv
 {
@@ -58,6 +61,14 @@ void Api::setFlowCallback(std::function<void(OutputFlowNote const&)> callback)
 HttpResponse Api::handle(HttpRequest const& request)
 {
     auto const& path = request.path;
+    if (!config_.webEnable)
+    {
+        bool const mutating = request.method == "POST" || request.method == "PUT" || request.method == "PATCH" || request.method == "DELETE";
+        if (mutating || path == "/preview.jpg")
+        {
+            return jsonResponse(404, "{\"error\":\"web ui disabled\"}");
+        }
+    }
     if (path == "/api/v1/events" && request.method == "GET")
     {
         HttpResponse response;
@@ -343,6 +354,119 @@ HttpResponse Api::handle(HttpRequest const& request)
         }
         out << "]}";
         return jsonResponse(200, out.str());
+    }
+    if (path == "/api/v1/config/export" && request.method == "GET")
+    {
+        std::ostringstream out;
+        out << "{\"version\":1,\"secrets\":false,\"settings\":{";
+        bool first = true;
+        for (auto const& def : settingSchema())
+        {
+            if (std::string(def.name).rfind("MV_OUT", 0) == 0 && store_.sourceOf(def.name) == SettingSource::Default)
+            {
+                continue;
+            }
+            if (!first)
+            {
+                out << ',';
+            }
+            first = false;
+            auto value = store_.effectiveValue(def.name).value_or("");
+            if (std::string(def.name) == "HOST_ID" && store_.sourceOf(def.name) == SettingSource::Default)
+            {
+                value = config_.hostId;
+            }
+            if (std::string(def.name) == "NMOS_SEED" && store_.sourceOf(def.name) == SettingSource::Default)
+            {
+                value = config_.nmosSeed;
+            }
+            if (std::string(def.name) == "NMOS_HOST_ADDRESS" && value.empty())
+            {
+                value = config_.nmosHostAddress;
+            }
+            out << quote(def.name) << ':' << quote(value);
+        }
+        out << "},\"layouts\":" << layouts_.json() << ",\"routes\":";
+        std::string routes = "{\"routes\":[]}";
+        {
+            std::ifstream in(std::filesystem::path(config_.stateDir) / "routes.json");
+            if (in)
+            {
+                std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                std::string parseError;
+                auto const parsed = json::parse(body, parseError);
+                if (parseError.empty() && parsed.is<picojson::object>())
+                {
+                    routes = parsed.serialize();
+                }
+            }
+        }
+        out << routes << "}";
+        return jsonResponse(200, out.str());
+    }
+    if (path == "/api/v1/config/import" && request.method == "POST")
+    {
+        std::string error;
+        auto const root = json::parse(request.body, error);
+        if (!error.empty() || !root.is<picojson::object>())
+        {
+            return jsonResponse(400, "{\"error\":\"import body must be a JSON object\"}");
+        }
+        auto const& obj = root.get<picojson::object>();
+        if (auto const settings = obj.find("settings"); settings != obj.end())
+        {
+            if (!settings->second.is<picojson::object>())
+            {
+                return jsonResponse(400, "{\"error\":\"settings must be an object of strings\"}");
+            }
+            std::map<std::string, std::optional<std::string>> changes;
+            for (auto const& [key, value] : settings->second.get<picojson::object>())
+            {
+                if (!value.is<std::string>())
+                {
+                    return jsonResponse(400, "{\"error\":\"settings values must be strings\"}");
+                }
+                changes.emplace(key, value.get<std::string>());
+            }
+            auto const updated = store_.update(changes);
+            if (std::holds_alternative<std::string>(updated))
+            {
+                return jsonResponse(400, "{\"error\":" + quote(std::get<std::string>(updated)) + "}");
+            }
+        }
+        if (auto const layouts = obj.find("layouts"); layouts != obj.end())
+        {
+            if (auto const problem = layouts_.replaceJson(layouts->second.serialize()))
+            {
+                return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
+            }
+        }
+        bool routesRestart = false;
+        if (auto const routes = obj.find("routes"); routes != obj.end())
+        {
+            if (!routes->second.is<picojson::object>())
+            {
+                return jsonResponse(400, "{\"error\":\"routes must be an object\"}");
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(config_.stateDir, ec);
+            auto const path = std::filesystem::path(config_.stateDir) / "routes.json";
+            auto const tmp = path.string() + ".tmp";
+            std::ofstream out(tmp, std::ios::trunc);
+            if (!out)
+            {
+                return jsonResponse(500, "{\"error\":\"cannot write routes\"}");
+            }
+            out << routes->second.serialize();
+            out.close();
+            std::filesystem::rename(tmp, path, ec);
+            if (ec)
+            {
+                return jsonResponse(500, "{\"error\":\"cannot write routes\"}");
+            }
+            routesRestart = true;
+        }
+        return jsonResponse(200, std::string("{\"ok\":true,\"secrets\":false,\"routes_restart\":") + (routesRestart ? "true" : "false") + "}");
     }
     if (path == "/api/v1/config/env" && request.method == "GET")
     {

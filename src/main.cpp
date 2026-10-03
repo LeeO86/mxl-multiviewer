@@ -18,6 +18,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <thread>
@@ -90,13 +91,10 @@ int main(int argc, char** argv)
             mv::logError("config", {{"error", "MV_BACKEND=cuda but this binary has no CUDA backend"}});
             return 78;
         }
+        std::filesystem::create_directories(config.stateDir);
+        store.ensureFile(config.stateDir + "/config.json");
         mv::RuntimeModel runtime(config);
-        auto layoutsPath = config.layoutsFile;
-        if (layoutsPath.empty() && !config.configFile.empty())
-        {
-            auto const slash = config.configFile.find_last_of('/');
-            layoutsPath = (slash == std::string::npos ? std::string{} : config.configFile.substr(0, slash + 1)) + "layouts.json";
-        }
+        auto layoutsPath = config.layoutsFile.empty() ? config.stateDir + "/layouts.json" : config.layoutsFile;
         mv::LayoutBookStore layouts(config.maxInputs, config.activeLayout, layoutsPath);
         mv::Metrics metrics;
         mv::Engine engine(config, runtime, layouts, metrics);
@@ -113,6 +111,14 @@ int main(int argc, char** argv)
             node.start();
             engine.start();
             http.start(config.webPort, [&](mv::HttpRequest const& request) {
+                if (!config.webEnable && (request.path == "/" || request.path == "/index.html" || request.path == "/preview.jpg"))
+                {
+                    mv::HttpResponse hidden;
+                    hidden.status = 404;
+                    hidden.contentType = "text/plain";
+                    hidden.body = "web ui disabled";
+                    return hidden;
+                }
                 if (request.path == "/" || request.path == "/index.html")
                 {
                     mv::HttpResponse page;
@@ -124,17 +130,7 @@ int main(int argc, char** argv)
 #endif
                     return page;
                 }
-                auto response = api.handle(request);
-                if (request.path == "/livez" || request.path == "/readyz" || request.path == "/statusz" || request.path == "/metrics" ||
-                    request.path.rfind("/api/", 0) == 0 || request.path == "/" || request.path == "/preview.jpg" || request.path == "/index.html")
-                {
-                    return response;
-                }
-                if (!config.webEnable && request.path.rfind("/api/", 0) == 0)
-                {
-                    response.status = 404;
-                }
-                return response;
+                return api.handle(request);
             });
         }
         catch (mv::ConfigError const& ex)
@@ -176,11 +172,15 @@ int main(int argc, char** argv)
             }
         });
         http.stop();
-        node.stop();
         engine.stop();
+        node.stop();
+        if (config.cleanupOnExit)
+        {
+            engine.removeOwnDomain();
+        }
         finished.store(true);
         watchdog.join();
-        return 0;
+        return 143;
     }
     catch (mv::ConfigError const& ex)
     {

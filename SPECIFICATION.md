@@ -79,7 +79,7 @@ Repository layout mirrors the siblings: `.github/workflows`, `cmake`, `deploy`, 
 
 ### 4.1 Node and resources
 
-- One nmos-cpp Node, one Device ("MXL Multiviewer").
+- One nmos-cpp Node, one Device. The node label is `NMOS_LABEL`, or `HOST_ID` when that is empty. The device label is `NMOS_LABEL` plus ` multiviewer`, or `MXL Multiviewer` when `NMOS_LABEL` is empty. `NMOS_TAGS` (a JSON object of string arrays) is copied onto the node and the device. Group hints stay.
 - `MV_MAX_INPUTS` (default 16, max 32). Input `n` (1-based) has:
   - one video receiver, `urn:x-nmos:transport:mxl`, format video;
   - one audio receiver, `urn:x-nmos:transport:mxl`, format audio;
@@ -90,7 +90,7 @@ Repository layout mirrors the siblings: `.github/workflows`, `cmake`, `deploy`, 
   - video `video/v210` and `video/v210a`, progressive and interlaced, frame width 1–3840, height 1–2160, grain rates 24000/1001, 24/1, 25/1, 30000/1001, 30/1, 50/1, 60000/1001, 60/1. Colour sampling YCbCr-4:2:2, component depth 10.
   - audio `audio/float32`, sample rate 48000/1, channel count 1–64, sample depth 32.
 - `video/v210a`: the key plane is straight alpha for that tile. It is not ignored.
-- Registration is unicast (`NMOS_REGISTRY_ADDRESS` / `NMOS_REGISTRY_PORT`). DNS-SD is off unless `NMOS_DNS_SD=true`.
+- Registration is unicast (`NMOS_REGISTRY_ADDRESS` / `NMOS_REGISTRY_PORT`). The Query API is `NMOS_QUERY_ADDRESS` (default: the registry address) and `NMOS_QUERY_PORT` (default: registration port + 1). `NMOS_DNS_SD` defaults to false. False sets nmos-cpp `pri` and `highest_pri` to the maximum integer, which skips both mDNS advertisement and DNS-SD browse. The image still links nmos-cpp's DNS-SD client library; it does not run avahi-daemon and does not need a D-Bus socket while DNS-SD is off.
 - Stable ids are UUIDv5 (RFC 4122 URL namespace `6ba7b811-9dad-11d1-80b4-00c04fd430c8`) from `NMOS_SEED`:
 
 | Resource | Name |
@@ -111,13 +111,14 @@ A raster or rate change changes the flow token, which mints a new flow id. The s
 - BCP-007-03 `transport_params[0]` carries `mxl_domain_id` and `mxl_flow_id`. No transport file.
 - An activation is accepted when the ids are UUIDs even if the domain or flow is not on disk yet. Non-UUID values are rejected with the IS-05 error response.
 - `master_enable: false` stops that leg. State `not_routed`. The other leg of the same input is independent. Video and audio MAY come from different senders.
+- Each activation is written to `<MV_STATE_DIR>/routes.json`. The next start restores those routes into the readers before the first frame. The IS-05 active document is built again with the receivers inactive; the following IS-05 PATCH is what republishes `sender_id` and `master_enable` on the node. The file is the media route that survives the restart.
 - On every activation the IS-04 receiver `subscription` (`sender_id`, `active`) is updated.
 - Senders' active transport params carry this process's output domain id and the current flow id. `master_enable` is true while the head is writing.
 - Output receivers are not exposed. Inputs are not senders.
 
 ### 4.3 Sender label lookup
 
-UMD source `is04` reads the routed sender's `label` from the registry Query API. The query port is `NMOS_REGISTRY_PORT + 1` (nmos-cpp registry default). A failed lookup leaves the previous label, then falls back to the tile's manual text, then `MV In <n>`.
+UMD source `is04` reads the routed sender's `label` from the registry Query API at `NMOS_QUERY_ADDRESS`:`NMOS_QUERY_PORT`. A failed lookup leaves the previous label, then falls back to the tile's manual text, then `MV In <n>`.
 
 ---
 
@@ -131,7 +132,7 @@ UMD source `is04` reads the routed sender's `label` from the registry Query API.
 
 ### 5.2 Output domain
 
-- `MV_OUTPUT_DOMAIN_DIR` is created if missing. `domain_def.json` is written with `MV_OUTPUT_DOMAIN_ID` or the UUIDv5 domain id from §4.1. `options.json` sets `urn:x-mxl:option:history_duration/v1.0` from `MV_HISTORY_DURATION_NS` (default 200 ms) only when this process creates the domain. An existing `options.json` is not rewritten.
+- `MV_OUTPUT_DOMAIN_DIR` is created if missing. `MXL_OUTPUT_DOMAIN_DIR` and `MXL_OUTPUT_DOMAIN_ID` are aliases of `MV_OUTPUT_DOMAIN_DIR` and `MV_OUTPUT_DOMAIN_ID`. Environment beats the alias, then the file, then the alias in the file. `domain_def.json` is written with `MV_OUTPUT_DOMAIN_ID` or the UUIDv5 domain id from §4.1 only when the file is missing. If the file already exists with a different id, the process logs `domain_id_mismatch` and keeps the id from the file. It does not overwrite `domain_def.json` or `options.json` on a later start. `options.json` sets `urn:x-mxl:option:history_duration/v1.0` from `MV_HISTORY_DURATION_NS` (default 200 ms) only when this process creates that file. `MXL_CLEANUP_ON_EXIT=true` removes this output directory on shutdown. A mirror directory, and a directory that is the scan root itself, are left in place.
 - If the directory is a mirror domain, startup fails with exit 78.
 - The process never writes flows into a mirror domain.
 
@@ -300,7 +301,7 @@ After the hold time the tile is limited-range black with the text `NO SIGNAL` an
 
 ## 8. Web UI and API
 
-Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protected networks only. `WEB_ENABLE=false` removes the UI and mutating routes. Health and metrics stay.
+Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protected networks only. `WEB_ENABLE=false` returns 404 for `/`, `/index.html`, `/preview.jpg`, and every POST, PUT, PATCH, and DELETE. GET APIs, `/livez`, `/readyz`, and `/metrics` stay. The process has no secrets. Export always sets `"secrets": false` and includes every setting.
 
 ### 8.1 Pages
 
@@ -326,6 +327,8 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
 | GET | `/preview.jpg` | latest JPEG of head 1 |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
+| GET | `/api/v1/config/export` | one JSON document: `version`, `secrets`, `settings`, `layouts`, `routes` |
+| POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`) |
 | GET | `/api/v1/config/env` | `KEY=value` text |
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
@@ -335,7 +338,7 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 On `WEB_PORT` (default 8110):
 
 - `/livez` — 200 while the heartbeat is younger than 5 s.
-- `/readyz` — 200 when the output domain is usable, the composer heartbeat is fresh, and (if `NMOS_ENABLE=true` and a registry address is set) the node has registered at least once. Otherwise 503 with a JSON reason. Inputs in `waiting` do not by themselves fail readiness: the wall is producing slates and the output flow exists.
+- `/readyz` — 200 when the composer heartbeat is fresh and, if `NMOS_ENABLE=true` and a registry address is set, the Query API currently returns the node. Otherwise 503 with a JSON reason. Inputs in `waiting` do not by themselves fail readiness: the wall is producing slates and the output flow exists.
 - `/statusz` — 200, JSON snapshot.
 - `/metrics` — Prometheus text, prefix `mxl_multiviewer_`.
 
@@ -347,10 +350,12 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 
 | Key | Default | Restart | Meaning |
 | --- | --- | --- | --- |
-| `HOST_ID` | hostname | yes | label and seed material |
-| `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes | MXL root |
-| `MV_OUTPUT_DOMAIN_DIR` | `/Volumes/mxl/multiviewer` | yes | output domain directory |
-| `MV_OUTPUT_DOMAIN_ID` | empty (UUIDv5) | yes | `domain_def.json` id |
+| `HOST_ID` | hostname | yes | node label when `NMOS_LABEL` is empty, and the default seed material. Not an announced address |
+| `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes | MXL root. Parent of domain directories, mirrors included |
+| `MV_OUTPUT_DOMAIN_DIR` | `/Volumes/mxl/multiviewer` | yes | output domain directory. Alias: `MXL_OUTPUT_DOMAIN_DIR` |
+| `MV_OUTPUT_DOMAIN_ID` | empty (UUIDv5) | yes | `domain_def.json` id when the file is created. Alias: `MXL_OUTPUT_DOMAIN_ID` |
+| `MV_STATE_DIR` | `/config` | yes | only directory this process writes for its own state: `config.json`, `layouts.json`, `routes.json` |
+| `MXL_CLEANUP_ON_EXIT` | false | yes | remove the output domain directory after SIGTERM |
 | `MV_BACKEND` | `auto` | yes | `auto`, `cuda`, `cpu` |
 | `MV_MAX_INPUTS` | 16 | yes | 1–32 |
 | `MV_OUTPUTS` | 1 | yes | 1–3 |
@@ -358,7 +363,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_INPUT_OFFSET_GRAINS` | 2 | no | 0–30 |
 | `MV_HOLD_MS` | 1000 | no | slate delay |
 | `MV_HISTORY_DURATION_NS` | 200000000 | yes | new domain only |
-| `MV_LAYOUTS_FILE` | empty | no | layout book path; empty keeps the book in memory plus the config directory when `MV_CONFIG_FILE` is set (`layouts.json` beside it) |
+| `MV_LAYOUTS_FILE` | empty | no | layout book path. Empty uses `<MV_STATE_DIR>/layouts.json` |
 | `MV_ACTIVE_LAYOUT` | `2x2` | no | initial layout for every head |
 | `MV_AUDIO_CHANNELS` | 2 | no | `0`, `2`, or `16`; 0 disables audio flows |
 | `MV_AUDIO_FOLLOW` | 1 | no | input number whose audio is copied; 0 disables |
@@ -374,12 +379,17 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_BACKGROUND_FILE` | empty | no | JPEG or PNG under the tiles |
 | `MV_CONFIG_FILE` | empty | yes | flat JSON |
 | `NMOS_ENABLE` | true | yes | |
-| `NMOS_REGISTRY_ADDRESS` | empty | yes | |
+| `NMOS_REGISTRY_ADDRESS` | empty | yes | registration dial address. A DNS name is allowed here; it is not announced |
 | `NMOS_REGISTRY_PORT` | 3210 | yes | |
-| `NMOS_DNS_SD` | false | yes | |
-| `NMOS_PORT` | 3262 | yes | WebSocket on `NMOS_PORT+1` |
-| `NMOS_SEED` | `<HOST_ID>-multiviewer` | yes | |
-| `WEB_ENABLE` | true | yes | |
+| `NMOS_QUERY_ADDRESS` | empty (registry address) | yes | Query API dial address |
+| `NMOS_QUERY_PORT` | empty (registry port + 1) | yes | |
+| `NMOS_DNS_SD` | false | yes | false disables browse and mDNS advertisement |
+| `NMOS_PORT` | 3262 | yes | Node and Connection APIs. WebSocket on `NMOS_PORT+1` |
+| `NMOS_SEED` | `<HOST_ID>-multiviewer` | yes | UUIDv5 material for every id, including the default output domain id |
+| `NMOS_LABEL` | empty (`HOST_ID`) | yes | node label and device label prefix |
+| `NMOS_HOST_ADDRESS` | first non-loopback IPv4 | yes | the only address announced (node `href`, `api.endpoints[].host`, IS-05 control hrefs). Rejects hostnames, `0.0.0.0`, and `127.0.0.0/8` when NMOS is on |
+| `NMOS_TAGS` | `{}` | yes | JSON object of string arrays on the node and device |
+| `WEB_ENABLE` | true | yes | false hides the UI, the preview, and mutating routes |
 | `WEB_PORT` | 8110 | yes | |
 | `TSL_ENABLE` | true | yes | |
 | `TSL_UDP_PORT` | 8910 | yes | |
@@ -389,7 +399,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `TSL_MAP` | empty | no | `display:input` pairs |
 | `LOG_LEVEL` | `info` | no | `trace` `debug` `info` `warn` `error` |
 | `LOG_FORMAT` | `json` | yes | `json` or `text` |
-| `SHUTDOWN_TIMEOUT_S` | 10 | yes | then exit 143 |
+| `SHUTDOWN_TIMEOUT_S` | 10 | yes | SIGTERM budget. The clean path exits 143 inside this budget; past it the process `_exit`s 143 |
 
 Per head `h` ≥ 2 (head 1 uses the unscoped keys):
 
@@ -439,16 +449,18 @@ Histogram buckets for compose time: 1, 2, 5, 10, 20, 40, 80 ms.
 
 ## 11. Process lifecycle
 
-Startup: validate config (else 78) → create output domain (else 78 if the path is a mirror or cannot be created) → bind web and TSL (else 75) → start reader slots → start composers → start NMOS (else 75). Card-level hardware does not apply. Failure to open the MXL domain after retries is exit 75.
+Startup: validate config (else 78) → create the state directory → create the output domain (else 78 if the path is a mirror or cannot be created) → bind web, NMOS, and TSL (else 75) → restore routes → start readers and composers → register the node. A TCP or UDP port that cannot be bound exits 75. Card-level hardware does not apply.
 
-SIGTERM/SIGINT: stop composers, release writers and readers, destroy MXL instances, stop NMOS, exit 0. If `SHUTDOWN_TIMEOUT_S` elapses, exit 143.
+The addresses this process announces are IP literals taken from `NMOS_HOST_ADDRESS`. The HTTP and NMOS sockets listen on the wildcard address; the announced host is separate. This process does not write SDP, ICE candidates, or SRT addresses.
+
+SIGTERM and SIGINT, within `SHUTDOWN_TIMEOUT_S`: stop HTTP, stop composers and release MXL readers and writers, tombstone the node's IS-04 resources so nmos-cpp sends DELETEs, then if `MXL_CLEANUP_ON_EXIT=true` remove this process's output domain directory, then exit 143. Child work is stopped with the threads. If the budget expires first, the process exits 143 without waiting.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | clean shutdown |
-| 75 | startup failed (`EX_TEMPFAIL`) |
+| 0 | `--help` |
+| 75 | a port could not be bound, or another startup failure (`EX_TEMPFAIL`) |
 | 78 | invalid configuration (`EX_CONFIG`) |
-| 143 | shutdown grace exceeded |
+| 143 | SIGTERM or SIGINT, including a shutdown that exceeded `SHUTDOWN_TIMEOUT_S` |
 
 The container runs as uid/gid 1000.
 
@@ -456,10 +468,10 @@ The container runs as uid/gid 1000.
 
 ## 12. Deployment and CI
 
-- Image `ghcr.io/leeo86/mxl-multiviewer`. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`, `latest`. Branch `main`: `nightly-dev`. Every published build: `git-<sha>`. Label `io.dmf.mxl.revision` is the MXL pin.
+- Image `ghcr.io/leeo86/mxl-multiviewer`, public. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`. Those version tags are not moved. Branch `main`: `nightly-dev` and `git-<sha>`. There is no `latest` tag. OCI labels include `org.opencontainers.image.source`, `org.opencontainers.image.revision` (the git commit), `org.opencontainers.image.licenses`, and `io.dmf.mxl.revision` (the MXL pin `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`). The runtime user is uid 1000. Root is not used.
 - CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration test, container build. The `ci.yaml` job does not install nvcc, so that binary is CPU-only. The container build compiles the CUDA compositor. A GPU is not required to build or to start the image.
 - `docker/docker-compose.demo.yaml`: registry stand-in, pattern writers, the multiviewer, and a note for attaching `mxl-webrtc-monitor` to the output flow. `docker/docker-compose.host.yaml`: host network, MXL root bind, ports 8110 and 3262/3263. `docker/docker-compose.gpu.yaml`: overlay that requests one NVIDIA GPU so the container toolkit injects the driver.
-- `deploy/mxl-multiviewer.yaml`: Deployment `hostNetwork`, MXL root `hostPath`, ConfigMap, probes, ServiceMonitor, no GPU request. `deploy/mxl-multiviewer-gpu.yaml` is the same Deployment with `runtimeClassName: nvidia` and `nvidia.com/gpu: 1`. Written so `mxl-poc-platform` can vendor either file.
+- `deploy/mxl-multiviewer.yaml`: pod network, no `hostNetwork` and no `hostIPC`, uid 1000 with `supplementalGroups: [1000]`, MXL root `hostPath` at `/Volumes/mxl`, a writable `/config` volume, probes on `/livez` and `/readyz`, `terminationGracePeriodSeconds` greater than `SHUTDOWN_TIMEOUT_S`, and the standard environment names. `deploy/mxl-multiviewer-gpu.yaml` is that Deployment plus `runtimeClassName: nvidia` and `nvidia.com/gpu: 1`. The example `/config` volume is an emptyDir; a platform that must keep state across reschedule replaces it with a persistent volume. The image tag in those files is `1.0.0`.
 - `tests/nmos/amwa.sh`: runs the AMWA NMOS Testing tool suites IS-04-01, IS-05-01, and IS-05-02 against `NMOS_PORT`. Not part of the default CI job (the harness image is large and the suite is long). It is the supported way to run those tests.
 
 ---
@@ -480,7 +492,7 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 ## 14. Testing
 
 - Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing and a TSL 3.1 datagram, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
-- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

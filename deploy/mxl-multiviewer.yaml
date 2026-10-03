@@ -1,21 +1,29 @@
+# Pod network. The platform reaches the UI through ingress; MXL domains are the
+# hostPath below, not the host network. GPU nodes: use deploy/mxl-multiviewer-gpu.yaml.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mxl-multiviewer
 data:
   MXL_DOMAIN_SCAN_PATH: /Volumes/mxl
-  MV_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+  MXL_OUTPUT_DOMAIN_DIR: /Volumes/mxl/multiviewer
+  MXL_CLEANUP_ON_EXIT: "true"
+  MV_STATE_DIR: /config
   MV_BACKEND: auto
   MV_MAX_INPUTS: "16"
   MV_OUTPUT_FORMAT: 1920x1080p50
   NMOS_ENABLE: "true"
   NMOS_DNS_SD: "false"
+  NMOS_SEED: example-multiviewer
+  NMOS_LABEL: multiviewer
+  NMOS_TAGS: '{"urn:x-srf:production":["example"],"urn:x-srf:function":["multiviewer"]}'
   NMOS_REGISTRY_ADDRESS: nmos-registry.nmos.svc
   NMOS_REGISTRY_PORT: "3210"
   NMOS_PORT: "3262"
   WEB_PORT: "8110"
   TSL_UDP_PORT: "8910"
   TSL_TCP_PORT: "8911"
+  SHUTDOWN_TIMEOUT_S: "10"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -31,16 +39,20 @@ spec:
       labels:
         app: mxl-multiviewer
     spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
-      # CPU nodes. For a GPU host with the NVIDIA container toolkit / GPU operator,
-      # apply deploy/mxl-multiviewer-gpu.yaml instead (runtimeClassName: nvidia, nvidia.com/gpu).
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
+        supplementalGroups: [1000]
+        fsGroup: 1000
       containers:
         - name: mxl-multiviewer
-          image: ghcr.io/leeo86/mxl-multiviewer:nightly-dev
+          image: ghcr.io/leeo86/mxl-multiviewer:1.0.0
+          env:
+            - name: NMOS_HOST_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           envFrom:
             - configMapRef:
                 name: mxl-multiviewer
@@ -65,11 +77,15 @@ spec:
           volumeMounts:
             - name: mxl
               mountPath: /Volumes/mxl
+            - name: config
+              mountPath: /config
       volumes:
         - name: mxl
           hostPath:
             path: /Volumes/mxl
             type: Directory
+        - name: config
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

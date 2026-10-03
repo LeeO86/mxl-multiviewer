@@ -20,6 +20,7 @@ public:
     bool activate(std::string const& name);
     std::optional<std::string> upsert(Layout layout);
     std::optional<std::string> erase(std::string const& name);
+    std::optional<std::string> replaceJson(std::string const& body);
     [[nodiscard]] std::string json() const;
     [[nodiscard]] std::vector<std::string> names() const;
 

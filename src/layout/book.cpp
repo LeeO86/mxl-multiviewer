@@ -1,6 +1,7 @@
 #include "layout/book.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
 namespace mv
@@ -154,12 +155,32 @@ std::vector<std::string> LayoutBookStore::names() const
     return names;
 }
 
+std::optional<std::string> LayoutBookStore::replaceJson(std::string const& body)
+{
+    LayoutBook parsed;
+    if (auto const error = parseBook(body, parsed, maxInputs_))
+    {
+        return error;
+    }
+    std::lock_guard lock{mutex_};
+    book_ = std::move(parsed);
+    published_.clear();
+    for (auto const& layout : book_.layouts)
+    {
+        published_.push_back(std::make_shared<Layout const>(layout));
+    }
+    persistUnlocked();
+    return std::nullopt;
+}
+
 void LayoutBookStore::persistUnlocked()
 {
     if (path_.empty())
     {
         return;
     }
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path_).parent_path(), ec);
     auto const tmp = path_ + ".tmp";
     std::ofstream out(tmp, std::ios::trunc);
     if (!out)
