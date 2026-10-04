@@ -4,6 +4,7 @@
 #include "layout/model.hpp"
 #include "media/alarm.hpp"
 #include "media/frame.hpp"
+#include "media/jpeg.hpp"
 #include "media/overlay.hpp"
 #include "media/ppm.hpp"
 #include "media/scale.hpp"
@@ -62,6 +63,49 @@ TEST_CASE("v210 pack unpack is bit exact")
     unpackV210(narrowPacked.data(), 0, narrowBack);
     CHECK(narrowBack.y == narrow.y);
     CHECK(narrowBack.cb == narrow.cb);
+}
+
+TEST_CASE("alarm luma from packed v210 matches the unpacked frame")
+{
+    // The CUDA backend does not unpack on the CPU: black and freeze read the packed grain.
+    Frame422 frame;
+    frame.allocate(1920, 1080, false);
+    std::uint32_t state = 7;
+    for (auto& value : frame.y)
+    {
+        state = state * 1664525u + 1013904223u;
+        value = static_cast<std::uint16_t>(state & 0x3ffu);
+    }
+    int const rowBytes = static_cast<int>(v210RowBytes(frame.width));
+    std::vector<std::uint8_t> packed(static_cast<std::size_t>(rowBytes) * frame.height);
+    packV210(frame, packed.data(), rowBytes);
+    for (int i = 0; i < frame.width * frame.height; i += 997)
+    {
+        CHECK(v210Luma(packed.data(), rowBytes, frame.width, i) == frame.y[static_cast<std::size_t>(i)]);
+    }
+    CHECK(lumaHash(packed.data(), rowBytes, frame.width, frame.height) == lumaHash(frame));
+}
+
+TEST_CASE("preview from packed v210 matches the unpacked frame")
+{
+    Frame422 frame;
+    frame.allocate(192, 108, false);
+    std::uint32_t state = 11;
+    for (auto& value : frame.y)
+    {
+        state = state * 1664525u + 1013904223u;
+        value = static_cast<std::uint16_t>(64 + (state & 0x3ffu) % 877);
+    }
+    for (std::size_t i = 0; i < frame.cb.size(); ++i)
+    {
+        state = state * 1664525u + 1013904223u;
+        frame.cb[i] = static_cast<std::uint16_t>(64 + (state & 0x3ffu) % 897);
+        frame.cr[i] = static_cast<std::uint16_t>(64 + ((state >> 10) & 0x3ffu) % 897);
+    }
+    int const rowBytes = static_cast<int>(v210RowBytes(frame.width));
+    std::vector<std::uint8_t> packed(static_cast<std::size_t>(rowBytes) * frame.height);
+    packV210(frame, packed.data(), rowBytes);
+    CHECK(encodePreviewJpeg(packed.data(), rowBytes, frame.width, frame.height, 64, 60) == encodePreviewJpeg(frame, 64, 60));
 }
 
 TEST_CASE("scaler matches bilinear pixel centres and compose keeps tile colours")
@@ -312,4 +356,33 @@ TEST_CASE("metrics prefix")
     auto const text = metrics.render();
     CHECK(text.find("mxl_multiviewer_output_frames_total") != std::string::npos);
     CHECK(text.find("mxl_multiviewer_compose_seconds_count") != std::string::npos);
+}
+
+TEST_CASE("overlay changes cover every changed pixel and nothing else")
+{
+    int const width = 300;
+    int const height = 70;
+    std::vector<std::uint8_t> before(static_cast<std::size_t>(width * height * 4), 0);
+    auto after = before;
+    CHECK(overlayChanges(before, after, width, height).empty());
+
+    // One pixel in the second block row, third block column, and one at the right edge.
+    after[static_cast<std::size_t>((20 * width + 130) * 4 + 3)] = 255;
+    after[static_cast<std::size_t>((69 * width + 299) * 4)] = 7;
+    auto const changes = overlayChanges(before, after, width, height);
+    REQUIRE(changes.size() == 2);
+    CHECK(changes[0].x == 128);
+    CHECK(changes[0].y == 16);
+    CHECK(changes[0].w == 64);
+    CHECK(changes[0].h == 16);
+    CHECK(changes[1].x == 256);
+    CHECK(changes[1].y == 64);
+    CHECK(changes[1].w == 44);
+    CHECK(changes[1].h == 6);
+
+    // Without a previous overlay of the same size, everything is new.
+    auto const all = overlayChanges({}, after, width, height);
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].w == width);
+    CHECK(all[0].h == height);
 }

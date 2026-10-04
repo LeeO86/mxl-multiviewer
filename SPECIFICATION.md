@@ -63,7 +63,7 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - MXL: `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, one pin variable in the Dockerfile and CI, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`. Public C API only (`mxl/mxl.h`, `mxl/flow.h`, `mxl/time.h`).
 - nmos-cpp: `fe303849527394b03bdedc8f161f377fe458bb62` (same commit as the siblings).
 - Overlay: Blend2D 0.21.2, statically linked, with DejaVu Sans 2.37 compiled into the binary. `MV_WITH_BLEND2D=OFF` keeps the 8×8 bitmap renderer. See `IMPLEMENTATION_PLAN.md`.
-- CUDA backend: compiled when the CUDA toolkit is present. Kernels unpack v210, scale, blend the overlay, and pack v210. Pinned host memory and streams overlap upload, compute, and download.
+- CUDA backend: compiled when the CUDA toolkit is present. Each input thread uploads its grains on its own stream straight from page-locked MXL memory; frames stay packed v210 on the device and the scale kernel decodes the samples it needs. Kernels scale, blend the overlay and pack v210; the result goes by DMA into the MXL output grain.
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.
 - Web UI: Vue 3 built to one HTML file and embedded. No CDN.
@@ -139,7 +139,7 @@ UMD source `is04` reads the routed sender's `label` from the registry Query API 
 ### 5.3 Reader lifecycle
 
 - On activation: resolve domain → `mxlCreateInstance` on that directory → `mxlCreateFlowReader`. Each missing step retries with backoff 250 ms → 5 s while `master_enable` is true. State `waiting`, reason `domain_not_found` or `flow_not_found`.
-- The reader thread copies the newest complete grain (and a matching audio window) into a slot the composer can take without blocking. Grain bytes are copied out of the MXL mapping before the reader continues.
+- The reader thread takes the newest complete grain (and a matching audio window) into a slot the composer can take without blocking. When caught up it waits for the next grain (`mxlFlowReaderGetGrain` with a timeout). On the CUDA backend the grain is uploaded to a device frame before the reader continues; on the CPU backend (or when that upload fails) it is unpacked into host memory.
 - If `mxlFlowReaderGetGrain` returns too-late, the reader jumps to the current head and increments `resyncs`.
 - A format change (`flow_def.json` width, height, rate, media type, or channel count) rebuilds that input only. Other inputs and the output keep running.
 - State `running` when a grain newer than the hold deadline is in hand. State `holding` when the last good grain is still inside `MV_HOLD_MS`. State `no_signal` after that, or when the flow exists but no grain has arrived.
@@ -168,7 +168,7 @@ Interlaced inputs are bobbed: the composer scales field 0 (even lines) to the ti
 - Scale is bilinear. `fit` letterboxes or pillarboxes (limited-range black Y=64, Cb=Cr=512). `fill` crops the source equally on the overflowing axis.
 - Composite in ascending z-order. Overlapping tiles are allowed; the higher z wins.
 - Pack back to v210. A pack/unpack of active pixels is bit-exact.
-- Overlay is an RGBA layer the size of the canvas, blended every output frame. It is redrawn only when content changes or at `MV_OVERLAY_HZ` (default 25). Meter ballistics are part of that redraw.
+- Overlay is an RGBA layer the size of the canvas, blended every output frame. A thread per head redraws it at `MV_OVERLAY_HZ` (default 25); compose uses the latest finished drawing. Meter ballistics are part of that redraw. On the CUDA backend the overlay thread uploads only the areas that changed.
 
 ### 5.6 Backends
 
@@ -177,6 +177,8 @@ Interlaced inputs are bobbed: the composer scales field 0 (even lines) to the ti
 - `auto`: CUDA when the binary contains the CUDA backend and a device is present, otherwise CPU. The container image contains the backend. A device is present when the NVIDIA container toolkit or a Kubernetes `nvidia` runtime has injected the host driver (`libcuda`). The image starts without that driver and stays on CPU.
 - `cuda`: required. If the binary has no CUDA backend, exit 78. If no device is visible, exit 75.
 - `cpu`: CPU backend. 2160p output is legal but not the sizing target.
+
+On the CUDA backend, when compose fails for 25 frames in a row, the process switches to the CPU path for the rest of its life (`cuda_disabled` logged once).
 
 GPU memory is reported from `cudaMemGetInfo` when CUDA is active, otherwise 0.
 
@@ -431,6 +433,7 @@ Prefix `mxl_multiviewer_`.
 | `output_frames_late_total` | counter | `head` |
 | `output_frames_missed_total` | counter | `head` |
 | `compose_seconds` | histogram | `head`, `backend` |
+| `compose_gpu_seconds` | histogram (CUDA only) | `head`, `stage` (`background`, `tiles`, `overlay`, `pack`, `download`) |
 | `gpu_memory_bytes` | gauge | |
 | `input_state` | gauge 1 for the current state | `input`, `kind` (`video`/`audio`), `state` |
 | `input_late_grains_total` | counter | `input` |

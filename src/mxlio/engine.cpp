@@ -45,6 +45,9 @@ namespace mv
 {
 namespace
 {
+// How long an input waits for its next grain before it republishes its state.
+constexpr std::uint64_t kGrainWaitNs = 50'000'000;
+
 struct Route
 {
     bool enable = false;
@@ -55,7 +58,10 @@ struct Route
 
 struct SavedGrain
 {
+    // CUDA backend: `gpu` (uploaded and unpacked on the device), `frame` only when the
+    // upload failed. CPU backend: `frame`.
     std::shared_ptr<Frame422> frame;
+    std::shared_ptr<CudaFrame const> gpu;
     std::uint64_t index = 0;
     std::uint64_t origin = 0;
     int width = 0;
@@ -65,9 +71,6 @@ struct SavedGrain
     bool interlaced = false;
     bool alpha = false;
     std::string mediaType;
-    std::shared_ptr<std::vector<std::uint8_t>> packed;
-    int v210Bytes = 0;
-    int alphaBytes = 0;
 };
 
 struct AudioWindow
@@ -291,7 +294,20 @@ struct Engine::Impl
     int tslListen = -1;
     bool loadingRoutes = false;
     Frame422 background;
-    bool useCuda = false;
+    // Input threads read it per grain; a head turns it off when CUDA keeps failing.
+    std::atomic<bool> useCuda{false};
+    // Per head, the overlay thread's latest finished drawing (straight RGBA).
+    struct OverlayFrame
+    {
+        std::vector<std::uint8_t> rgba;
+        int width = 0;
+        int height = 0;
+        std::uint64_t version = 0;
+        // CUDA backend: the same overlay on the device, uploaded by the overlay thread.
+        std::shared_ptr<CudaOverlay const> device;
+    };
+    std::vector<std::shared_ptr<OverlayFrame const>> overlays;
+    std::mutex overlayMu;
 
     explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn)
         : config(std::move(cfg))
@@ -374,7 +390,14 @@ struct Engine::Impl
         mxlInstance instance = nullptr;
         mxlFlowReader video = nullptr;
         mxlFlowReader audio = nullptr;
+        // CUDA locks the reader's grain memory; unlock it before the reader unmaps it.
+        auto const releaseVideo = [&] {
+            cudaReleaseHostMemory();
+            mxlReleaseFlowReader(instance, video);
+        };
         std::string openKey;
+        FlowMeta meta;
+        std::string metaKey;
         int backoff = 250;
         AlarmSet alarms;
         PpmMeter meters[16];
@@ -446,7 +469,7 @@ struct Engine::Impl
                 next->videoReason.clear();
                 if (video != nullptr)
                 {
-                    mxlReleaseFlowReader(instance, video);
+                    releaseVideo();
                     video = nullptr;
                 }
                 if (audio != nullptr)
@@ -479,7 +502,7 @@ struct Engine::Impl
             {
                 if (video != nullptr)
                 {
-                    mxlReleaseFlowReader(instance, video);
+                    releaseVideo();
                     video = nullptr;
                 }
                 if (audio != nullptr)
@@ -507,7 +530,7 @@ struct Engine::Impl
             {
                 if (video != nullptr)
                 {
-                    mxlReleaseFlowReader(instance, video);
+                    releaseVideo();
                     video = nullptr;
                 }
                 if (mxlCreateFlowReader(instance, route.flowId.c_str(), nullptr, &video) != MXL_STATUS_OK)
@@ -542,7 +565,12 @@ struct Engine::Impl
                 next->audioState = "not_routed";
             }
 
-            auto const meta = parseFlow(readFlowDef(instance, route.flowId));
+            // A flow definition never changes for a flow id: parse it once per opened flow.
+            if (metaKey != openKey)
+            {
+                meta = parseFlow(readFlowDef(instance, route.flowId));
+                metaKey = meta.width > 0 ? openKey : std::string{};
+            }
             mxlFlowInfo info{};
             if (mxlFlowReaderGetInfo(video, &info) != MXL_STATUS_OK)
             {
@@ -552,15 +580,28 @@ struct Engine::Impl
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
-            std::uint64_t index = info.runtime.headIndex;
             mxlGrainInfo grain{};
             std::uint8_t* payload = nullptr;
-            auto status = mxlFlowReaderGetGrainNonBlocking(video, index, &grain, &payload);
+            mxlStatus status = MXL_STATUS_OK;
+            if (!next->grains.empty() && next->grains.back().index >= info.runtime.headIndex)
+            {
+                // Caught up: block until the next grain is committed instead of polling the head.
+                status = mxlFlowReaderGetGrain(video, next->grains.back().index + 1, kGrainWaitNs, &grain, &payload);
+            }
+            else
+            {
+                status = mxlFlowReaderGetGrainNonBlocking(video, info.runtime.headIndex, &grain, &payload);
+            }
             if (status == MXL_ERR_OUT_OF_RANGE_TOO_LATE)
             {
                 ++next->resyncs;
                 metrics.inc("input_resyncs_total", {{"input", std::to_string(input)}});
                 status = mxlFlowReaderGetGrainNonBlocking(video, info.runtime.headIndex, &grain, &payload);
+            }
+            if (status == MXL_ERR_TIMEOUT)
+            {
+                publishState(next);
+                continue;
             }
             if (status != MXL_STATUS_OK || payload == nullptr || (grain.flags & MXL_GRAIN_FLAG_INVALID) != 0)
             {
@@ -578,21 +619,28 @@ struct Engine::Impl
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
-            auto frame = std::make_shared<Frame422>();
             int const width = meta.width > 0 ? meta.width : 1920;
             int const height = meta.height > 0 ? meta.height : 1080;
-            frame->allocate(width, height, meta.alpha);
-            unpackV210(payload, static_cast<int>(v210RowBytes(width)), *frame);
-            if (meta.alpha)
-            {
-                auto const fillBytes = static_cast<std::size_t>(v210RowBytes(width)) * static_cast<std::size_t>(height);
-                if (grain.grainSize > fillBytes)
-                {
-                    unpackAlpha10(payload + fillBytes, static_cast<int>(alpha10RowBytes(width)), *frame);
-                }
-            }
+            int const rowBytes = static_cast<int>(v210RowBytes(width));
+            auto const fillBytes = static_cast<std::size_t>(rowBytes) * static_cast<std::size_t>(height);
+            std::uint8_t const* alphaKey = meta.alpha && grain.grainSize > fillBytes ? payload + fillBytes : nullptr;
             SavedGrain saved;
-            saved.frame = frame;
+            if (useCuda.load())
+            {
+                // Straight from the MXL grain to the GPU; the CPU neither copies nor unpacks it.
+                saved.gpu = cudaUploadFrame(payload, rowBytes, alphaKey, static_cast<int>(alpha10RowBytes(width)), width, height);
+            }
+            if (saved.gpu == nullptr)
+            {
+                auto frame = std::make_shared<Frame422>();
+                frame->allocate(width, height, meta.alpha);
+                unpackV210(payload, rowBytes, *frame);
+                if (alphaKey != nullptr)
+                {
+                    unpackAlpha10(alphaKey, static_cast<int>(alpha10RowBytes(width)), *frame);
+                }
+                saved.frame = std::move(frame);
+            }
             saved.index = grain.index;
             mxlRational rate{meta.rateNum, meta.rateDen};
             saved.origin = mxlIndexToTimestamp(&rate, grain.index);
@@ -603,17 +651,6 @@ struct Engine::Impl
             saved.interlaced = meta.interlaced;
             saved.alpha = meta.alpha;
             saved.mediaType = meta.mediaType;
-            if (useCuda)
-            {
-                auto const fillBytes = static_cast<std::size_t>(v210RowBytes(width)) * static_cast<std::size_t>(height);
-                auto const keyBytes = meta.alpha ? static_cast<std::size_t>(alpha10RowBytes(width)) * static_cast<std::size_t>(height) : 0;
-                auto buffer = std::make_shared<std::vector<std::uint8_t>>(fillBytes + keyBytes);
-                std::size_t const have = std::min(buffer->size(), static_cast<std::size_t>(grain.grainSize));
-                std::memcpy(buffer->data(), payload, have);
-                saved.packed = std::move(buffer);
-                saved.v210Bytes = static_cast<int>(fillBytes);
-                saved.alphaBytes = static_cast<int>(keyBytes);
-            }
             next->grains.push_back(saved);
             if (next->grains.size() > 4)
             {
@@ -653,13 +690,15 @@ struct Engine::Impl
             auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             double sum = 0;
             int samples = 0;
-            for (int i = 0; i < frame->width * frame->height; i += 32)
+            // On the CUDA backend the CPU has no unpacked frame: read the same luma
+            // samples from the packed grain.
+            for (int i = 0; i < width * height; i += 32)
             {
-                sum += frame->y[static_cast<std::size_t>(i)];
+                sum += saved.frame ? saved.frame->y[static_cast<std::size_t>(i)] : v210Luma(payload, rowBytes, width, i);
                 ++samples;
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
-            auto const hash = lumaHash(*frame);
+            auto const hash = saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
             bool const freeze = alarms.haveHash && hash == alarms.lastHash;
             alarms.lastHash = hash;
             alarms.haveHash = true;
@@ -700,7 +739,7 @@ struct Engine::Impl
         }
         if (video != nullptr && instance != nullptr)
         {
-            mxlReleaseFlowReader(instance, video);
+            releaseVideo();
         }
         if (audio != nullptr && instance != nullptr)
         {
@@ -709,6 +748,186 @@ struct Engine::Impl
         if (instance != nullptr)
         {
             mxlDestroyInstance(instance);
+        }
+    }
+
+    // The overlay items of one head (UMD, tally, meters, alarms, clocks), from input
+    // snapshots and runtime state only, so the overlay thread can build them.
+    std::vector<OverlayTile> overlayTiles(std::vector<Tile> const& tiles, VideoFormat const& format)
+    {
+        std::vector<OverlayTile> drawn;
+        for (auto const& tile : tiles)
+        {
+            OverlayTile item;
+            item.rect = rectToPixels(tile.rect, format.width, format.height);
+            item.umd = tile.umd && tile.content == TileContent::Input;
+            auto const current = tile.content == TileContent::Input ? snap(tile.input) : nullptr;
+            auto const viewIn = tile.content == TileContent::Input ? runtime.inputs()[static_cast<std::size_t>(tile.input - 1)] : InputView{};
+            if (tile.umdSource == UmdSource::Manual)
+            {
+                item.umdText = tile.umdText;
+            }
+            else if (tile.umdSource == UmdSource::Tsl)
+            {
+                item.umdText = viewIn.tslText.empty() ? tile.umdText : viewIn.tslText;
+            }
+            else if (current != nullptr)
+            {
+                item.umdText = current->label.empty() ? ("MV In " + std::to_string(tile.input)) : current->label;
+            }
+            item.umdPosition = tile.umdPosition;
+            item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
+            item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
+            item.tally = viewIn.tally;
+            item.tallyBorder = tile.tallyBorder;
+            item.tallyLamp = tile.tallyLamp;
+            item.umdFg = tallyRgba(item.tally);
+            item.bars = tile.audioBars;
+            item.showRms = tile.audioBarRms;
+            item.barChannels = tile.audioBarChannels;
+            item.barsPosition = tile.audioBarPosition;
+            item.zoneGreen = tile.zoneGreen;
+            item.zoneAmber = tile.zoneAmber;
+            if (current != nullptr)
+            {
+                for (int c = 0; c < 16; ++c)
+                {
+                    int const src = tile.audioBarFirst + c;
+                    item.ppmDbfs[c] = src < 16 ? current->ppm[static_cast<std::size_t>(src)] : -120;
+                    item.rmsDbfs[c] = src < 16 ? current->rms[static_cast<std::size_t>(src)] : -120;
+                    item.clip[c] = src < 16 && current->clip[static_cast<std::size_t>(src)];
+                }
+                if (tile.formatLabel && !current->grains.empty())
+                {
+                    auto const& grain = current->grains.back();
+                    item.formatText = formatLabel(grain.width, grain.height, grain.rateNum, grain.rateDen, grain.interlaced);
+                }
+                if (tile.latency && !current->grains.empty())
+                {
+                    auto const now = mxlGetTime();
+                    auto const origin = current->grains.back().origin;
+                    item.latencyText = std::to_string(static_cast<int>((now > origin ? now - origin : 0) / 1000000ull)) + " ms";
+                }
+                if (current->alarmNoSignal)
+                {
+                    item.badge = "NO SIGNAL";
+                }
+                else if (current->alarmBlack)
+                {
+                    item.badge = "BLACK";
+                }
+                else if (current->alarmFreeze)
+                {
+                    item.badge = "FREEZE";
+                }
+                else if (current->alarmClip)
+                {
+                    item.badge = "CLIP";
+                }
+                else if (current->alarmSilence)
+                {
+                    item.badge = "SILENCE";
+                }
+                else if (current->alarmFormat)
+                {
+                    item.badge = "FORMAT";
+                }
+            }
+            item.safeArea = tile.safeArea;
+            item.centre = tile.centre;
+            item.aspectMarkers = tile.aspectMarkers;
+            if (tile.content == TileContent::Label)
+            {
+                item.labelText = tile.labelText;
+            }
+            if (tile.content == TileContent::Clock)
+            {
+                item.clock = true;
+                item.analogue = tile.clockStyle == ClockStyle::Analogue;
+                std::uint64_t const clockNs = tile.clockZone == ClockZone::Utc ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) : mxlGetTime();
+                std::time_t const sec = static_cast<std::time_t>(clockNs / 1000000000ull);
+                std::tm tm{};
+                if (tile.clockZone == ClockZone::Local)
+                {
+                    localtime_r(&sec, &tm);
+                }
+                else
+                {
+                    gmtime_r(&sec, &tm);
+                }
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+                item.clockText = buf;
+                item.clockHour = tm.tm_hour;
+                item.clockMinute = tm.tm_min;
+                item.clockSecond = tm.tm_sec;
+                int rateNum = 0;
+                int rateDen = 1;
+                if (parseRateToken(tile.timecodeRate, rateNum, rateDen))
+                {
+                    item.timecodeText = formatTimecode(mxlGetTime(), rateNum, rateDen);
+                }
+            }
+            drawn.push_back(std::move(item));
+        }
+        return drawn;
+    }
+
+    std::shared_ptr<OverlayFrame const> overlayOf(int head)
+    {
+        std::lock_guard<std::mutex> lock(overlayMu);
+        return overlays[static_cast<std::size_t>(head - 1)];
+    }
+
+    // Redraws one head's overlay at MV_OVERLAY_HZ on its own thread. Drawing took up to
+    // 15 ms per redraw on the output thread and made frames late; compose now only
+    // takes the latest finished overlay.
+    void overlayMain(int head)
+    {
+        Overlay overlay;
+        std::uint64_t version = 0;
+        std::shared_ptr<OverlayFrame const> last;
+        auto due = std::chrono::steady_clock::now();
+        while (run.load())
+        {
+            auto const format = runtime.headFormat(head);
+            auto const layout = layouts.layout(runtime.headLayout(head));
+            std::vector<Tile> tiles = layout ? layout->tiles : std::vector<Tile>{};
+            std::sort(tiles.begin(), tiles.end(), [](Tile const& a, Tile const& b) { return a.z < b.z; });
+            if (overlay.width != format.width || overlay.height != format.height)
+            {
+                overlay.resize(format.width, format.height);
+            }
+            overlay.clear();
+            renderOverlay(overlay, overlayTiles(tiles, format));
+            auto frame = std::make_shared<OverlayFrame>();
+            frame->rgba = overlay.rgba;
+            frame->width = overlay.width;
+            frame->height = overlay.height;
+            frame->version = ++version;
+            if (useCuda.load())
+            {
+                // Only the areas that changed go over PCIe; compose then never waits for overlay copies.
+                std::vector<CudaRect> changes;
+                for (auto const& area : overlayChanges(last ? last->rgba : std::vector<std::uint8_t>{}, frame->rgba, frame->width, frame->height))
+                {
+                    changes.push_back({area.x, area.y, area.w, area.h});
+                }
+                frame->device = cudaUploadOverlay(last ? last->device : nullptr, frame->rgba.data(), frame->width, frame->height, changes.data(),
+                    static_cast<int>(changes.size()));
+            }
+            last = frame;
+            {
+                std::lock_guard<std::mutex> lock(overlayMu);
+                overlays[static_cast<std::size_t>(head - 1)] = std::move(frame);
+            }
+            due += std::chrono::milliseconds(1000 / std::max(1, config.overlayHz));
+            auto const now = std::chrono::steady_clock::now();
+            if (due < now)
+            {
+                due = now;
+            }
+            std::this_thread::sleep_until(due);
         }
     }
 
@@ -729,6 +948,8 @@ struct Engine::Impl
         auto openWriters = [&] {
             if (videoWriter != nullptr)
             {
+                // CUDA locks the writer's grain memory; unlock it before the writer unmaps it.
+                cudaReleaseHostMemory();
                 mxlReleaseFlowWriter(instance, videoWriter);
                 videoWriter = nullptr;
             }
@@ -768,9 +989,11 @@ struct Engine::Impl
         Frame422 canvas;
         canvas.allocate(format.width, format.height, false);
         Frame422 coveredBackground;
-        Overlay overlay;
-        overlay.resize(format.width, format.height);
-        auto lastOverlay = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+        // Bumped whenever coveredBackground is redrawn: the GPU keeps its copy until then.
+        std::uint64_t backgroundVersion = 0;
+        // The output when no grain is open, and the CPU compose target.
+        std::vector<std::uint8_t> packedOut;
+        int cudaFailures = 0;
         int previewDiv = 0;
         OutputView view = runtime.output(head);
         view.domainId = domainId;
@@ -804,7 +1027,6 @@ struct Engine::Impl
                     formatToken = format.token();
                     rate = mxlRational{format.rateNum, format.rateDen};
                     canvas.allocate(format.width, format.height, false);
-                    overlay.resize(format.width, format.height);
                     index = mxlGetCurrentIndex(&rate);
                     view.videoFlowId = videoFlow;
                     view.audioFlowId = audioWriter != nullptr ? audioFlow : "";
@@ -821,9 +1043,10 @@ struct Engine::Impl
             {
                 Placement place;
                 std::shared_ptr<Frame422> frame;
-                std::shared_ptr<std::vector<std::uint8_t>> packed;
-                int v210Bytes = 0;
-                int alphaBytes = 0;
+                // Held until compose returns, so the device frame is not recycled under it.
+                std::shared_ptr<CudaFrame const> gpu;
+                int width = 0;
+                int height = 0;
                 bool bob = false;
             };
             std::vector<Source> sources;
@@ -861,9 +1084,9 @@ struct Engine::Impl
                 if (best != nullptr)
                 {
                     source.frame = best->frame;
-                    source.packed = best->packed;
-                    source.v210Bytes = best->v210Bytes;
-                    source.alphaBytes = best->alphaBytes;
+                    source.gpu = best->gpu;
+                    source.width = best->width;
+                    source.height = best->height;
                     source.bob = best->interlaced;
                 }
                 sources.push_back(std::move(source));
@@ -872,132 +1095,19 @@ struct Engine::Impl
             {
                 coveredBackground.allocate(format.width, format.height, false);
                 coverFrame(coveredBackground, background);
+                ++backgroundVersion;
             }
-            auto const overlayNow = std::chrono::steady_clock::now();
-            if (overlayNow - lastOverlay >= std::chrono::milliseconds(1000 / std::max(1, config.overlayHz)))
-            {
-                lastOverlay = overlayNow;
-                std::vector<OverlayTile> drawn;
-                for (auto const& tile : tiles)
-                {
-                    OverlayTile item;
-                    item.rect = rectToPixels(tile.rect, format.width, format.height);
-                    item.umd = tile.umd && tile.content == TileContent::Input;
-                    auto const current = tile.content == TileContent::Input ? snap(tile.input) : nullptr;
-                    auto const viewIn = tile.content == TileContent::Input ? runtime.inputs()[static_cast<std::size_t>(tile.input - 1)] : InputView{};
-                    if (tile.umdSource == UmdSource::Manual)
-                    {
-                        item.umdText = tile.umdText;
-                    }
-                    else if (tile.umdSource == UmdSource::Tsl)
-                    {
-                        item.umdText = viewIn.tslText.empty() ? tile.umdText : viewIn.tslText;
-                    }
-                    else if (current != nullptr)
-                    {
-                        item.umdText = current->label.empty() ? ("MV In " + std::to_string(tile.input)) : current->label;
-                    }
-                    item.umdPosition = tile.umdPosition;
-                    item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
-                    item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
-                    item.tally = viewIn.tally;
-                    item.tallyBorder = tile.tallyBorder;
-                    item.tallyLamp = tile.tallyLamp;
-                    item.umdFg = tallyRgba(item.tally);
-                    item.bars = tile.audioBars;
-                    item.showRms = tile.audioBarRms;
-                    item.barChannels = tile.audioBarChannels;
-                    item.barsPosition = tile.audioBarPosition;
-                    item.zoneGreen = tile.zoneGreen;
-                    item.zoneAmber = tile.zoneAmber;
-                    if (current != nullptr)
-                    {
-                        for (int c = 0; c < 16; ++c)
-                        {
-                            int const src = tile.audioBarFirst + c;
-                            item.ppmDbfs[c] = src < 16 ? current->ppm[static_cast<std::size_t>(src)] : -120;
-                            item.rmsDbfs[c] = src < 16 ? current->rms[static_cast<std::size_t>(src)] : -120;
-                            item.clip[c] = src < 16 && current->clip[static_cast<std::size_t>(src)];
-                        }
-                        if (tile.formatLabel && !current->grains.empty())
-                        {
-                            auto const& grain = current->grains.back();
-                            item.formatText = formatLabel(grain.width, grain.height, grain.rateNum, grain.rateDen, grain.interlaced);
-                        }
-                        if (tile.latency && !current->grains.empty())
-                        {
-                            auto const now = mxlGetTime();
-                            auto const origin = current->grains.back().origin;
-                            item.latencyText = std::to_string(static_cast<int>((now > origin ? now - origin : 0) / 1000000ull)) + " ms";
-                        }
-                        if (current->alarmNoSignal)
-                        {
-                            item.badge = "NO SIGNAL";
-                        }
-                        else if (current->alarmBlack)
-                        {
-                            item.badge = "BLACK";
-                        }
-                        else if (current->alarmFreeze)
-                        {
-                            item.badge = "FREEZE";
-                        }
-                        else if (current->alarmClip)
-                        {
-                            item.badge = "CLIP";
-                        }
-                        else if (current->alarmSilence)
-                        {
-                            item.badge = "SILENCE";
-                        }
-                        else if (current->alarmFormat)
-                        {
-                            item.badge = "FORMAT";
-                        }
-                    }
-                    item.safeArea = tile.safeArea;
-                    item.centre = tile.centre;
-                    item.aspectMarkers = tile.aspectMarkers;
-                    if (tile.content == TileContent::Label)
-                    {
-                        item.labelText = tile.labelText;
-                    }
-                    if (tile.content == TileContent::Clock)
-                    {
-                        item.clock = true;
-                        item.analogue = tile.clockStyle == ClockStyle::Analogue;
-                        std::uint64_t const clockNs = tile.clockZone == ClockZone::Utc ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) : mxlGetTime();
-                        std::time_t const sec = static_cast<std::time_t>(clockNs / 1000000000ull);
-                        std::tm tm{};
-                        if (tile.clockZone == ClockZone::Local)
-                        {
-                            localtime_r(&sec, &tm);
-                        }
-                        else
-                        {
-                            gmtime_r(&sec, &tm);
-                        }
-                        char buf[32];
-                        std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
-                        item.clockText = buf;
-                        item.clockHour = tm.tm_hour;
-                        item.clockMinute = tm.tm_min;
-                        item.clockSecond = tm.tm_sec;
-                        int rateNum = 0;
-                        int rateDen = 1;
-                        if (parseRateToken(tile.timecodeRate, rateNum, rateDen))
-                        {
-                            item.timecodeText = formatTimecode(mxlGetTime(), rateNum, rateDen);
-                        }
-                    }
-                    drawn.push_back(std::move(item));
-                }
-                overlay.clear();
-                renderOverlay(overlay, drawn);
-            }
-            std::vector<std::uint8_t> packedOut(static_cast<std::size_t>(v210RowBytes(format.width)) * static_cast<std::size_t>(format.height));
+            auto const overlayFrame = overlayOf(head);
+            bool const withOverlay = overlayFrame != nullptr && overlayFrame->width == format.width && overlayFrame->height == format.height;
+            packedOut.resize(static_cast<std::size_t>(v210RowBytes(format.width)) * static_cast<std::size_t>(format.height));
+            // Compose straight into the open MXL grain; packedOut only when none is open.
+            mxlGrainInfo outGrain{};
+            std::uint8_t* outPayload = nullptr;
+            bool const grainOpen =
+                videoWriter != nullptr && mxlFlowWriterOpenGrain(videoWriter, index, &outGrain, &outPayload) == MXL_STATUS_OK && outPayload != nullptr;
+            std::uint8_t* const out = grainOpen ? outPayload : packedOut.data();
             bool cudaFrame = false;
-            if (useCuda)
+            if (useCuda.load())
             {
                 std::vector<CudaTileView> views;
                 views.reserve(sources.size());
@@ -1013,29 +1123,23 @@ struct Engine::Impl
                     viewTile.srcW = source.place.srcW;
                     viewTile.srcH = source.place.srcH;
                     viewTile.bob = source.bob;
-                    if (source.frame == nullptr)
+                    if (source.frame == nullptr && source.gpu == nullptr)
                     {
                         viewTile.solid = true;
                     }
                     else
                     {
-                        viewTile.srcWidth = source.frame->width;
-                        viewTile.srcHeight = source.frame->height;
-                        viewTile.y = source.frame->y.data();
-                        viewTile.cb = source.frame->cb.data();
-                        viewTile.cr = source.frame->cr.data();
-                        if (source.frame->hasAlpha && !source.frame->a.empty())
+                        viewTile.srcWidth = source.width;
+                        viewTile.srcHeight = source.height;
+                        viewTile.frame = source.gpu.get();
+                        if (source.frame != nullptr)
                         {
-                            viewTile.a = source.frame->a.data();
-                        }
-                        if (source.packed != nullptr && source.v210Bytes > 0 && static_cast<int>(source.packed->size()) >= source.v210Bytes)
-                        {
-                            viewTile.v210 = source.packed->data();
-                            viewTile.v210RowBytes = static_cast<int>(v210RowBytes(source.frame->width));
-                            if (source.alphaBytes > 0 && static_cast<int>(source.packed->size()) >= source.v210Bytes + source.alphaBytes)
+                            viewTile.y = source.frame->y.data();
+                            viewTile.cb = source.frame->cb.data();
+                            viewTile.cr = source.frame->cr.data();
+                            if (source.frame->hasAlpha && !source.frame->a.empty())
                             {
-                                viewTile.alpha10 = source.packed->data() + source.v210Bytes;
-                                viewTile.alphaRowBytes = static_cast<int>(alpha10RowBytes(source.frame->width));
+                                viewTile.a = source.frame->a.data();
                             }
                         }
                     }
@@ -1054,20 +1158,43 @@ struct Engine::Impl
                     desc.backgroundCr = coveredBackground.cr.data();
                     desc.backgroundWidth = coveredBackground.width;
                     desc.backgroundHeight = coveredBackground.height;
+                    desc.backgroundVersion = backgroundVersion;
                 }
                 desc.tiles = views.data();
                 desc.tileCount = static_cast<int>(views.size());
-                desc.rgba = overlay.rgba.data();
+                desc.rgba = withOverlay ? overlayFrame->rgba.data() : nullptr;
                 desc.rgbaStride = format.width * 4;
-                desc.v210Out = packedOut.data();
+                desc.rgbaVersion = withOverlay ? overlayFrame->version : 0;
+                desc.overlay = withOverlay ? overlayFrame->device.get() : nullptr;
+                desc.v210Out = out;
                 desc.v210RowBytes = static_cast<int>(v210RowBytes(format.width));
+                desc.v210OutIsGrain = grainOpen;
+                CudaComposeTiming timing;
+                desc.timing = &timing;
                 cudaFrame = cudaComposeFrame(desc) == CudaComposeStatus::Ok;
-                if (!cudaFrame)
+                if (cudaFrame)
+                {
+                    cudaFailures = 0;
+                    std::pair<char const*, float> const stages[] = {{"background", timing.background}, {"tiles", timing.tiles}, {"overlay", timing.overlay},
+                        {"pack", timing.pack}, {"download", timing.download}};
+                    for (auto const& [stage, ms] : stages)
+                    {
+                        metrics.observe("compose_gpu_seconds", {{"head", std::to_string(head)}, {"stage", stage}}, ms / 1000.0);
+                    }
+                }
+                else
                 {
                     static std::atomic<int> logged{0};
                     if (logged.fetch_add(1) == 0)
                     {
                         logError("cuda_compose_fallback", {{"head", std::to_string(head)}});
+                    }
+                    // Inputs on the GPU have no CPU copy, so the CPU fallback shows them
+                    // black. If CUDA keeps failing (about half a second), the inputs go
+                    // back to unpacking on the CPU.
+                    if (++cudaFailures >= 25 && useCuda.exchange(false))
+                    {
+                        logError("cuda_disabled", {{"head", std::to_string(head)}});
                     }
                 }
             }
@@ -1108,16 +1235,16 @@ struct Engine::Impl
                     auto piece = job.get();
                     blit(canvas, piece.dst, piece.image);
                 }
-                blendStraightRgba(canvas, overlay.rgba.data(), format.width * 4);
-                packV210(canvas, packedOut.data(), static_cast<int>(v210RowBytes(format.width)));
+                if (withOverlay)
+                {
+                    blendStraightRgba(canvas, overlayFrame->rgba.data(), format.width * 4);
+                }
+                packV210(canvas, out, static_cast<int>(v210RowBytes(format.width)));
             }
             if (videoWriter != nullptr)
             {
-                mxlGrainInfo outGrain{};
-                std::uint8_t* outPayload = nullptr;
-                if (mxlFlowWriterOpenGrain(videoWriter, index, &outGrain, &outPayload) == MXL_STATUS_OK && outPayload != nullptr)
+                if (grainOpen)
                 {
-                    std::memcpy(outPayload, packedOut.data(), packedOut.size());
                     outGrain.validSlices = outGrain.totalSlices;
                     outGrain.flags = 0;
                     mxlFlowWriterCommitGrain(videoWriter, &outGrain);
@@ -1198,16 +1325,16 @@ struct Engine::Impl
             if (head == 1 && ++previewDiv >= std::max(1, format.rateNum / std::max(1, format.rateDen) / std::max(1, config.previewFps)))
             {
                 previewDiv = 0;
-                if (cudaFrame)
-                {
-                    unpackV210(packedOut.data(), static_cast<int>(v210RowBytes(format.width)), canvas);
-                }
-                runtime.setPreview(encodePreviewJpeg(canvas, config.previewWidth, 60));
+                // CUDA: sample the written grain at preview size; a full unpack of the
+                // output on this thread made frames late.
+                runtime.setPreview(cudaFrame ? encodePreviewJpeg(out, static_cast<int>(v210RowBytes(format.width)), format.width, format.height, config.previewWidth, 60)
+                                             : encodePreviewJpeg(canvas, config.previewWidth, 60));
             }
             ++index;
         }
         if (videoWriter != nullptr)
         {
+            cudaReleaseHostMemory();
             mxlReleaseFlowWriter(instance, videoWriter);
         }
         if (audioWriter != nullptr)
@@ -1525,8 +1652,10 @@ void Engine::start()
     {
         impl_->threads.emplace_back([this, input] { impl_->readerMain(input); });
     }
+    impl_->overlays.assign(static_cast<std::size_t>(impl_->config.outputs), nullptr);
     for (int head = 1; head <= impl_->config.outputs; ++head)
     {
+        impl_->threads.emplace_back([this, head] { impl_->overlayMain(head); });
         impl_->threads.emplace_back([this, head] { impl_->headMain(head); });
     }
     if (impl_->config.tslEnable)
