@@ -1707,6 +1707,24 @@ void Engine::setRoute(int input, bool video, bool enable, std::string domainId, 
     impl_->persistRoutes();
 }
 
+std::vector<RouteState> Engine::routes() const
+{
+    std::vector<RouteState> out;
+    std::lock_guard lock{impl_->routeMu};
+    for (int i = 1; i <= impl_->config.maxInputs; ++i)
+    {
+        for (bool video : {true, false})
+        {
+            auto const& route = video ? impl_->videoRoutes[static_cast<std::size_t>(i - 1)] : impl_->audioRoutes[static_cast<std::size_t>(i - 1)];
+            if (route.enable || !route.flowId.empty())
+            {
+                out.push_back(RouteState{i, video, route.enable, route.domainId, route.flowId, route.senderId});
+            }
+        }
+    }
+    return out;
+}
+
 void Engine::removeOwnDomain()
 {
     if (impl_ == nullptr || impl_->config.outputDomainDir.empty() || isMirrorDomain(impl_->config.outputDomainDir))

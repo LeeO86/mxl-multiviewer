@@ -111,7 +111,7 @@ A raster or rate change changes the flow token, which mints a new flow id. The s
 - BCP-007-03 `transport_params[0]` carries `mxl_domain_id` and `mxl_flow_id`. No transport file.
 - An activation is accepted when the ids are UUIDs even if the domain or flow is not on disk yet. Non-UUID values are rejected with the IS-05 error response.
 - `master_enable: false` stops that leg. State `not_routed`. The other leg of the same input is independent. Video and audio MAY come from different senders.
-- Each activation is written to `<MV_STATE_DIR>/routes.json`. The next start restores those routes into the readers before the first frame. The IS-05 active document is built again with the receivers inactive; the following IS-05 PATCH is what republishes `sender_id` and `master_enable` on the node. The file is the media route that survives the restart.
+- Each activation is written to `<MV_STATE_DIR>/routes.json`. The next start restores those routes into the readers before the first frame. The restored route is also written into the receiver's IS-05 active and staged documents (`master_enable`, `sender_id`, `mxl_domain_id`, `mxl_flow_id`) and its IS-04 subscription, so a controller sees the connection the reader follows.
 - On every activation the IS-04 receiver `subscription` (`sender_id`, `active`) is updated.
 - Senders' active transport params carry this process's output domain id and the current flow id. `master_enable` is true while the head is writing.
 - Output receivers are not exposed. Inputs are not senders.
@@ -495,7 +495,7 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 ## 14. Testing
 
 - Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing and a TSL 3.1 datagram, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
-- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

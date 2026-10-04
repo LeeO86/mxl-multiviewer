@@ -3,7 +3,7 @@
 # can share a host MXL root without a pod IP.
 services:
   multiviewer:
-    image: ghcr.io/leeo86/mxl-multiviewer:1.1.0
+    image: ghcr.io/leeo86/mxl-multiviewer:1.1.1
     network_mode: host
     user: "1000:1000"
     volumes:

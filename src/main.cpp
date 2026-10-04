@@ -110,6 +110,12 @@ int main(int argc, char** argv)
         {
             node.start();
             engine.start();
+            // Routes restored from routes.json; outside the engine's route lock, because
+            // an IS-05 activation takes the NMOS model lock first and the route lock second.
+            for (auto const& route : engine.routes())
+            {
+                node.restoreRoute(route.input, route.video, route.enable, route.domainId, route.flowId, route.senderId);
+            }
             http.start(config.webPort, [&](mv::HttpRequest const& request) {
                 if (!config.webEnable && (request.path == "/" || request.path == "/index.html" || request.path == "/preview.jpg"))
                 {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+### Behaviour
+
+- After a restart, a route restored from `routes.json` is also the receiver's IS-05 `active` and `staged` document (`master_enable`, `sender_id`, `mxl_domain_id`, `mxl_flow_id`) and its IS-04 subscription. The input was routed, but IS-05 said inactive, so a controller saw a disconnected receiver (platform guideline G9).
+
 ## 1.1.0
 
 ### Performance
