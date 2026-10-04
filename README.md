@@ -159,7 +159,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.0.0
+  ghcr.io/leeo86/mxl-multiviewer:1.1.0
 ```
 
 `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
