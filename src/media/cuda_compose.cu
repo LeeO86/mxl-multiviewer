@@ -1,14 +1,120 @@
 #include "media/cuda_compose.hpp"
+#include "media/frame.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace mv
 {
+// The grain as it is in MXL (packed v210, optional packed 10-bit key). The scaler reads
+// the samples it needs in place, so a 4×4 tile touches a sixteenth of the frame instead
+// of every input being unpacked in full.
+struct CudaFrame
+{
+    int width = 0;
+    int height = 0;
+    bool alpha = false;
+    std::uint8_t* v210 = nullptr;
+    int v210RowBytes = 0;
+    std::uint8_t* alpha10 = nullptr;
+    int alphaRowBytes = 0;
+    // Recorded after the upload; compose waits on it.
+    cudaEvent_t ready = nullptr;
+};
+
+struct CudaOverlay
+{
+    int width = 0;
+    int height = 0;
+    std::uint8_t* rgba = nullptr;
+    cudaEvent_t ready = nullptr;
+};
+
 namespace
 {
 constexpr int kMaxTiles = 128;
+
+enum PlaneKind
+{
+    kSamples,
+    kV210Luma,
+    kV210Cb,
+    kV210Cr,
+    kAlpha10
+};
+
+// One 10-bit plane for the scaler: 16-bit samples, or read in place from packed v210
+// or packed 10-bit alpha.
+struct Plane
+{
+    unsigned short const* samples = nullptr;
+    std::uint8_t const* packed = nullptr;
+    int stride = 0;
+    int kind = kSamples;
+
+    __host__ __device__ bool valid() const
+    {
+        return samples != nullptr || packed != nullptr;
+    }
+
+    __device__ unsigned short at(int x, int y) const
+    {
+        if (kind == kSamples)
+        {
+            return samples[y * stride + x];
+        }
+        auto const* words = reinterpret_cast<unsigned const*>(packed + static_cast<std::size_t>(y) * static_cast<std::size_t>(stride));
+        int word = 0;
+        int shift = 0;
+        if (kind == kV210Luma)
+        {
+            // Y0..Y5 of a 6-pixel group: word 0 bits 10, word 1 bits 0 and 20, word 2 bits 10, word 3 bits 0 and 20.
+            int const i = x % 6;
+            word = (x / 6) * 4 + (i == 0 ? 0 : i <= 2 ? 1 : i == 3 ? 2 : 3);
+            shift = (i == 1 || i == 4) ? 0 : (i == 0 || i == 3) ? 10 : 20;
+        }
+        else if (kind == kV210Cb)
+        {
+            int const j = x % 3;
+            word = (x / 3) * 4 + j;
+            shift = j * 10;
+        }
+        else if (kind == kV210Cr)
+        {
+            int const j = x % 3;
+            word = (x / 3) * 4 + (j == 0 ? 0 : j + 1);
+            shift = j == 0 ? 20 : j == 1 ? 0 : 10;
+        }
+        else
+        {
+            word = x / 3;
+            shift = (x % 3) * 10;
+        }
+        return static_cast<unsigned short>((words[word] >> shift) & 0x3ffu);
+    }
+};
+
+Plane samplesPlane(unsigned short const* samples, int stride)
+{
+    Plane plane;
+    plane.samples = samples;
+    plane.stride = stride;
+    return plane;
+}
+
+Plane packedPlane(std::uint8_t const* packed, int rowBytes, int kind)
+{
+    Plane plane;
+    plane.packed = packed;
+    plane.stride = rowBytes;
+    plane.kind = kind;
+    return plane;
+}
 
 __device__ int clampIndex(int v, int limit)
 {
@@ -40,7 +146,7 @@ __device__ unsigned short round10(float v)
     return static_cast<unsigned short>(v + 0.5f);
 }
 
-__device__ unsigned short bilerp(unsigned short const* plane, int stride, int width, int height, float x, float y)
+__device__ unsigned short bilerp(Plane const& plane, int width, int height, float x, float y)
 {
     if (width <= 1)
     {
@@ -72,16 +178,16 @@ __device__ unsigned short bilerp(unsigned short const* plane, int stride, int wi
     int const y1 = clampIndex(y0 + 1, height);
     float const fx = x - static_cast<float>(x0);
     float const fy = y - static_cast<float>(y0);
-    float const v00 = plane[y0 * stride + x0];
-    float const v10 = plane[y0 * stride + x1];
-    float const v01 = plane[y1 * stride + x0];
-    float const v11 = plane[y1 * stride + x1];
+    float const v00 = plane.at(x0, y0);
+    float const v10 = plane.at(x1, y0);
+    float const v01 = plane.at(x0, y1);
+    float const v11 = plane.at(x1, y1);
     float const v0 = v00 + (v10 - v00) * fx;
     float const v1 = v01 + (v11 - v01) * fx;
     return round10(v0 + (v1 - v0) * fy);
 }
 
-__device__ unsigned short bilerpBob(unsigned short const* plane, int stride, int width, int height, float x, float y)
+__device__ unsigned short bilerpBob(Plane const& plane, int width, int height, float x, float y)
 {
     if (width <= 1)
     {
@@ -123,18 +229,13 @@ __device__ unsigned short bilerpBob(unsigned short const* plane, int stride, int
     int const x0 = static_cast<int>(x);
     int const x1 = clampIndex(x0 + 1, width);
     float const fx = x - static_cast<float>(x0);
-    float const v00 = plane[y0 * stride + x0];
-    float const v10 = plane[y0 * stride + x1];
-    float const v01 = plane[y1 * stride + x0];
-    float const v11 = plane[y1 * stride + x1];
+    float const v00 = plane.at(x0, y0);
+    float const v10 = plane.at(x1, y0);
+    float const v01 = plane.at(x0, y1);
+    float const v11 = plane.at(x1, y1);
     float const v0 = v00 + (v10 - v00) * fx;
     float const v1 = v01 + (v11 - v01) * fx;
     return round10(v0 + (v1 - v0) * fy);
-}
-
-__device__ unsigned sample10(unsigned word, int shift)
-{
-    return (word >> shift) & 0x3ffu;
 }
 
 __global__ void fill422Kernel(unsigned short* y, unsigned short* cb, unsigned short* cr, int width, int height, unsigned short yv, unsigned short cbv, unsigned short crv)
@@ -153,47 +254,6 @@ __global__ void fill422Kernel(unsigned short* y, unsigned short* cb, unsigned sh
     }
 }
 
-__global__ void unpackV210Kernel(std::uint8_t const* src, int rowBytes, int width, int height, unsigned short* y, unsigned short* cb, unsigned short* cr)
-{
-    int const pixel = blockIdx.x * blockDim.x + threadIdx.x;
-    int const row = blockIdx.y;
-    if (row >= height || pixel >= width)
-    {
-        return;
-    }
-    int const group = pixel / 6;
-    int const within = pixel % 6;
-    unsigned const* words = reinterpret_cast<unsigned const*>(src + row * rowBytes + group * 16);
-    unsigned const w0 = words[0];
-    unsigned const w1 = words[1];
-    unsigned const w2 = words[2];
-    unsigned const w3 = words[3];
-    unsigned const ys[6] = {sample10(w0, 10), sample10(w1, 0), sample10(w1, 20), sample10(w2, 10), sample10(w3, 0), sample10(w3, 20)};
-    y[row * width + pixel] = static_cast<unsigned short>(ys[within]);
-    if ((pixel & 1) == 0)
-    {
-        unsigned const cbs[3] = {sample10(w0, 0), sample10(w1, 10), sample10(w2, 20)};
-        unsigned const crs[3] = {sample10(w0, 20), sample10(w2, 0), sample10(w3, 10)};
-        int const c = pixel / 2;
-        cb[row * (width / 2) + c] = static_cast<unsigned short>(cbs[within / 2]);
-        cr[row * (width / 2) + c] = static_cast<unsigned short>(crs[within / 2]);
-    }
-}
-
-__global__ void unpackAlphaKernel(std::uint8_t const* src, int rowBytes, int width, int height, unsigned short* a)
-{
-    int const x = blockIdx.x * blockDim.x + threadIdx.x;
-    int const row = blockIdx.y;
-    if (row >= height || x >= width)
-    {
-        return;
-    }
-    int const wordIndex = x / 3;
-    int const shift = (x % 3) * 10;
-    unsigned const word = *reinterpret_cast<unsigned const*>(src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes) + static_cast<std::size_t>(wordIndex) * 4u);
-    a[row * width + x] = static_cast<unsigned short>(sample10(word, shift));
-}
-
 struct DevScale
 {
     unsigned short* planeY;
@@ -208,10 +268,10 @@ struct DevScale
     float windowY;
     float windowW;
     float windowH;
-    unsigned short const* inY;
-    unsigned short const* inCb;
-    unsigned short const* inCr;
-    unsigned short const* inA;
+    Plane inY;
+    Plane inCb;
+    Plane inCr;
+    Plane inA;
     int inW;
     int inH;
     int bob;
@@ -236,7 +296,7 @@ __global__ void scaleTileKernel(DevScale args)
         return;
     }
     int const cw = args.canvasW / 2;
-    if (args.solid || args.inY == nullptr || args.inW <= 0 || args.inH <= 0 || args.spanW <= 0 || args.spanH <= 0)
+    if (args.solid || !args.inY.valid() || args.inW <= 0 || args.inH <= 0 || args.spanW <= 0 || args.spanH <= 0)
     {
         args.planeY[y * args.canvasW + x] = args.solidY;
         if ((x & 1) == 0 && x / 2 < cw)
@@ -248,11 +308,11 @@ __global__ void scaleTileKernel(DevScale args)
     }
     float const sy = args.windowY + (static_cast<float>(dy) + 0.5f) * args.windowH / static_cast<float>(args.spanH) - 0.5f;
     float const sx = args.windowX + (static_cast<float>(dx) + 0.5f) * args.windowW / static_cast<float>(args.spanW) - 0.5f;
-    unsigned short ySample = args.bob ? bilerpBob(args.inY, args.inW, args.inW, args.inH, sx, sy) : bilerp(args.inY, args.inW, args.inW, args.inH, sx, sy);
+    unsigned short ySample = args.bob ? bilerpBob(args.inY, args.inW, args.inH, sx, sy) : bilerp(args.inY, args.inW, args.inH, sx, sy);
     unsigned short alpha = 1023;
-    if (args.inA != nullptr)
+    if (args.inA.valid())
     {
-        alpha = args.bob ? bilerpBob(args.inA, args.inW, args.inW, args.inH, sx, sy) : bilerp(args.inA, args.inW, args.inW, args.inH, sx, sy);
+        alpha = args.bob ? bilerpBob(args.inA, args.inW, args.inH, sx, sy) : bilerp(args.inA, args.inW, args.inH, sx, sy);
     }
     unsigned short& outY = args.planeY[y * args.canvasW + x];
     if (alpha >= 1023)
@@ -267,8 +327,8 @@ __global__ void scaleTileKernel(DevScale args)
     {
         int const scw = args.inW / 2;
         float const cx = args.windowX * 0.5f + (static_cast<float>(dx / 2) + 0.5f) * (args.windowW * 0.5f) / static_cast<float>(args.spanW > 1 ? args.spanW / 2 : 1) - 0.5f;
-        unsigned short cb = args.bob ? bilerpBob(args.inCb, scw, scw, args.inH, cx, sy) : bilerp(args.inCb, scw, scw, args.inH, cx, sy);
-        unsigned short cr = args.bob ? bilerpBob(args.inCr, scw, scw, args.inH, cx, sy) : bilerp(args.inCr, scw, scw, args.inH, cx, sy);
+        unsigned short cb = args.bob ? bilerpBob(args.inCb, scw, args.inH, cx, sy) : bilerp(args.inCb, scw, args.inH, cx, sy);
+        unsigned short cr = args.bob ? bilerpBob(args.inCr, scw, args.inH, cx, sy) : bilerp(args.inCr, scw, args.inH, cx, sy);
         if (alpha < 1023 && alpha > 0)
         {
             unsigned short& outCb = args.planeCb[y * cw + x / 2];
@@ -441,14 +501,335 @@ struct Mem
     }
 };
 
+bool readOnlyLockSupported()
+{
+    static int const supported = [] {
+        int device = 0;
+        int value = 0;
+        if (cudaGetDevice(&device) != cudaSuccess || cudaDeviceGetAttribute(&value, cudaDevAttrHostRegisterReadOnlySupported, device) != cudaSuccess)
+        {
+            cudaGetLastError();
+            return 0;
+        }
+        return value;
+    }();
+    return supported != 0;
+}
+
+// MXL grain memory this thread page-locked. A copy from or to locked memory is a
+// direct DMA; pageable memory goes through a CPU copy first. Each grain is its own
+// mapping that lives as long as the reader or writer, so it is locked once.
+struct HostMemory
+{
+    std::unordered_map<void const*, std::size_t> locked;
+    std::unordered_set<void const*> shared;
+    std::unordered_set<void const*> refused;
+
+    HostMemory() = default;
+    HostMemory(HostMemory const&) = delete;
+    HostMemory& operator=(HostMemory const&) = delete;
+
+    ~HostMemory()
+    {
+        release();
+    }
+
+    bool ensure(void const* ptr, std::size_t bytes, bool readOnly)
+    {
+        auto const it = locked.find(ptr);
+        if (it != locked.end() && it->second >= bytes)
+        {
+            return true;
+        }
+        if (shared.count(ptr) != 0)
+        {
+            return true;
+        }
+        if (refused.count(ptr) != 0)
+        {
+            return false;
+        }
+        if (it != locked.end())
+        {
+            cudaHostUnregister(const_cast<void*>(ptr));
+            locked.erase(it);
+        }
+        unsigned flags = cudaHostRegisterPortable;
+        if (readOnly && readOnlyLockSupported())
+        {
+            flags |= cudaHostRegisterReadOnly;
+        }
+        cudaError_t const err = cudaHostRegister(const_cast<void*>(ptr), bytes, flags);
+        if (err == cudaSuccess)
+        {
+            locked.emplace(ptr, bytes);
+            return true;
+        }
+        cudaGetLastError();
+        if (err == cudaErrorHostMemoryAlreadyRegistered)
+        {
+            // Locked by another thread; that thread also unlocks it.
+            shared.insert(ptr);
+            return true;
+        }
+        refused.insert(ptr);
+        return false;
+    }
+
+    void release()
+    {
+        for (auto const& entry : locked)
+        {
+            cudaHostUnregister(const_cast<void*>(entry.first));
+        }
+        locked.clear();
+        shared.clear();
+        refused.clear();
+    }
+};
+
+HostMemory& hostMemory()
+{
+    thread_local HostMemory value;
+    return value;
+}
+
+// Device frames are recycled: cudaMalloc per grain would serialise the device.
+class FramePool
+{
+public:
+    std::shared_ptr<CudaFrame const> acquire(int width, int height, bool alpha, cudaStream_t stream)
+    {
+        CudaFrame* frame = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            for (auto it = free_.begin(); it != free_.end(); ++it)
+            {
+                if ((*it)->width == width && (*it)->height == height && (*it)->alpha == alpha)
+                {
+                    frame = *it;
+                    free_.erase(it);
+                    break;
+                }
+            }
+        }
+        if (frame != nullptr)
+        {
+            // The upload that last wrote this frame may still be queued on another stream.
+            if (cudaStreamWaitEvent(stream, frame->ready, 0) != cudaSuccess)
+            {
+                destroy(frame);
+                return nullptr;
+            }
+        }
+        else
+        {
+            frame = create(width, height, alpha);
+            if (frame == nullptr)
+            {
+                return nullptr;
+            }
+        }
+        return std::shared_ptr<CudaFrame const>(frame, [this](CudaFrame const* done) { recycle(const_cast<CudaFrame*>(done)); });
+    }
+
+private:
+    static constexpr std::size_t kMaxFree = 64;
+    std::mutex mu_;
+    std::vector<CudaFrame*> free_;
+
+    static CudaFrame* create(int width, int height, bool alpha)
+    {
+        auto* frame = new CudaFrame;
+        frame->width = width;
+        frame->height = height;
+        frame->alpha = alpha;
+        frame->v210RowBytes = static_cast<int>(v210RowBytes(width));
+        frame->alphaRowBytes = alpha ? static_cast<int>(alpha10RowBytes(width)) : 0;
+        std::size_t const fill = static_cast<std::size_t>(frame->v210RowBytes) * static_cast<std::size_t>(height);
+        std::size_t const key = static_cast<std::size_t>(frame->alphaRowBytes) * static_cast<std::size_t>(height);
+        void* base = nullptr;
+        if (cudaMalloc(&base, fill + key) != cudaSuccess || cudaEventCreateWithFlags(&frame->ready, cudaEventDisableTiming) != cudaSuccess)
+        {
+            cudaGetLastError();
+            if (base != nullptr)
+            {
+                cudaFree(base);
+            }
+            delete frame;
+            return nullptr;
+        }
+        frame->v210 = static_cast<std::uint8_t*>(base);
+        frame->alpha10 = alpha ? frame->v210 + fill : nullptr;
+        return frame;
+    }
+
+    static void destroy(CudaFrame* frame)
+    {
+        cudaFree(frame->v210);
+        cudaEventDestroy(frame->ready);
+        delete frame;
+    }
+
+    void recycle(CudaFrame* frame)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (free_.size() < kMaxFree)
+            {
+                free_.push_back(frame);
+                return;
+            }
+        }
+        destroy(frame);
+    }
+};
+
+FramePool& framePool()
+{
+    // Never destroyed: frames can come back while static destruction runs.
+    static auto* pool = new FramePool;
+    return *pool;
+}
+
+// Device overlays are recycled like frames; a few per head are alive at a time.
+class OverlayPool
+{
+public:
+    std::shared_ptr<CudaOverlay const> acquire(int width, int height, cudaStream_t stream)
+    {
+        CudaOverlay* overlay = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            for (auto it = free_.begin(); it != free_.end(); ++it)
+            {
+                if ((*it)->width == width && (*it)->height == height)
+                {
+                    overlay = *it;
+                    free_.erase(it);
+                    break;
+                }
+            }
+        }
+        if (overlay != nullptr)
+        {
+            if (cudaStreamWaitEvent(stream, overlay->ready, 0) != cudaSuccess)
+            {
+                destroy(overlay);
+                return nullptr;
+            }
+        }
+        else
+        {
+            overlay = new CudaOverlay;
+            overlay->width = width;
+            overlay->height = height;
+            if (cudaMalloc(reinterpret_cast<void**>(&overlay->rgba), static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u) != cudaSuccess ||
+                cudaEventCreateWithFlags(&overlay->ready, cudaEventDisableTiming) != cudaSuccess)
+            {
+                cudaGetLastError();
+                destroy(overlay);
+                return nullptr;
+            }
+        }
+        return std::shared_ptr<CudaOverlay const>(overlay, [this](CudaOverlay const* done) { recycle(const_cast<CudaOverlay*>(done)); });
+    }
+
+private:
+    static constexpr std::size_t kMaxFree = 8;
+    std::mutex mu_;
+    std::vector<CudaOverlay*> free_;
+
+    static void destroy(CudaOverlay* overlay)
+    {
+        if (overlay->rgba != nullptr)
+        {
+            cudaFree(overlay->rgba);
+        }
+        if (overlay->ready != nullptr)
+        {
+            cudaEventDestroy(overlay->ready);
+        }
+        delete overlay;
+    }
+
+    void recycle(CudaOverlay* overlay)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (free_.size() < kMaxFree)
+            {
+                free_.push_back(overlay);
+                return;
+            }
+        }
+        destroy(overlay);
+    }
+};
+
+OverlayPool& overlayPool()
+{
+    static auto* pool = new OverlayPool;
+    return *pool;
+}
+
+// Host to device on `stream`: straight from locked memory, else through a pinned
+// staging buffer (the CPU copy first waits for the previous use of that buffer).
+bool copyToDevice(cudaStream_t stream, void* device, void const* host, std::size_t bytes, Mem& staging)
+{
+    if (hostMemory().ensure(host, bytes, true))
+    {
+        return cudaMemcpyAsync(device, host, bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess;
+    }
+    if (cudaStreamSynchronize(stream) != cudaSuccess)
+    {
+        return false;
+    }
+    void* pin = staging.ensure(bytes, true);
+    if (pin == nullptr)
+    {
+        return false;
+    }
+    std::memcpy(pin, host, bytes);
+    return cudaMemcpyAsync(device, pin, bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess;
+}
+
+// One per input thread: its grains upload on its own stream, so inputs
+// copy in parallel and never wait for compose.
+struct Uploader
+{
+    bool ready = false;
+    cudaStream_t stream = nullptr;
+    Mem staging;
+    Mem stagingAlpha;
+
+    bool open()
+    {
+        if (ready)
+        {
+            return true;
+        }
+        if (cudaSetDevice(0) != cudaSuccess || cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess)
+        {
+            return false;
+        }
+        ready = true;
+        return true;
+    }
+};
+
+Uploader& uploader()
+{
+    thread_local Uploader value;
+    return value;
+}
+
 struct Slot
 {
     Mem y;
     Mem cb;
     Mem cr;
     Mem a;
-    Mem packed;
-    Mem alpha;
 };
 
 struct Session
@@ -461,12 +842,19 @@ struct Session
     Mem canvasY;
     Mem canvasCb;
     Mem canvasCr;
+    Mem backgroundY;
+    Mem backgroundCb;
+    Mem backgroundCr;
+    std::uint64_t backgroundVersion = 0;
     Mem rgba;
+    std::uint64_t rgbaVersion = 0;
     Mem v210;
     Mem pin[2];
     Mem outPin;
     Slot slot[2];
     bool used[2] = {};
+    // Stage boundaries for CudaComposeTiming: start, background, tiles, overlay, pack, download.
+    cudaEvent_t mark[6] = {};
 
     bool open()
     {
@@ -486,6 +874,13 @@ struct Session
         {
             if (cudaEventCreateWithFlags(&uploaded[i], cudaEventDisableTiming) != cudaSuccess ||
                 cudaEventCreateWithFlags(&computed[i], cudaEventDisableTiming) != cudaSuccess)
+            {
+                return false;
+            }
+        }
+        for (auto& event : mark)
+        {
+            if (cudaEventCreate(&event) != cudaSuccess)
             {
                 return false;
             }
@@ -603,13 +998,33 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
     }
     bool const fullBackground = desc.backgroundY != nullptr && desc.backgroundCb != nullptr && desc.backgroundCr != nullptr && desc.backgroundWidth == desc.width &&
                                  desc.backgroundHeight == desc.height;
+    cudaEventRecord(gpu.mark[0], gpu.compute);
     if (fullBackground)
     {
-        if (!upload(gpu, 0, dstY, desc.backgroundY, yBytes) || !upload(gpu, 0, dstCb, desc.backgroundCb, cBytes) || !upload(gpu, 0, dstCr, desc.backgroundCr, cBytes))
+        void const* before = gpu.backgroundY.ptr;
+        auto* bgY = gpu.backgroundY.ensure(yBytes, false);
+        auto* bgCb = gpu.backgroundCb.ensure(cBytes, false);
+        auto* bgCr = gpu.backgroundCr.ensure(cBytes, false);
+        if (bgY == nullptr || bgCb == nullptr || bgCr == nullptr)
         {
             return CudaComposeStatus::Failed;
         }
-        if (cudaEventRecord(gpu.uploaded[0], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[0], 0) != cudaSuccess)
+        // The background only changes with the configuration: keep it on the device.
+        if (desc.backgroundVersion == 0 || desc.backgroundVersion != gpu.backgroundVersion || bgY != before)
+        {
+            if (!upload(gpu, 0, bgY, desc.backgroundY, yBytes) || !upload(gpu, 0, bgCb, desc.backgroundCb, cBytes) || !upload(gpu, 0, bgCr, desc.backgroundCr, cBytes))
+            {
+                return CudaComposeStatus::Failed;
+            }
+            if (cudaEventRecord(gpu.uploaded[0], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[0], 0) != cudaSuccess)
+            {
+                return CudaComposeStatus::Failed;
+            }
+            gpu.backgroundVersion = desc.backgroundVersion;
+        }
+        if (cudaMemcpyAsync(dstY, bgY, yBytes, cudaMemcpyDeviceToDevice, gpu.compute) != cudaSuccess ||
+            cudaMemcpyAsync(dstCb, bgCb, cBytes, cudaMemcpyDeviceToDevice, gpu.compute) != cudaSuccess ||
+            cudaMemcpyAsync(dstCr, bgCr, cBytes, cudaMemcpyDeviceToDevice, gpu.compute) != cudaSuccess)
         {
             return CudaComposeStatus::Failed;
         }
@@ -622,6 +1037,7 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
             return CudaComposeStatus::Failed;
         }
     }
+    cudaEventRecord(gpu.mark[1], gpu.compute);
     gpu.used[0] = false;
     gpu.used[1] = false;
     for (int i = 0; i < desc.tileCount; ++i)
@@ -644,12 +1060,34 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         args.inW = tile.srcWidth;
         args.inH = tile.srcHeight;
         args.bob = tile.bob ? 1 : 0;
-        args.solid = tile.solid || (tile.y == nullptr && tile.v210 == nullptr) ? 1 : 0;
+        args.solid = tile.solid || (tile.y == nullptr && tile.frame == nullptr) ? 1 : 0;
         args.solidY = desc.bgY;
         args.solidCb = desc.bgCb;
         args.solidCr = desc.bgCr;
         if (args.solid)
         {
+            if (!launchScale(gpu, args))
+            {
+                return CudaComposeStatus::Failed;
+            }
+            continue;
+        }
+        if (tile.frame != nullptr)
+        {
+            // Already on the device: wait for its upload on the GPU, not on the CPU.
+            if (cudaStreamWaitEvent(gpu.compute, tile.frame->ready, 0) != cudaSuccess)
+            {
+                return CudaComposeStatus::Failed;
+            }
+            args.inY = packedPlane(tile.frame->v210, tile.frame->v210RowBytes, kV210Luma);
+            args.inCb = packedPlane(tile.frame->v210, tile.frame->v210RowBytes, kV210Cb);
+            args.inCr = packedPlane(tile.frame->v210, tile.frame->v210RowBytes, kV210Cr);
+            if (tile.frame->alpha)
+            {
+                args.inA = packedPlane(tile.frame->alpha10, tile.frame->alphaRowBytes, kAlpha10);
+            }
+            args.inW = tile.frame->width;
+            args.inH = tile.frame->height;
             if (!launchScale(gpu, args))
             {
                 return CudaComposeStatus::Failed;
@@ -672,65 +1110,31 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         {
             return CudaComposeStatus::Failed;
         }
-        if (tile.v210 != nullptr && tile.v210RowBytes > 0)
+        // A host frame (the CPU unpacked it because its upload failed): copy the planes.
+        if (tile.cb == nullptr || tile.cr == nullptr)
         {
-            std::size_t const packedBytes = static_cast<std::size_t>(tile.v210RowBytes) * static_cast<std::size_t>(tile.srcHeight);
-            auto* packed = gpu.slot[slot].packed.ensure(packedBytes, false);
-            if (packed == nullptr || !upload(gpu, slot, packed, tile.v210, packedBytes))
-            {
-                return CudaComposeStatus::Failed;
-            }
-            if (cudaEventRecord(gpu.uploaded[slot], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[slot], 0) != cudaSuccess)
-            {
-                return CudaComposeStatus::Failed;
-            }
-            dim3 const grid((tile.srcWidth + 255) / 256, tile.srcHeight);
-            unpackV210Kernel<<<grid, 256, 0, gpu.compute>>>(static_cast<std::uint8_t*>(packed), tile.v210RowBytes, tile.srcWidth, tile.srcHeight, srcY, srcCb, srcCr);
-            if (tile.alpha10 != nullptr && tile.alphaRowBytes > 0)
-            {
-                std::size_t const alphaBytes = static_cast<std::size_t>(tile.alphaRowBytes) * static_cast<std::size_t>(tile.srcHeight);
-                auto* alphaPacked = gpu.slot[slot].alpha.ensure(alphaBytes, false);
-                auto* alphaPlane = static_cast<unsigned short*>(gpu.slot[slot].a.ensure(srcYBytes, false));
-                if (alphaPacked == nullptr || alphaPlane == nullptr || !upload(gpu, slot, alphaPacked, tile.alpha10, alphaBytes))
-                {
-                    return CudaComposeStatus::Failed;
-                }
-                if (cudaEventRecord(gpu.uploaded[slot], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[slot], 0) != cudaSuccess)
-                {
-                    return CudaComposeStatus::Failed;
-                }
-                unpackAlphaKernel<<<grid, 256, 0, gpu.compute>>>(static_cast<std::uint8_t*>(alphaPacked), tile.alphaRowBytes, tile.srcWidth, tile.srcHeight, alphaPlane);
-                args.inA = alphaPlane;
-            }
+            return CudaComposeStatus::Failed;
         }
-        else
+        if (!upload(gpu, slot, srcY, tile.y, srcYBytes) || !upload(gpu, slot, srcCb, tile.cb, srcCBytes) || !upload(gpu, slot, srcCr, tile.cr, srcCBytes))
         {
-            if (tile.y == nullptr || tile.cb == nullptr || tile.cr == nullptr)
-            {
-                return CudaComposeStatus::Failed;
-            }
-            if (!upload(gpu, slot, srcY, tile.y, srcYBytes) || !upload(gpu, slot, srcCb, tile.cb, srcCBytes) || !upload(gpu, slot, srcCr, tile.cr, srcCBytes))
-            {
-                return CudaComposeStatus::Failed;
-            }
-            unsigned short* alphaPlane = nullptr;
-            if (tile.a != nullptr)
-            {
-                alphaPlane = static_cast<unsigned short*>(gpu.slot[slot].a.ensure(srcYBytes, false));
-                if (alphaPlane == nullptr || !upload(gpu, slot, alphaPlane, tile.a, srcYBytes))
-                {
-                    return CudaComposeStatus::Failed;
-                }
-                args.inA = alphaPlane;
-            }
-            if (cudaEventRecord(gpu.uploaded[slot], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[slot], 0) != cudaSuccess)
-            {
-                return CudaComposeStatus::Failed;
-            }
+            return CudaComposeStatus::Failed;
         }
-        args.inY = srcY;
-        args.inCb = srcCb;
-        args.inCr = srcCr;
+        if (tile.a != nullptr)
+        {
+            auto* alphaPlane = static_cast<unsigned short*>(gpu.slot[slot].a.ensure(srcYBytes, false));
+            if (alphaPlane == nullptr || !upload(gpu, slot, alphaPlane, tile.a, srcYBytes))
+            {
+                return CudaComposeStatus::Failed;
+            }
+            args.inA = samplesPlane(alphaPlane, tile.srcWidth);
+        }
+        if (cudaEventRecord(gpu.uploaded[slot], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[slot], 0) != cudaSuccess)
+        {
+            return CudaComposeStatus::Failed;
+        }
+        args.inY = samplesPlane(srcY, tile.srcWidth);
+        args.inCb = samplesPlane(srcCb, tile.srcWidth / 2);
+        args.inCr = samplesPlane(srcCr, tile.srcWidth / 2);
         if (!launchScale(gpu, args))
         {
             return CudaComposeStatus::Failed;
@@ -741,17 +1145,42 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         }
         gpu.used[slot] = true;
     }
-    if (desc.rgba != nullptr && desc.rgbaStride >= desc.width * 4)
+    cudaEventRecord(gpu.mark[2], gpu.compute);
+    if (desc.overlay != nullptr && desc.overlay->width == desc.width && desc.overlay->height == desc.height)
     {
-        std::size_t const rgbaBytes = static_cast<std::size_t>(desc.rgbaStride) * static_cast<std::size_t>(desc.height);
-        auto* deviceRgba = gpu.rgba.ensure(rgbaBytes, false);
-        if (deviceRgba == nullptr || !upload(gpu, 0, deviceRgba, desc.rgba, rgbaBytes))
+        // Uploaded by the overlay thread; normally finished long ago.
+        if (cudaStreamWaitEvent(gpu.compute, desc.overlay->ready, 0) != cudaSuccess)
         {
             return CudaComposeStatus::Failed;
         }
-        if (cudaEventRecord(gpu.uploaded[0], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[0], 0) != cudaSuccess)
+        blendRgbaKernel<<<tiles2d(desc.width, desc.height), dim3(16, 16), 0, gpu.compute>>>(dstY, dstCb, dstCr, desc.width, desc.height, desc.overlay->rgba,
+            desc.width * 4);
+        if (cudaGetLastError() != cudaSuccess)
         {
             return CudaComposeStatus::Failed;
+        }
+    }
+    else if (desc.rgba != nullptr && desc.rgbaStride >= desc.width * 4)
+    {
+        std::size_t const rgbaBytes = static_cast<std::size_t>(desc.rgbaStride) * static_cast<std::size_t>(desc.height);
+        void const* before = gpu.rgba.ptr;
+        auto* deviceRgba = gpu.rgba.ensure(rgbaBytes, false);
+        if (deviceRgba == nullptr)
+        {
+            return CudaComposeStatus::Failed;
+        }
+        // The overlay is redrawn at MV_OVERLAY_HZ, not per frame: upload only a new one.
+        if (desc.rgbaVersion == 0 || desc.rgbaVersion != gpu.rgbaVersion || deviceRgba != before)
+        {
+            if (!upload(gpu, 0, deviceRgba, desc.rgba, rgbaBytes))
+            {
+                return CudaComposeStatus::Failed;
+            }
+            if (cudaEventRecord(gpu.uploaded[0], gpu.copy) != cudaSuccess || cudaStreamWaitEvent(gpu.compute, gpu.uploaded[0], 0) != cudaSuccess)
+            {
+                return CudaComposeStatus::Failed;
+            }
+            gpu.rgbaVersion = desc.rgbaVersion;
         }
         blendRgbaKernel<<<tiles2d(desc.width, desc.height), dim3(16, 16), 0, gpu.compute>>>(dstY, dstCb, dstCr, desc.width, desc.height,
             static_cast<std::uint8_t*>(deviceRgba), desc.rgbaStride);
@@ -760,10 +1189,13 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
             return CudaComposeStatus::Failed;
         }
     }
+    cudaEventRecord(gpu.mark[3], gpu.compute);
     std::size_t const outBytes = static_cast<std::size_t>(desc.v210RowBytes) * static_cast<std::size_t>(desc.height);
     auto* deviceV210 = gpu.v210.ensure(outBytes, false);
-    void* outPin = gpu.outPin.ensure(outBytes, true);
-    if (deviceV210 == nullptr || outPin == nullptr)
+    // Write the MXL grain directly when it can be locked; otherwise through a pinned buffer.
+    bool const direct = desc.v210OutIsGrain && hostMemory().ensure(desc.v210Out, outBytes, false);
+    void* outHost = direct ? static_cast<void*>(desc.v210Out) : gpu.outPin.ensure(outBytes, true);
+    if (deviceV210 == nullptr || outHost == nullptr)
     {
         return CudaComposeStatus::Failed;
     }
@@ -778,19 +1210,126 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
     {
         return CudaComposeStatus::Failed;
     }
+    cudaEventRecord(gpu.mark[4], gpu.compute);
     if (cudaEventRecord(gpu.computed[0], gpu.compute) != cudaSuccess || cudaStreamWaitEvent(gpu.copy, gpu.computed[0], 0) != cudaSuccess)
     {
         return CudaComposeStatus::Failed;
     }
-    if (cudaMemcpyAsync(outPin, deviceV210, outBytes, cudaMemcpyDeviceToHost, gpu.copy) != cudaSuccess)
+    if (cudaMemcpyAsync(outHost, deviceV210, outBytes, cudaMemcpyDeviceToHost, gpu.copy) != cudaSuccess)
     {
         return CudaComposeStatus::Failed;
     }
+    cudaEventRecord(gpu.mark[5], gpu.copy);
     if (cudaStreamSynchronize(gpu.copy) != cudaSuccess || cudaStreamSynchronize(gpu.compute) != cudaSuccess)
     {
         return CudaComposeStatus::Failed;
     }
-    std::memcpy(desc.v210Out, outPin, outBytes);
+    if (!direct)
+    {
+        std::memcpy(desc.v210Out, outHost, outBytes);
+    }
+    if (desc.timing != nullptr)
+    {
+        cudaEventElapsedTime(&desc.timing->background, gpu.mark[0], gpu.mark[1]);
+        cudaEventElapsedTime(&desc.timing->tiles, gpu.mark[1], gpu.mark[2]);
+        cudaEventElapsedTime(&desc.timing->overlay, gpu.mark[2], gpu.mark[3]);
+        cudaEventElapsedTime(&desc.timing->pack, gpu.mark[3], gpu.mark[4]);
+        cudaEventElapsedTime(&desc.timing->download, gpu.mark[4], gpu.mark[5]);
+    }
     return CudaComposeStatus::Ok;
+}
+
+std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v210RowBytes, std::uint8_t const* alpha10, int alphaRowBytes, int width,
+    int height)
+{
+    if (v210 == nullptr || width < 2 || (width & 1) != 0 || height < 1 || v210RowBytes < 16 || !cudaRuntimeAvailable())
+    {
+        return nullptr;
+    }
+    auto& up = uploader();
+    if (!up.open())
+    {
+        return nullptr;
+    }
+    bool const alpha = alpha10 != nullptr && alphaRowBytes > 0;
+    auto frame = framePool().acquire(width, height, alpha, up.stream);
+    if (frame == nullptr || v210RowBytes != frame->v210RowBytes || (alpha && alphaRowBytes != frame->alphaRowBytes))
+    {
+        return nullptr;
+    }
+    // The grain stays packed on the device; the scaler decodes the samples it needs.
+    std::size_t const bytes = static_cast<std::size_t>(v210RowBytes) * static_cast<std::size_t>(height);
+    bool ok = copyToDevice(up.stream, frame->v210, v210, bytes, up.staging);
+    if (ok && alpha)
+    {
+        std::size_t const keyBytes = static_cast<std::size_t>(alphaRowBytes) * static_cast<std::size_t>(height);
+        ok = copyToDevice(up.stream, frame->alpha10, alpha10, keyBytes, up.stagingAlpha);
+    }
+    // Record even on failure: the pool waits on this event before it reuses the frame.
+    if (cudaEventRecord(frame->ready, up.stream) != cudaSuccess || !ok)
+    {
+        return nullptr;
+    }
+    return frame;
+}
+
+std::shared_ptr<CudaOverlay const> cudaUploadOverlay(std::shared_ptr<CudaOverlay const> const& previous, std::uint8_t const* rgba, int width, int height,
+    CudaRect const* changes, int changeCount)
+{
+    if (rgba == nullptr || width < 1 || height < 1 || !cudaRuntimeAvailable())
+    {
+        return nullptr;
+    }
+    auto& up = uploader();
+    if (!up.open())
+    {
+        return nullptr;
+    }
+    auto overlay = overlayPool().acquire(width, height, up.stream);
+    if (overlay == nullptr)
+    {
+        return nullptr;
+    }
+    std::size_t const stride = static_cast<std::size_t>(width) * 4u;
+    std::size_t const bytes = stride * static_cast<std::size_t>(height);
+    bool ok = true;
+    if (previous != nullptr && previous->width == width && previous->height == height && changes != nullptr)
+    {
+        ok = cudaStreamWaitEvent(up.stream, previous->ready, 0) == cudaSuccess &&
+             cudaMemcpyAsync(overlay->rgba, previous->rgba, bytes, cudaMemcpyDeviceToDevice, up.stream) == cudaSuccess;
+        for (int i = 0; ok && i < changeCount; ++i)
+        {
+            auto const& area = changes[i];
+            std::size_t const offset = static_cast<std::size_t>(area.y) * stride + static_cast<std::size_t>(area.x) * 4u;
+            ok = cudaMemcpy2DAsync(overlay->rgba + offset, stride, rgba + offset, stride, static_cast<std::size_t>(area.w) * 4u, static_cast<std::size_t>(area.h),
+                     cudaMemcpyHostToDevice, up.stream) == cudaSuccess;
+        }
+    }
+    else
+    {
+        ok = cudaMemcpyAsync(overlay->rgba, rgba, bytes, cudaMemcpyHostToDevice, up.stream) == cudaSuccess;
+    }
+    // Finish here, on the overlay thread: the buffers it read or wrote can then be
+    // recycled by any head without pending copies.
+    ok = cudaEventRecord(overlay->ready, up.stream) == cudaSuccess && ok;
+    ok = cudaStreamSynchronize(up.stream) == cudaSuccess && ok;
+    return ok ? overlay : nullptr;
+}
+
+void cudaReleaseHostMemory()
+{
+    // No queued copy may still use the memory when it is unlocked.
+    auto& up = uploader();
+    if (up.ready)
+    {
+        cudaStreamSynchronize(up.stream);
+    }
+    auto& gpu = session();
+    if (gpu.ready)
+    {
+        cudaStreamSynchronize(gpu.copy);
+        cudaStreamSynchronize(gpu.compute);
+    }
+    hostMemory().release();
 }
 } // namespace mv

@@ -191,4 +191,60 @@ std::uint64_t lumaHash(Frame422 const& frame)
     }
     return hash;
 }
+
+std::uint16_t v210Luma(std::uint8_t const* src, int rowBytes, int width, int index)
+{
+    int const row = index / width;
+    int const x = index % width;
+    std::uint32_t words[4];
+    std::memcpy(words, src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes) + static_cast<std::size_t>(x / 6) * 16u, sizeof(words));
+    switch (x % 6)
+    {
+    case 0:
+        return sample10(words[0], 10);
+    case 1:
+        return sample10(words[1], 0);
+    case 2:
+        return sample10(words[1], 20);
+    case 3:
+        return sample10(words[2], 10);
+    case 4:
+        return sample10(words[3], 0);
+    default:
+        return sample10(words[3], 20);
+    }
+}
+
+void v210Chroma(std::uint8_t const* src, int rowBytes, int cx, int row, std::uint16_t& cb, std::uint16_t& cr)
+{
+    std::uint32_t words[4];
+    std::memcpy(words, src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes) + static_cast<std::size_t>(cx / 3) * 16u, sizeof(words));
+    switch (cx % 3)
+    {
+    case 0:
+        cb = sample10(words[0], 0);
+        cr = sample10(words[0], 20);
+        break;
+    case 1:
+        cb = sample10(words[1], 10);
+        cr = sample10(words[2], 0);
+        break;
+    default:
+        cb = sample10(words[2], 20);
+        cr = sample10(words[3], 10);
+        break;
+    }
+}
+
+std::uint64_t lumaHash(std::uint8_t const* v210, int rowBytes, int width, int height)
+{
+    std::uint64_t hash = 14695981039346656037ull;
+    int const step = std::max(1, (width * height) / 4096);
+    for (int i = 0; i < width * height; i += step)
+    {
+        hash ^= v210Luma(v210, rowBytes, width, i);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
 } // namespace mv

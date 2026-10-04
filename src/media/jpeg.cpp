@@ -32,24 +32,27 @@ void yuvToRgb(std::uint16_t y10, std::uint16_t cb10, std::uint16_t cr10, std::ui
 }
 } // namespace
 
-std::string encodePreviewJpeg(Frame422 const& frame, int outWidth, int quality)
+namespace
 {
-    if (frame.width <= 0 || frame.height <= 0 || outWidth < 16)
+// Nearest-sample preview: `sample(sx, sy, cx, rgb)` writes one pixel.
+template <typename Sample>
+std::string encodePreview(int width, int height, int outWidth, int quality, Sample sample)
+{
+    if (width <= 0 || height <= 0 || outWidth < 16)
     {
         return {};
     }
-    int const outHeight = std::max(16, frame.height * outWidth / frame.width);
+    int const outHeight = std::max(16, height * outWidth / width);
     std::vector<std::uint8_t> rgb(static_cast<std::size_t>(outWidth * outHeight * 3));
-    int const cw = frame.chromaWidth();
+    int const cw = width / 2;
     for (int y = 0; y < outHeight; ++y)
     {
-        int const sy = std::min(frame.height - 1, y * frame.height / outHeight);
+        int const sy = std::min(height - 1, y * height / outHeight);
         for (int x = 0; x < outWidth; ++x)
         {
-            int const sx = std::min(frame.width - 1, x * frame.width / outWidth);
+            int const sx = std::min(width - 1, x * width / outWidth);
             int const cx = std::min(cw - 1, sx / 2);
-            yuvToRgb(frame.y[static_cast<std::size_t>(sy * frame.width + sx)], frame.cb[static_cast<std::size_t>(sy * cw + cx)],
-                frame.cr[static_cast<std::size_t>(sy * cw + cx)], rgb.data() + static_cast<std::size_t>((y * outWidth + x) * 3));
+            sample(sx, sy, cx, rgb.data() + static_cast<std::size_t>((y * outWidth + x) * 3));
         }
     }
     std::string out;
@@ -60,6 +63,26 @@ std::string encodePreviewJpeg(Frame422 const& frame, int outWidth, int quality)
         },
         &out, outWidth, outHeight, 3, rgb.data(), quality);
     return out;
+}
+} // namespace
+
+std::string encodePreviewJpeg(Frame422 const& frame, int outWidth, int quality)
+{
+    int const cw = frame.chromaWidth();
+    return encodePreview(frame.width, frame.height, outWidth, quality, [&](int sx, int sy, int cx, std::uint8_t* rgb) {
+        yuvToRgb(frame.y[static_cast<std::size_t>(sy * frame.width + sx)], frame.cb[static_cast<std::size_t>(sy * cw + cx)],
+            frame.cr[static_cast<std::size_t>(sy * cw + cx)], rgb);
+    });
+}
+
+std::string encodePreviewJpeg(std::uint8_t const* v210, int rowBytes, int width, int height, int outWidth, int quality)
+{
+    return encodePreview(width, height, outWidth, quality, [&](int sx, int sy, int cx, std::uint8_t* rgb) {
+        std::uint16_t cb = 0;
+        std::uint16_t cr = 0;
+        v210Chroma(v210, rowBytes, cx, sy, cb, cr);
+        yuvToRgb(v210Luma(v210, rowBytes, width, sy * width + sx), cb, cr, rgb);
+    });
 }
 
 bool loadImageFile(std::string const& path, Frame422& frame)

@@ -39,4 +39,11 @@ void unpackAlpha10(std::uint8_t const* src, int srcRowBytes, Frame422& dst);
 void packAlpha10(Frame422 const& src, std::uint8_t* dst, int dstRowBytes);
 
 std::uint64_t lumaHash(Frame422 const& frame);
+
+// The same luma samples read straight from packed v210, for frames the CPU does not
+// unpack (CUDA backend): `index` is row-major like Frame422::y.
+std::uint16_t v210Luma(std::uint8_t const* src, int rowBytes, int width, int index);
+// Cb and Cr of chroma sample `cx` (pixel pair) in row `row`.
+void v210Chroma(std::uint8_t const* src, int rowBytes, int cx, int row, std::uint16_t& cb, std::uint16_t& cr);
+std::uint64_t lumaHash(std::uint8_t const* v210, int rowBytes, int width, int height);
 } // namespace mv

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+The CUDA backend no longer moves frames through the CPU. Measured on an NVIDIA A16 (one GA107, PCIe Gen4 x4), 16×1080p50 into 1080p50 went from 581 of 1500 frames to all frames with no late frame; numbers in [docs/performance.md](docs/performance.md).
+
+- Each input grain is uploaded once, by its input thread on its own CUDA stream, straight from the MXL grain (page-locked on first use) into a device frame. Compose reads the packed v210 in place. On the CUDA backend the CPU no longer unpacks, copies or allocates per grain; black and freeze read the same luma samples from the packed grain.
+- Every head composes from the same device frames and writes the packed result by DMA into the open MXL output grain.
+- The overlay is drawn on its own thread per head at `MV_OVERLAY_HZ`. Compose uploads only the areas that changed since the overlay on the device; the background is uploaded once.
+- Inputs wait for their next grain instead of polling every 2 ms, and parse the flow definition once per opened flow.
+- The preview reads the written grain at preview size instead of unpacking the whole output.
+
+### Metrics
+
+- `mxl_multiviewer_compose_gpu_seconds{head,stage}`: GPU time per compose stage (`background`, `tiles`, `overlay`, `pack`, `download`) from CUDA events.
+
+### Behaviour
+
+- On the CUDA backend an input whose upload fails is unpacked on the CPU as before. When compose fails for about half a second in a row, all inputs go back to the CPU (`cuda_disabled` in the log); before that, failed frames show those inputs black.
+
 ## 1.0.0
 
 Stable settings, HTTP API, and process behaviour for the MXL platform. A later break is 2.0.0.

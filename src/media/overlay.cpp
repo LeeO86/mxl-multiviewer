@@ -547,4 +547,51 @@ bool overlayUsesBlend2d()
     return false;
 #endif
 }
+
+std::vector<PixelRect> overlayChanges(std::vector<std::uint8_t> const& before, std::vector<std::uint8_t> const& after, int width, int height)
+{
+    constexpr int kBlockW = 64;
+    constexpr int kBlockH = 16;
+    std::vector<PixelRect> changes;
+    auto const bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+    if (width <= 0 || height <= 0 || before.size() != bytes || after.size() != bytes)
+    {
+        changes.push_back({0, 0, std::max(width, 0), std::max(height, 0)});
+        return changes;
+    }
+    std::size_t const stride = static_cast<std::size_t>(width) * 4u;
+    for (int by = 0; by < height; by += kBlockH)
+    {
+        int const h = std::min(kBlockH, height - by);
+        int runStart = -1;
+        // One step past the last block closes a run that reaches the right edge.
+        for (int bx = 0;; bx += kBlockW)
+        {
+            bool changed = false;
+            if (bx < width)
+            {
+                int const w = std::min(kBlockW, width - bx);
+                for (int row = by; row < by + h && !changed; ++row)
+                {
+                    std::size_t const offset = static_cast<std::size_t>(row) * stride + static_cast<std::size_t>(bx) * 4u;
+                    changed = std::memcmp(before.data() + offset, after.data() + offset, static_cast<std::size_t>(w) * 4u) != 0;
+                }
+            }
+            if (changed && runStart < 0)
+            {
+                runStart = bx;
+            }
+            else if (!changed && runStart >= 0)
+            {
+                changes.push_back({runStart, by, std::min(bx, width) - runStart, h});
+                runStart = -1;
+            }
+            if (bx >= width)
+            {
+                break;
+            }
+        }
+    }
+    return changes;
+}
 } // namespace mv

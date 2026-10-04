@@ -77,4 +77,9 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles);
 
 // True when this binary rasterises the overlay with Blend2D. The 8×8 path remains for MV_WITH_BLEND2D=OFF.
 bool overlayUsesBlend2d();
+
+// Areas where two RGBA overlays of the same size differ, as merged runs of 64×16-pixel
+// blocks. Most of an overlay is transparent and only meters, clocks and texts change,
+// so the GPU copy only needs these areas (a 2160p overlay is 33 MB).
+std::vector<PixelRect> overlayChanges(std::vector<std::uint8_t> const& before, std::vector<std::uint8_t> const& after, int width, int height);
 } // namespace mv
