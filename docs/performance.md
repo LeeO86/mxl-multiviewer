@@ -41,7 +41,7 @@ Even with full overlap, 16 full-raster uploads (88 MB per output frame) take abo
 
 ## Lab run 2026-10-04: NVIDIA A16, GPU input upload
 
-Same host, GPU, inputs and method as the run above; image built from this tree (CHANGELOG, Unreleased). `mxl-multiviewer:1.0.0` was measured again the same day as the reference. Compose buckets are the histogram's (1, 2, 5, 10, 20, 40, 80 ms). GPU stages are the means of `mxl_multiviewer_compose_gpu_seconds`.
+Same host, GPU, inputs and method as the run above; image built from this tree (1.1.0). `mxl-multiviewer:1.0.0` was measured again the same day as the reference. Compose buckets are the histogram's (1, 2, 5, 10, 20, 40, 80 ms). GPU stages are the means of `mxl_multiviewer_compose_gpu_seconds`.
 
 | Image | Inputs → output | Layout | Output frames / 1500 | Late | Missed | Compose mean | Compose p50 / p95 bucket | GPU stages (mean) | Process CPU | GPU util |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -63,3 +63,13 @@ What changed to get there, in the order it was measured:
 2. Keep the grain packed on the device and decode v210 in the scaler: GPU memory 825 → 563 MiB.
 3. Draw the overlay on its own thread and take the preview from the packed output at preview size: the remaining late frames came from overlay drawing and a full CPU unpack for the preview on the output thread (0 late in 60 s).
 4. Keep the overlay on the device, uploaded by the overlay thread, only the areas that changed: the overlay stage in compose went from 4.0 ms (waiting behind the input copies) to 0.2 ms at 1080p, and 2160p from 41 % late frames to none.
+
+### One-hour soak, 16 → 2160p50
+
+Same host and inputs, image built from `bd977ad` (this release before the version and documentation changes), 4x4 layout, CUDA backend, 15 s warm-up, then one hour measured with nothing else running on the host:
+
+| Output frames | Late | Missed | Compose mean | p50 / p95 bucket | Process CPU | GPU util | GPU memory |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 180005 (180000 expected) | 0 | 0 | 8.6 ms | ≤ 10 / ≤ 10 ms | 3.5 cores | 80 % | 667 MiB |
+
+This meets the §13 target (zero late frames over one hour) for 2160p on a GPU that is not one of the target GPUs. An earlier soak of the same code overlapped with two container image builds on the host for 25 of its 60 minutes and had 8 late and 6 missed frames.

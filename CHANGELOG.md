@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
 ### Performance
 
-The CUDA backend no longer moves frames through the CPU. Measured on an NVIDIA A16 (one GA107, PCIe Gen4 x4), 16×1080p50 into 1080p50 went from 581 of 1500 frames to all frames with no late frame; numbers in [docs/performance.md](docs/performance.md).
+The CUDA backend no longer moves frames through the CPU. Measured on an NVIDIA A16 (one GA107, PCIe Gen4 x4), 16×1080p50 into 1080p50 went from 581 of 1500 frames to all frames with no late frame, and 16×1080p50 into 2160p50 ran one hour without a late or missed frame (compose 8.6 ms, 3.5 cores); numbers in [docs/performance.md](docs/performance.md).
 
 - Each input grain is uploaded once, by its input thread on its own CUDA stream, straight from the MXL grain (page-locked on first use) into a device frame. Compose reads the packed v210 in place. On the CUDA backend the CPU no longer unpacks, copies or allocates per grain; black and freeze read the same luma samples from the packed grain.
 - Every head composes from the same device frames and writes the packed result by DMA into the open MXL output grain.
