@@ -137,6 +137,43 @@ void NmosNode::updateOutputFlow(int head, std::string const& videoFlowId, std::s
 #endif
 }
 
+void NmosNode::restoreRoute(int input, bool video, bool enable, std::string const& domainId, std::string const& flowId, std::string const& senderId)
+{
+    (void)enable;
+    (void)domainId;
+    (void)flowId;
+    (void)senderId;
+#if defined(MV_WITH_NMOS)
+    if (impl_->model == nullptr)
+    {
+        return;
+    }
+    auto const id = video ? impl_->ids.videoReceiver(input) : impl_->ids.audioReceiver(input);
+    auto const text = [](std::string const& value) {
+        return value.empty() ? web::json::value::null() : web::json::value::string(utility::conversions::to_string_t(value));
+    };
+    {
+        auto lock = impl_->model->write_lock();
+        nmos::modify_resource(impl_->model->connection_resources, utility::conversions::to_string_t(id), [&](nmos::resource& connection) {
+            for (auto const* key : {U("active"), U("staged")})
+            {
+                auto& document = connection.data[key];
+                document[U("master_enable")] = web::json::value::boolean(enable);
+                document[U("sender_id")] = text(senderId);
+                document[U("transport_params")][0][U("mxl_domain_id")] = text(domainId);
+                document[U("transport_params")][0][U("mxl_flow_id")] = text(flowId);
+            }
+        });
+        impl_->model->notify();
+    }
+    std::lock_guard lock{impl_->pendingMu};
+    impl_->pending.push_back(Impl::SubUpdate{id, senderId, enable && !senderId.empty()});
+#else
+    (void)input;
+    (void)video;
+#endif
+}
+
 #if !defined(MV_WITH_NMOS)
 void NmosNode::start()
 {

@@ -107,6 +107,13 @@ fi
 INFO="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/info")"
 RX="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["receivers"][0]["video"])' "$INFO")"
 
+# The route restored from routes.json is also the receiver's IS-05 active state.
+ACTIVE="$(curl -sf "http://127.0.0.1:${NMOS_PORT}/x-nmos/connection/v1.2/single/receivers/${RX}/active")"
+if ! python3 -c 'import json,sys; a=json.loads(sys.argv[1]); p=a["transport_params"][0]; sys.exit(0 if a["master_enable"] and p["mxl_flow_id"]==sys.argv[2] and p["mxl_domain_id"]==sys.argv[3] else 1)' "$ACTIVE" "$FLOW_ID" "$DOMAIN_ID"; then
+  echo "restored route is not the IS-05 active state: $ACTIVE" >&2
+  exit 1
+fi
+
 patch_body="$(python3 - <<PY
 import json
 print(json.dumps({
