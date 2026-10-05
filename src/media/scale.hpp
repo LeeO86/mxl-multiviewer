@@ -3,6 +3,9 @@
 #include "layout/geometry.hpp"
 #include "media/frame.hpp"
 
+#include <utility>
+#include <vector>
+
 namespace mv
 {
 // Bilinear scale of src into dst. Sample positions are pixel centres.
@@ -20,7 +23,35 @@ struct ComposeTile
     bool bob = false;
 };
 
+// A packed v210 picture without alpha.
+struct V210View
+{
+    std::uint8_t const* data = nullptr;
+    int rowBytes = 0;
+    int width = 0;
+    int height = 0;
+};
+
+// scaleInto() straight from packed v210: the same sample positions, weights in 1/1024 steps
+// (within 1 of the float result, exact on flat areas), and only the source lines the
+// placement touches are unpacked.
+void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, bool bob);
+
 void blendStraightRgba(Frame422& canvas, std::uint8_t const* rgba, int stride);
+
+// blendStraightRgba() split in two: prepareOverlay() converts the overlay once (when it
+// changes) and blendOverlay() blends it into each frame with integers, only where it is visible.
+// Together they give the same samples as blendStraightRgba().
+struct PreparedOverlay
+{
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint16_t> y, cb, cr;
+    std::vector<std::uint8_t> a, ca;               // luma alpha per pixel, chroma alpha per pair
+    std::vector<std::vector<std::pair<int, int>>> spans; // per row: [x0, x1) with something to blend
+};
+PreparedOverlay prepareOverlay(std::uint8_t const* rgba, int width, int height, int stride);
+void blendOverlay(Frame422& canvas, PreparedOverlay const& overlay);
 
 // Scale src with fill (cover) into an already-allocated dst. Limited-range black shows only if the source is empty.
 void coverFrame(Frame422& dst, Frame422 const& src);

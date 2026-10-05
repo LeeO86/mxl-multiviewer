@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.2
+
+### Performance
+
+- The CPU backend keeps real time. On the lab (2× Xeon Gold 6136, no GPU, 1080p50 output, 4x4 layout) 4 inputs went from 973 of 1000 frames (572 late) on 3.7 cores to every frame on 1.7 cores, and 16 inputs from 503 of 1000 frames on 11.7 cores to every frame (1 late) on 5.9 cores (`docs/performance.md`).
+  - Readers keep a pooled copy of the packed grain instead of unpacking it into a new 8 MB planar frame; the scaler unpacks only the source lines a tile touches and uses integer taps computed once per placement (within 1 of the float scaler, exact on flat areas).
+  - The black and freeze alarms take their samples while the grain is copied line by line; as a separate pass they read most of each frame from memory again.
+  - Tiles run on a persistent worker pool into reused images instead of a new thread and image per tile per frame.
+  - The overlay is converted to YCbCr once per drawing on the overlay thread; the compose thread blends only its visible spans, in integers.
+- The CUDA backend uses less CPU (16 inputs: 2.9 → 1.8 cores): the alarms read the packed grain in one pass.
+
 ## 1.1.1
 
 ### Behaviour
