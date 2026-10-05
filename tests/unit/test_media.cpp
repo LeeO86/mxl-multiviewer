@@ -84,6 +84,38 @@ TEST_CASE("alarm luma from packed v210 matches the unpacked frame")
         CHECK(v210Luma(packed.data(), rowBytes, frame.width, i) == frame.y[static_cast<std::size_t>(i)]);
     }
     CHECK(lumaHash(packed.data(), rowBytes, frame.width, frame.height) == lumaHash(frame));
+    // The one-pass sum for the black alarm, also with a width the step does not divide.
+    for (int const width : {1920, 100})
+    {
+        CAPTURE(width);
+        Frame422 small;
+        small.allocate(width, 37, false);
+        for (std::size_t i = 0; i < small.y.size(); ++i)
+        {
+            small.y[i] = frame.y[i];
+        }
+        int const smallRow = static_cast<int>(v210RowBytes(width));
+        std::vector<std::uint8_t> smallPacked(static_cast<std::size_t>(smallRow) * small.height);
+        packV210(small, smallPacked.data(), smallRow);
+        std::uint64_t expected = 0;
+        int expectedCount = 0;
+        for (int i = 0; i < width * small.height; i += 32)
+        {
+            expected += v210Luma(smallPacked.data(), smallRow, width, i);
+            ++expectedCount;
+        }
+        int count = 0;
+        CHECK(v210LumaSum(smallPacked.data(), smallRow, width, small.height, 32, &count) == expected);
+        CHECK(count == expectedCount);
+        // The copy with both alarm values taken on the way.
+        std::vector<std::uint8_t> copy(smallPacked.size(), 0);
+        V210Scan scan;
+        copyV210Scan(smallPacked.data(), copy.data(), smallRow, width, small.height, 32, scan);
+        CHECK(copy == smallPacked);
+        CHECK(scan.sum == expected);
+        CHECK(scan.count == expectedCount);
+        CHECK(scan.hash == lumaHash(smallPacked.data(), smallRow, width, small.height));
+    }
 }
 
 TEST_CASE("preview from packed v210 matches the unpacked frame")
@@ -187,6 +219,109 @@ TEST_CASE("scaler matches bilinear pixel centres and compose keeps tile colours"
     CHECK(full.y[10 * 192 + 10] == 200);
     CHECK(full.y[54 * 192 + 96] == 200);
     CHECK(full.y[20 * 192 + 24] == 200);
+}
+
+TEST_CASE("scaling straight from v210 matches the unpacked scaler within 1")
+{
+    Frame422 src;
+    src.allocate(196, 110, false);
+    std::uint32_t state = 7;
+    auto next = [&] { return state = state * 1664525u + 1013904223u; };
+    for (auto& v : src.y)
+    {
+        v = static_cast<std::uint16_t>(64 + (next() >> 8) % 877);
+    }
+    for (std::size_t i = 0; i < src.cb.size(); ++i)
+    {
+        src.cb[i] = static_cast<std::uint16_t>(64 + (next() >> 8) % 897);
+        src.cr[i] = static_cast<std::uint16_t>(64 + (next() >> 8) % 897);
+    }
+    std::vector<std::uint8_t> packed(static_cast<std::size_t>(v210RowBytes(src.width)) * src.height);
+    packV210(src, packed.data(), 0);
+    V210View const view{packed.data(), static_cast<int>(v210RowBytes(src.width)), src.width, src.height};
+    // Down 4:1 and odd ratios, a crop, an upscale, and bob for interlaced sources.
+    struct Case
+    {
+        PixelRect dst;
+        float x, y, w, h;
+        bool bob;
+    };
+    Case const cases[] = {{{0, 0, 49, 27}, 0, 0, 196, 110, false}, {{3, 2, 37, 23}, 10, 5, 150, 90, false}, {{0, 0, 196, 110}, 0, 0, 196, 110, false},
+        {{0, 0, 300, 160}, 20, 10, 100, 60, false}, {{1, 1, 60, 33}, 0, 0, 196, 110, true}};
+    for (auto const& c : cases)
+    {
+        CAPTURE(c.dst.w);
+        CAPTURE(c.bob);
+        Frame422 a;
+        Frame422 b;
+        a.allocate(320, 180, false);
+        b.allocate(320, 180, false);
+        Placement place;
+        place.dst = c.dst;
+        place.srcX = c.x;
+        place.srcY = c.y;
+        place.srcW = c.w;
+        place.srcH = c.h;
+        scaleInto(a, place, src, c.bob);
+        scaleV210Into(b, place, view, c.bob);
+        int worst = 0;
+        for (std::size_t i = 0; i < a.y.size(); ++i)
+        {
+            worst = std::max(worst, std::abs(static_cast<int>(a.y[i]) - static_cast<int>(b.y[i])));
+        }
+        for (std::size_t i = 0; i < a.cb.size(); ++i)
+        {
+            worst = std::max(worst, std::abs(static_cast<int>(a.cb[i]) - static_cast<int>(b.cb[i])));
+            worst = std::max(worst, std::abs(static_cast<int>(a.cr[i]) - static_cast<int>(b.cr[i])));
+        }
+        CHECK(worst <= 1);
+    }
+    // Flat areas stay exact.
+    Frame422 flat;
+    flat.allocate(96, 54, false);
+    flat.fill(321, 456, 789);
+    std::vector<std::uint8_t> flatPacked(static_cast<std::size_t>(v210RowBytes(96)) * 54);
+    packV210(flat, flatPacked.data(), 0);
+    Frame422 out;
+    out.allocate(40, 20, false);
+    Placement place;
+    place.dst = {0, 0, 40, 20};
+    place.srcW = 96;
+    place.srcH = 54;
+    scaleV210Into(out, place, V210View{flatPacked.data(), static_cast<int>(v210RowBytes(96)), 96, 54}, false);
+    CHECK(std::all_of(out.y.begin(), out.y.end(), [](std::uint16_t v) { return v == 321; }));
+    CHECK(std::all_of(out.cb.begin(), out.cb.end(), [](std::uint16_t v) { return v == 456; }));
+    CHECK(std::all_of(out.cr.begin(), out.cr.end(), [](std::uint16_t v) { return v == 789; }));
+}
+
+TEST_CASE("prepared overlay blends exactly like blendStraightRgba")
+{
+    int const w = 64;
+    int const h = 12;
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h * 4, 0);
+    std::uint32_t state = 3;
+    auto next = [&] { return state = state * 1664525u + 1013904223u; };
+    for (std::size_t i = 0; i < rgba.size(); i += 4)
+    {
+        // Mostly clear, some opaque, some partial, as overlays are.
+        auto const kind = (next() >> 8) % 4;
+        rgba[i] = static_cast<std::uint8_t>(next() >> 24);
+        rgba[i + 1] = static_cast<std::uint8_t>(next() >> 24);
+        rgba[i + 2] = static_cast<std::uint8_t>(next() >> 24);
+        rgba[i + 3] = kind == 0 ? 255 : kind == 1 ? static_cast<std::uint8_t>(next() >> 24) : 0;
+    }
+    Frame422 a;
+    a.allocate(w, h, false);
+    for (std::size_t i = 0; i < a.y.size(); ++i)
+    {
+        a.y[i] = static_cast<std::uint16_t>(64 + i % 800);
+    }
+    Frame422 b = a;
+    blendStraightRgba(a, rgba.data(), w * 4);
+    blendOverlay(b, prepareOverlay(rgba.data(), w, h, w * 4));
+    CHECK(a.y == b.y);
+    CHECK(a.cb == b.cb);
+    CHECK(a.cr == b.cr);
 }
 
 TEST_CASE("ppm type IIa ballistics")

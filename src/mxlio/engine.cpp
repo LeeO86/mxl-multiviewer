@@ -15,6 +15,7 @@
 #include "util/httpclient.hpp"
 #include "util/jsonutil.hpp"
 #include "util/logging.hpp"
+#include "util/taskpool.hpp"
 #include "version.hpp"
 
 #include <mxl/flow.h>
@@ -36,7 +37,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -59,9 +59,12 @@ struct Route
 struct SavedGrain
 {
     // CUDA backend: `gpu` (uploaded and unpacked on the device), `frame` only when the
-    // upload failed. CPU backend: `frame`.
+    // upload failed. CPU backend: `v210`, a copy of the packed grain the compositor scales
+    // from directly; `frame` for inputs with a key.
     std::shared_ptr<Frame422> frame;
     std::shared_ptr<CudaFrame const> gpu;
+    std::shared_ptr<std::vector<std::uint8_t> const> v210;
+    int rowBytes = 0;
     std::uint64_t index = 0;
     std::uint64_t origin = 0;
     int width = 0;
@@ -305,6 +308,9 @@ struct Engine::Impl
         std::uint64_t version = 0;
         // CUDA backend: the same overlay on the device, uploaded by the overlay thread.
         std::shared_ptr<CudaOverlay const> device;
+        // CPU backend: the same overlay in YCbCr, converted by the overlay thread so the
+        // compose thread only blends it.
+        std::shared_ptr<PreparedOverlay const> prepared;
     };
     std::vector<std::shared_ptr<OverlayFrame const>> overlays;
     std::mutex overlayMu;
@@ -401,6 +407,8 @@ struct Engine::Impl
         int backoff = 250;
         AlarmSet alarms;
         PpmMeter meters[16];
+        // CPU backend: buffers for copies of the packed grains (see SavedGrain::v210).
+        std::vector<std::shared_ptr<std::vector<std::uint8_t>>> grainPool;
         std::string prevState;
         auto const publishState = [&](std::shared_ptr<Snap> const& snap) {
             InputView view;
@@ -625,12 +633,45 @@ struct Engine::Impl
             auto const fillBytes = static_cast<std::size_t>(rowBytes) * static_cast<std::size_t>(height);
             std::uint8_t const* alphaKey = meta.alpha && grain.grainSize > fillBytes ? payload + fillBytes : nullptr;
             SavedGrain saved;
+            V210Scan scan;
+            bool scanned = false;
             if (useCuda.load())
             {
                 // Straight from the MXL grain to the GPU; the CPU neither copies nor unpacks it.
                 saved.gpu = cudaUploadFrame(payload, rowBytes, alphaKey, static_cast<int>(alpha10RowBytes(width)), width, height);
             }
-            if (saved.gpu == nullptr)
+            if (saved.gpu == nullptr && !useCuda.load() && alphaKey == nullptr)
+            {
+                // A copy of the packed grain from a small pool (a buffer is free again once
+                // only the pool holds it): unpacking every input completely each frame was
+                // the largest cost of the CPU backend, and the compositor needs only the
+                // source lines a tile touches.
+                std::shared_ptr<std::vector<std::uint8_t>> buffer;
+                for (auto const& candidate : grainPool)
+                {
+                    if (candidate.use_count() == 1)
+                    {
+                        buffer = candidate;
+                        break;
+                    }
+                }
+                if (buffer == nullptr)
+                {
+                    buffer = std::make_shared<std::vector<std::uint8_t>>();
+                    if (grainPool.size() < 12)
+                    {
+                        grainPool.push_back(buffer);
+                    }
+                }
+                buffer->resize(fillBytes);
+                // The alarms read their samples from each line while it is in cache: as a
+                // separate pass they read most of the frame from memory again.
+                copyV210Scan(payload, buffer->data(), rowBytes, width, height, 32, scan);
+                scanned = true;
+                saved.v210 = std::move(buffer);
+                saved.rowBytes = rowBytes;
+            }
+            else if (saved.gpu == nullptr)
             {
                 auto frame = std::make_shared<Frame422>();
                 frame->allocate(width, height, meta.alpha);
@@ -690,15 +731,27 @@ struct Engine::Impl
             auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             double sum = 0;
             int samples = 0;
-            // On the CUDA backend the CPU has no unpacked frame: read the same luma
-            // samples from the packed grain.
-            for (int i = 0; i < width * height; i += 32)
+            // Without an unpacked frame (CUDA, and the CPU backend's packed copy) the same luma
+            // samples are read from the packed grain in one pass.
+            if (scanned)
             {
-                sum += saved.frame ? saved.frame->y[static_cast<std::size_t>(i)] : v210Luma(payload, rowBytes, width, i);
-                ++samples;
+                sum = static_cast<double>(scan.sum);
+                samples = scan.count;
+            }
+            else if (saved.frame)
+            {
+                for (int i = 0; i < width * height; i += 32)
+                {
+                    sum += saved.frame->y[static_cast<std::size_t>(i)];
+                    ++samples;
+                }
+            }
+            else
+            {
+                sum = static_cast<double>(v210LumaSum(payload, rowBytes, width, height, 32, &samples));
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
-            auto const hash = saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
+            auto const hash = scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
             bool const freeze = alarms.haveHash && hash == alarms.lastHash;
             alarms.lastHash = hash;
             alarms.haveHash = true;
@@ -916,6 +969,10 @@ struct Engine::Impl
                 frame->device = cudaUploadOverlay(last ? last->device : nullptr, frame->rgba.data(), frame->width, frame->height, changes.data(),
                     static_cast<int>(changes.size()));
             }
+            else
+            {
+                frame->prepared = std::make_shared<PreparedOverlay const>(prepareOverlay(frame->rgba.data(), frame->width, frame->height, frame->width * 4));
+            }
             last = frame;
             {
                 std::lock_guard<std::mutex> lock(overlayMu);
@@ -995,6 +1052,11 @@ struct Engine::Impl
         std::vector<std::uint8_t> packedOut;
         int cudaFailures = 0;
         int previewDiv = 0;
+        // CPU backend: tile workers, their images (reused), and the overlay in YCbCr.
+        TaskPool tilePool(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 16u));
+        std::vector<Frame422> tileImages;
+        PreparedOverlay prepared;
+        std::uint64_t preparedVersion = 0;
         OutputView view = runtime.output(head);
         view.domainId = domainId;
         view.backend = "cpu";
@@ -1045,6 +1107,8 @@ struct Engine::Impl
                 std::shared_ptr<Frame422> frame;
                 // Held until compose returns, so the device frame is not recycled under it.
                 std::shared_ptr<CudaFrame const> gpu;
+                std::shared_ptr<std::vector<std::uint8_t> const> v210;
+                int rowBytes = 0;
                 int width = 0;
                 int height = 0;
                 bool bob = false;
@@ -1085,6 +1149,8 @@ struct Engine::Impl
                 {
                     source.frame = best->frame;
                     source.gpu = best->gpu;
+                    source.v210 = best->v210;
+                    source.rowBytes = best->rowBytes;
                     source.width = best->width;
                     source.height = best->height;
                     source.bob = best->interlaced;
@@ -1200,44 +1266,70 @@ struct Engine::Impl
             }
             if (!cudaFrame)
             {
-                struct Job
+                // Each tile into its own reused image on the pool, then blitted in z order.
+                if (tileImages.size() < sources.size())
                 {
-                    PixelRect dst;
-                    Frame422 image;
-                };
-                std::vector<std::future<Job>> jobs;
-                for (auto const& source : sources)
+                    tileImages.resize(sources.size());
+                }
+                std::vector<std::function<void()>> jobs;
+                jobs.reserve(sources.size());
+                for (std::size_t i = 0; i < sources.size(); ++i)
                 {
-                    jobs.push_back(std::async(std::launch::async, [source] {
-                        Job job;
-                        job.dst = source.place.dst;
-                        job.image.allocate(std::max(2, job.dst.w), std::max(1, job.dst.h), false);
-                        if (source.frame == nullptr)
+                    jobs.emplace_back([&source = sources[i], &image = tileImages[i]] {
+                        int const w = std::max(2, source.place.dst.w);
+                        int const h = std::max(1, source.place.dst.h);
+                        if (image.width != w || image.height != h || image.hasAlpha)
                         {
-                            job.image.fill(64, 512, 512);
-                            return job;
+                            image.allocate(w, h, false);
                         }
                         Placement local = source.place;
-                        local.dst = {0, 0, job.image.width, job.image.height};
-                        scaleInto(job.image, local, *source.frame, source.bob);
-                        return job;
-                    }));
+                        local.dst = {0, 0, w, h};
+                        if (source.v210 != nullptr)
+                        {
+                            scaleV210Into(image, local, V210View{source.v210->data(), source.rowBytes, source.width, source.height}, source.bob);
+                        }
+                        else if (source.frame != nullptr)
+                        {
+                            scaleInto(image, local, *source.frame, source.bob);
+                        }
+                        else
+                        {
+                            image.fill(64, 512, 512);
+                        }
+                    });
                 }
-                canvas.fill(64, 512, 512);
+                tilePool.run(jobs);
                 if (coveredBackground.width == canvas.width && coveredBackground.height == canvas.height)
                 {
                     canvas.y = coveredBackground.y;
                     canvas.cb = coveredBackground.cb;
                     canvas.cr = coveredBackground.cr;
                 }
-                for (auto& job : jobs)
+                else
                 {
-                    auto piece = job.get();
-                    blit(canvas, piece.dst, piece.image);
+                    canvas.fill(64, 512, 512);
+                }
+                for (std::size_t i = 0; i < sources.size(); ++i)
+                {
+                    blit(canvas, sources[i].place.dst, tileImages[i]);
                 }
                 if (withOverlay)
                 {
-                    blendStraightRgba(canvas, overlayFrame->rgba.data(), format.width * 4);
+                    // Converted by the overlay thread (or here once per version when that thread
+                    // ran for CUDA); the blend is integer and skips clear pixels.
+                    if (overlayFrame->prepared != nullptr)
+                    {
+                        blendOverlay(canvas, *overlayFrame->prepared);
+                    }
+                    else
+                    {
+                        if (overlayFrame->version != preparedVersion)
+                        {
+                            prepared = prepareOverlay(overlayFrame->rgba.data(), overlayFrame->width, overlayFrame->height, overlayFrame->width * 4);
+                            preparedVersion = overlayFrame->version;
+                        }
+                        blendOverlay(canvas, prepared);
+                    }
                 }
                 packV210(canvas, out, static_cast<int>(v210RowBytes(format.width)));
             }

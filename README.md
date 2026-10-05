@@ -159,7 +159,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.1.1
+  ghcr.io/leeo86/mxl-multiviewer:1.1.2
 ```
 
 `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
@@ -188,7 +188,7 @@ MXL_LIB_DIR=/opt/mxl/lib tests/integration/mosaic.sh \
 tests/nmos/amwa.sh   # IS-04-01, IS-05-01, IS-05-02; needs Docker, not default CI
 ```
 
-Hardware targets are in `docs/performance.md`. They have not been measured on an A4000, an L4, or a Precision 3930-class CPU yet. A lab run on an NVIDIA A16 (2026-10-03) misses them; the numbers and the profile are in that file.
+Hardware targets are in `docs/performance.md`. They have not been measured on an A4000, an L4, or a Precision 3930-class CPU yet. A lab run on an NVIDIA A16 (2026-10-03) misses them; the numbers and the profile are in that file. Without a GPU, 16 inputs → 1080p50 keep real time on about 6 cores of a 2× Xeon Gold 6136 (1.1.2, same file).
 
 ## Deploy
 

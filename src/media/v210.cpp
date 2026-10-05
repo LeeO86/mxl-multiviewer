@@ -51,6 +51,96 @@ void Frame422::fill(std::uint16_t yValue, std::uint16_t cbValue, std::uint16_t c
     }
 }
 
+void unpackV210Line(std::uint8_t const* line, int width, std::uint16_t* y, std::uint16_t* cb, std::uint16_t* cr)
+{
+    // Whole 6-pixel groups without per-pixel branches; the per-pixel loop only for a last
+    // partial group.
+    int const full = width / 6;
+    for (int group = 0; group < full; ++group)
+    {
+        std::uint32_t w[4];
+        std::memcpy(w, line + static_cast<std::size_t>(group) * 16u, sizeof(w));
+        std::uint16_t* yy = y + group * 6;
+        std::uint16_t* bb = cb + group * 3;
+        std::uint16_t* rr = cr + group * 3;
+        yy[0] = sample10(w[0], 10);
+        yy[1] = sample10(w[1], 0);
+        yy[2] = sample10(w[1], 20);
+        yy[3] = sample10(w[2], 10);
+        yy[4] = sample10(w[3], 0);
+        yy[5] = sample10(w[3], 20);
+        bb[0] = sample10(w[0], 0);
+        bb[1] = sample10(w[1], 10);
+        bb[2] = sample10(w[2], 20);
+        rr[0] = sample10(w[0], 20);
+        rr[1] = sample10(w[2], 0);
+        rr[2] = sample10(w[3], 10);
+    }
+    int const cw = width / 2;
+    int x = full * 6;
+    if (x < width)
+    {
+        std::uint32_t words[4] = {};
+        std::memcpy(words, line + static_cast<std::size_t>(full) * 16u, sizeof(words));
+        std::uint16_t yv[6] = {sample10(words[0], 10), sample10(words[1], 0), sample10(words[1], 20), sample10(words[2], 10), sample10(words[3], 0),
+            sample10(words[3], 20)};
+        std::uint16_t cbv[3] = {sample10(words[0], 0), sample10(words[1], 10), sample10(words[2], 20)};
+        std::uint16_t crv[3] = {sample10(words[0], 20), sample10(words[2], 0), sample10(words[3], 10)};
+        for (int i = 0; i < 6 && x < width; ++i, ++x)
+        {
+            y[x] = yv[i];
+            if ((x & 1) == 0 && (x / 2) < cw)
+            {
+                cb[x / 2] = cbv[i / 2];
+                cr[x / 2] = crv[i / 2];
+            }
+        }
+    }
+}
+
+void packV210Line(std::uint16_t const* y, std::uint16_t const* cb, std::uint16_t const* cr, int width, std::uint8_t* line, int rowBytes)
+{
+    int const full = width / 6;
+    for (int group = 0; group < full; ++group)
+    {
+        std::uint16_t const* yy = y + group * 6;
+        std::uint16_t const* bb = cb + group * 3;
+        std::uint16_t const* rr = cr + group * 3;
+        std::uint32_t words[4];
+        writeGroup(words, bb[0], yy[0], rr[0], yy[1], bb[1], yy[2], rr[1], yy[3], bb[2], yy[4], rr[2], yy[5]);
+        std::memcpy(line + static_cast<std::size_t>(group) * 16u, words, sizeof(words));
+    }
+    // A last partial group and the padding up to rowBytes are zero, as before.
+    std::size_t const done = static_cast<std::size_t>(full) * 16u;
+    if (done < static_cast<std::size_t>(rowBytes))
+    {
+        std::memset(line + done, 0, static_cast<std::size_t>(rowBytes) - done);
+    }
+    int const cw = width / 2;
+    if (full * 6 < width)
+    {
+        std::uint16_t yv[6] = {};
+        std::uint16_t cbv[3] = {};
+        std::uint16_t crv[3] = {};
+        for (int i = 0; i < 6; ++i)
+        {
+            int const x = full * 6 + i;
+            if (x < width)
+            {
+                yv[i] = y[x];
+                if ((i % 2) == 0 && x / 2 < cw)
+                {
+                    cbv[i / 2] = cb[x / 2];
+                    crv[i / 2] = cr[x / 2];
+                }
+            }
+        }
+        std::uint32_t words[4];
+        writeGroup(words, cbv[0], yv[0], crv[0], yv[1], cbv[1], yv[2], crv[1], yv[3], cbv[2], yv[4], crv[2], yv[5]);
+        std::memcpy(line + done, words, sizeof(words));
+    }
+}
+
 void unpackV210(std::uint8_t const* src, int srcRowBytes, Frame422& dst)
 {
     if (srcRowBytes <= 0)
@@ -60,28 +150,9 @@ void unpackV210(std::uint8_t const* src, int srcRowBytes, Frame422& dst)
     int const cw = dst.chromaWidth();
     for (int row = 0; row < dst.height; ++row)
     {
-        auto const* line = src + static_cast<std::size_t>(row) * static_cast<std::size_t>(srcRowBytes);
-        int x = 0;
-        int const groups = (dst.width + 5) / 6;
-        for (int group = 0; group < groups; ++group)
-        {
-            std::uint32_t words[4] = {};
-            std::memcpy(words, line + static_cast<std::size_t>(group) * 16u, sizeof(words));
-            std::uint16_t yv[6] = {sample10(words[0], 10), sample10(words[1], 0), sample10(words[1], 20), sample10(words[2], 10), sample10(words[3], 0),
-                sample10(words[3], 20)};
-            std::uint16_t cbv[3] = {sample10(words[0], 0), sample10(words[1], 10), sample10(words[2], 20)};
-            std::uint16_t crv[3] = {sample10(words[0], 20), sample10(words[2], 0), sample10(words[3], 10)};
-            for (int i = 0; i < 6 && x < dst.width; ++i, ++x)
-            {
-                dst.y[static_cast<std::size_t>(row * dst.width + x)] = yv[i];
-                if ((x & 1) == 0 && (x / 2) < cw)
-                {
-                    int const c = i / 2;
-                    dst.cb[static_cast<std::size_t>(row * cw + x / 2)] = cbv[c];
-                    dst.cr[static_cast<std::size_t>(row * cw + x / 2)] = crv[c];
-                }
-            }
-        }
+        unpackV210Line(src + static_cast<std::size_t>(row) * static_cast<std::size_t>(srcRowBytes), dst.width,
+            dst.y.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(dst.width), dst.cb.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(cw),
+            dst.cr.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(cw));
     }
 }
 
@@ -94,35 +165,9 @@ void packV210(Frame422 const& src, std::uint8_t* dst, int dstRowBytes)
     int const cw = src.chromaWidth();
     for (int row = 0; row < src.height; ++row)
     {
-        auto* line = dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(dstRowBytes);
-        std::memset(line, 0, static_cast<std::size_t>(dstRowBytes));
-        int const groups = (src.width + 5) / 6;
-        for (int group = 0; group < groups; ++group)
-        {
-            std::uint16_t yv[6] = {};
-            std::uint16_t cbv[3] = {};
-            std::uint16_t crv[3] = {};
-            for (int i = 0; i < 6; ++i)
-            {
-                int const x = group * 6 + i;
-                if (x < src.width)
-                {
-                    yv[i] = src.y[static_cast<std::size_t>(row * src.width + x)];
-                    if ((i % 2) == 0)
-                    {
-                        int const cx = x / 2;
-                        if (cx < cw)
-                        {
-                            cbv[i / 2] = src.cb[static_cast<std::size_t>(row * cw + cx)];
-                            crv[i / 2] = src.cr[static_cast<std::size_t>(row * cw + cx)];
-                        }
-                    }
-                }
-            }
-            std::uint32_t words[4];
-            writeGroup(words, cbv[0], yv[0], crv[0], yv[1], cbv[1], yv[2], crv[1], yv[3], cbv[2], yv[4], crv[2], yv[5]);
-            std::memcpy(line + static_cast<std::size_t>(group) * 16u, words, sizeof(words));
-        }
+        packV210Line(src.y.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(src.width),
+            src.cb.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(cw), src.cr.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(cw),
+            src.width, dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(dstRowBytes), dstRowBytes);
     }
 }
 
@@ -234,6 +279,70 @@ void v210Chroma(std::uint8_t const* src, int rowBytes, int cx, int row, std::uin
         cr = sample10(words[3], 10);
         break;
     }
+}
+
+void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan)
+{
+    scan.sum = 0;
+    scan.count = 0;
+    scan.hash = 14695981039346656037ull;
+    long long const total = static_cast<long long>(width) * height;
+    long long const hashStep = std::max(1LL, total / 4096);
+    long long nextSum = 0;
+    long long nextHash = 0;
+    auto const luma = [](std::uint8_t const* line, int x) {
+        static constexpr int kWord[6] = {0, 1, 1, 2, 3, 3};
+        static constexpr int kShift[6] = {10, 0, 20, 10, 0, 20};
+        std::uint32_t word = 0;
+        std::memcpy(&word, line + static_cast<std::size_t>(x / 6) * 16u + static_cast<std::size_t>(kWord[x % 6]) * 4u, sizeof(word));
+        return sample10(word, kShift[x % 6]);
+    };
+    for (int row = 0; row < height; ++row)
+    {
+        auto* line = dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes);
+        std::memcpy(line, src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes), static_cast<std::size_t>(rowBytes));
+        long long const first = static_cast<long long>(row) * width;
+        long long const end = first + width;
+        for (; nextSum < end; nextSum += sumStep)
+        {
+            scan.sum += luma(line, static_cast<int>(nextSum - first));
+            ++scan.count;
+        }
+        for (; nextHash < end; nextHash += hashStep)
+        {
+            scan.hash ^= luma(line, static_cast<int>(nextHash - first));
+            scan.hash *= 1099511628211ull;
+        }
+    }
+}
+
+std::uint64_t v210LumaSum(std::uint8_t const* src, int rowBytes, int width, int height, int step, int* count)
+{
+    std::uint64_t sum = 0;
+    int n = 0;
+    int row = 0;
+    int x = 0;
+    for (long long i = 0; i < static_cast<long long>(width) * height; i += step)
+    {
+        auto const* group = src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes) + static_cast<std::size_t>(x / 6) * 16u;
+        std::uint32_t word = 0;
+        static constexpr int kWord[6] = {0, 1, 1, 2, 3, 3};
+        static constexpr int kShift[6] = {10, 0, 20, 10, 0, 20};
+        std::memcpy(&word, group + kWord[x % 6] * 4, sizeof(word));
+        sum += sample10(word, kShift[x % 6]);
+        ++n;
+        x += step;
+        while (x >= width)
+        {
+            x -= width;
+            ++row;
+        }
+    }
+    if (count != nullptr)
+    {
+        *count = n;
+    }
+    return sum;
 }
 
 std::uint64_t lumaHash(std::uint8_t const* v210, int rowBytes, int width, int height)

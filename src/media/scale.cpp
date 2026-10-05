@@ -73,7 +73,260 @@ void clearPlane(std::uint16_t* data, std::size_t count, std::uint16_t value)
     std::fill(data, data + count, value);
 #endif
 }
+
+// A sample position of bilerp()/bilerpBob() as two indices and the weight of the second one
+// in 1/1024 steps.
+struct Tap
+{
+    int i0 = 0;
+    int i1 = 0;
+    std::uint32_t w = 0;
+};
+
+Tap linearTap(float v, int size)
+{
+    v = std::clamp(v, 0.f, static_cast<float>(size - 1));
+    int const i0 = static_cast<int>(std::floor(v));
+    float const f = v - static_cast<float>(i0);
+    return Tap{i0, clampIndex(i0 + 1, size), static_cast<std::uint32_t>(std::lround(f * 1024.f))};
+}
+
+Tap bobTap(float v, int size)
+{
+    v = std::clamp(v, 0.f, static_cast<float>(std::max(1, size - 1)));
+    int i0 = clampIndex(static_cast<int>(std::floor(v)) & ~1, size);
+    int i1 = clampIndex(i0 + 2, size);
+    if ((i1 & 1) != 0)
+    {
+        i1 = clampIndex(i1 - 1, size);
+    }
+    float const f = std::clamp((v - static_cast<float>(i0)) * 0.5f, 0.f, 1.f);
+    return Tap{i0, i1, static_cast<std::uint32_t>(std::lround(f * 1024.f))};
+}
+
+std::uint16_t mix(std::uint16_t const* line0, std::uint16_t const* line1, Tap const& x, std::uint32_t wy)
+{
+    std::uint32_t const top = line0[x.i0] * (1024u - x.w) + line0[x.i1] * x.w;
+    std::uint32_t const bottom = line1[x.i0] * (1024u - x.w) + line1[x.i1] * x.w;
+    std::uint32_t const v = (top * (1024u - wy) + bottom * wy + (1u << 19)) >> 20;
+    return static_cast<std::uint16_t>(std::min<std::uint32_t>(v, 1023u));
+}
+
+// Unpacked source lines; four kept, so the two lines of the next output line are often there.
+class LineCache
+{
+public:
+    explicit LineCache(V210View const& src)
+        : src_(src)
+    {
+        for (auto& slot : slots_)
+        {
+            slot.y.resize(static_cast<std::size_t>(src.width));
+            slot.cb.resize(static_cast<std::size_t>(src.width / 2 + 1));
+            slot.cr.resize(slot.cb.size());
+        }
+    }
+
+    struct Line
+    {
+        int row = -1;
+        std::uint64_t used = 0;
+        std::vector<std::uint16_t> y, cb, cr;
+    };
+
+    Line const& get(int row)
+    {
+        Line* victim = &slots_[0];
+        for (auto& slot : slots_)
+        {
+            if (slot.row == row)
+            {
+                slot.used = ++clock_;
+                return slot;
+            }
+            if (slot.used < victim->used)
+            {
+                victim = &slot;
+            }
+        }
+        unpackV210Line(src_.data + static_cast<std::size_t>(row) * static_cast<std::size_t>(src_.rowBytes), src_.width, victim->y.data(), victim->cb.data(),
+            victim->cr.data());
+        victim->row = row;
+        victim->used = ++clock_;
+        return *victim;
+    }
+
+private:
+    V210View src_;
+    Line slots_[4];
+    std::uint64_t clock_ = 0;
+};
 } // namespace
+
+void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, bool bob)
+{
+    if (place.dst.w <= 0 || place.dst.h <= 0 || src.width <= 0 || src.height <= 0 || src.data == nullptr)
+    {
+        return;
+    }
+    int const dcw = dst.chromaWidth();
+    int const scw = src.width / 2;
+    // Column positions once per placement, with scaleInto()'s float expressions.
+    std::vector<Tap> luma(static_cast<std::size_t>(place.dst.w));
+    std::vector<Tap> chroma(static_cast<std::size_t>(place.dst.w));
+    float const csrcW = place.srcW * 0.5f;
+    for (int dx = 0; dx < place.dst.w; ++dx)
+    {
+        float const sx = place.srcX + (static_cast<float>(dx) + 0.5f) * place.srcW / static_cast<float>(place.dst.w) - 0.5f;
+        luma[static_cast<std::size_t>(dx)] = linearTap(sx, src.width);
+        float const cx = place.srcX * 0.5f + (static_cast<float>(dx / 2) + 0.5f) * csrcW / static_cast<float>(std::max(1, place.dst.w / 2)) - 0.5f;
+        chroma[static_cast<std::size_t>(dx)] = linearTap(cx, std::max(1, scw));
+    }
+    LineCache lines(src);
+    for (int dy = 0; dy < place.dst.h; ++dy)
+    {
+        int const y = place.dst.y + dy;
+        if (y < 0 || y >= dst.height)
+        {
+            continue;
+        }
+        float const sy = place.srcY + (static_cast<float>(dy) + 0.5f) * place.srcH / static_cast<float>(place.dst.h) - 0.5f;
+        Tap const ty = bob ? bobTap(sy, src.height) : linearTap(sy, src.height);
+        auto const& line0 = lines.get(ty.i0);
+        auto const& line1 = lines.get(ty.i1);
+        auto* rowY = dst.y.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(dst.width);
+        auto* rowCb = dst.cb.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(dcw);
+        auto* rowCr = dst.cr.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(dcw);
+        for (int dx = 0; dx < place.dst.w; ++dx)
+        {
+            int const x = place.dst.x + dx;
+            if (x < 0 || x >= dst.width)
+            {
+                continue;
+            }
+            rowY[x] = mix(line0.y.data(), line1.y.data(), luma[static_cast<std::size_t>(dx)], ty.w);
+            if ((x & 1) == 0 && x / 2 < dcw)
+            {
+                rowCb[x / 2] = mix(line0.cb.data(), line1.cb.data(), chroma[static_cast<std::size_t>(dx)], ty.w);
+                rowCr[x / 2] = mix(line0.cr.data(), line1.cr.data(), chroma[static_cast<std::size_t>(dx)], ty.w);
+            }
+            if (dst.hasAlpha)
+            {
+                dst.a[static_cast<std::size_t>(y) * static_cast<std::size_t>(dst.width) + static_cast<std::size_t>(x)] = 1023;
+            }
+        }
+    }
+}
+
+PreparedOverlay prepareOverlay(std::uint8_t const* rgba, int width, int height, int stride)
+{
+    PreparedOverlay out;
+    if (rgba == nullptr || stride <= 0 || width <= 0 || height <= 0)
+    {
+        return out;
+    }
+    out.width = width;
+    out.height = height;
+    int const cw = width / 2;
+    out.y.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0);
+    out.a.assign(out.y.size(), 0);
+    out.cb.assign(static_cast<std::size_t>(cw) * static_cast<std::size_t>(height), 0);
+    out.cr.assign(out.cb.size(), 0);
+    out.ca.assign(out.cb.size(), 0);
+    out.spans.resize(static_cast<std::size_t>(height));
+    for (int y = 0; y < height; ++y)
+    {
+        int spanStart = -1;
+        for (int x = 0; x <= width; ++x)
+        {
+            int a = 0;
+            if (x < width)
+            {
+                auto const* px = rgba + static_cast<std::size_t>(y) * static_cast<std::size_t>(stride) + static_cast<std::size_t>(x) * 4u;
+                a = px[3];
+                if (a != 0)
+                {
+                    // blendStraightRgba()'s conversion, once per overlay instead of once per frame.
+                    int const r = px[0];
+                    int const g = px[1];
+                    int const b = px[2];
+                    double const y8 = 16.0 + (65.481 * r + 128.553 * g + 24.966 * b) / 255.0;
+                    auto const i = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+                    out.y[i] = static_cast<std::uint16_t>(std::lround(std::clamp(y8 * 4.0, 0.0, 1023.0)));
+                    out.a[i] = static_cast<std::uint8_t>(a);
+                    if ((x & 1) == 0 && x / 2 < cw)
+                    {
+                        int r2 = r;
+                        int g2 = g;
+                        int b2 = b;
+                        int a2 = a;
+                        if (x + 1 < width)
+                        {
+                            auto const* nx = px + 4;
+                            r2 = (r + nx[0]) / 2;
+                            g2 = (g + nx[1]) / 2;
+                            b2 = (b + nx[2]) / 2;
+                            a2 = (a + nx[3]) / 2;
+                        }
+                        auto const c = static_cast<std::size_t>(y) * static_cast<std::size_t>(cw) + static_cast<std::size_t>(x / 2);
+                        out.ca[c] = static_cast<std::uint8_t>(a2);
+                        if (a2 != 0)
+                        {
+                            double const cb8 = 128.0 + (-37.797 * r2 - 74.203 * g2 + 112.0 * b2) / 255.0;
+                            double const cr8 = 128.0 + (112.0 * r2 - 93.786 * g2 - 18.214 * b2) / 255.0;
+                            out.cb[c] = static_cast<std::uint16_t>(std::lround(std::clamp(cb8 * 4.0, 0.0, 1023.0)));
+                            out.cr[c] = static_cast<std::uint16_t>(std::lround(std::clamp(cr8 * 4.0, 0.0, 1023.0)));
+                        }
+                    }
+                }
+            }
+            if (a != 0 && spanStart < 0)
+            {
+                spanStart = x;
+            }
+            else if (a == 0 && spanStart >= 0)
+            {
+                out.spans[static_cast<std::size_t>(y)].emplace_back(spanStart, x);
+                spanStart = -1;
+            }
+        }
+    }
+    return out;
+}
+
+void blendOverlay(Frame422& canvas, PreparedOverlay const& overlay)
+{
+    if (overlay.width != canvas.width || overlay.height != canvas.height)
+    {
+        return;
+    }
+    int const cw = canvas.chromaWidth();
+    for (int y = 0; y < canvas.height; ++y)
+    {
+        auto const rowOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(canvas.width);
+        auto const chromaOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(cw);
+        for (auto const& [x0, x1] : overlay.spans[static_cast<std::size_t>(y)])
+        {
+            for (int x = x0; x < x1; ++x)
+            {
+                auto const i = rowOffset + static_cast<std::size_t>(x);
+                int const a = overlay.a[i];
+                auto& dstY = canvas.y[i];
+                dstY = static_cast<std::uint16_t>((overlay.y[i] * a + dstY * (255 - a) + 127) / 255);
+                if ((x & 1) == 0 && x / 2 < cw)
+                {
+                    auto const c = chromaOffset + static_cast<std::size_t>(x / 2);
+                    int const a2 = overlay.ca[c];
+                    if (a2 != 0)
+                    {
+                        canvas.cb[c] = static_cast<std::uint16_t>((overlay.cb[c] * a2 + canvas.cb[c] * (255 - a2) + 127) / 255);
+                        canvas.cr[c] = static_cast<std::uint16_t>((overlay.cr[c] * a2 + canvas.cr[c] * (255 - a2) + 127) / 255);
+                    }
+                }
+            }
+        }
+    }
+}
 
 void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool bob)
 {

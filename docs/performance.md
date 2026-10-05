@@ -73,3 +73,24 @@ Same host and inputs, image built from `bd977ad` (this release before the versio
 | 180005 (180000 expected) | 0 | 0 | 8.6 ms | ≤ 10 / ≤ 10 ms | 3.5 cores | 80 % | 667 MiB |
 
 This meets the §13 target (zero late frames over one hour) for 2160p on a GPU that is not one of the target GPUs. An earlier soak of the same code overlapped with two container image builds on the host for 25 of its 60 minutes and had 8 late and 6 missed frames.
+
+## Lab run 2026-10-05: CPU backend without a GPU (1.1.2)
+
+Same host, no GPU device in the container (`MV_BACKEND=cpu`), inputs 1–4 from mxl-test-player and 5–16 from the lab writers, 1080p50 output, 4x4 layout, 20 s measured after 15 s warm-up:
+
+| Image | Inputs | Output frames / 1000 | Late | Missed | Compose mean | Process CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1.1.1 | 4 | 973 | 572 | 32 | 19.0 ms | 3.7 cores |
+| 1.1.1 | 16 | 503 | 1006 | 503 | 34.3 ms | 11.7 cores |
+| 1.1.2 | 4 | 1006 | 0 | 0 | 8.6 ms | 1.7 cores |
+| 1.1.2 | 16 | 1006 | 1 | 0 | 13.3 ms | 5.9 cores |
+
+What the 1.1.1 profile showed and what changed:
+
+1. Every input was unpacked completely into a new 8 MB planar frame per grain (39 % at 16 inputs). Readers now keep a copy of the packed grain from a small buffer pool, and the scaler unpacks only the source lines a tile touches (`scaleV210Into`).
+2. The bilinear scaler ran in float with `floor`, clamps and `lroundf` per sample (27–36 %). It now takes the same sample positions with taps computed once per placement and weights in 1/1024 steps (within 1 of the float result, exact on flat areas; unit test against `scaleInto`).
+3. The black and freeze alarms read every 32nd pixel of the packed grain with one call per sample (22 % once the unpack was gone, because each sample is a new cache line). They are now taken while the reader copies the grain line by line (`copyV210Scan`, the same samples in the same order).
+4. Each tile ran on a new `std::async` thread per frame and allocated its image; a persistent pool (up to 16 workers) renders into reused images.
+5. The overlay was converted from RGBA in `double` over the whole canvas on every frame. The overlay thread now converts it once per drawing (`prepareOverlay`), and the compose thread blends only the visible spans with integers (the same samples as `blendStraightRgba`, unit test).
+
+With the CUDA backend (16 → 1080p50) frames and compose time are unchanged (1005 / 1000, 0 late, 2.4 ms) and process CPU went from 2.9 to 1.8 cores, from item 3.
