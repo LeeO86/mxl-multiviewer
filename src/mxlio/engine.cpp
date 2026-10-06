@@ -373,7 +373,8 @@ struct Engine::Impl
         if (!std::filesystem::exists(defPath))
         {
             std::ofstream out(defPath);
-            out << "{\"id\":\"" << domainId << "\",\"label\":\"mxl-multiviewer\",\"description\":\"Multiviewer output domain\"}\n";
+            // BCP-007-03 requires id, label, description and tags.
+            out << "{\"id\":\"" << domainId << "\",\"label\":\"mxl-multiviewer\",\"description\":\"Multiviewer output domain\",\"tags\":{}}\n";
         }
         else if (auto const existing = readDomainId(config.outputDomainDir))
         {

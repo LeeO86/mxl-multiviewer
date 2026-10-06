@@ -47,7 +47,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: mxl-multiviewer
-          image: ghcr.io/leeo86/mxl-multiviewer:1.1.2
+          image: ghcr.io/leeo86/mxl-multiviewer:1.1.3
           env:
             - name: NMOS_HOST_ADDRESS
               valueFrom:

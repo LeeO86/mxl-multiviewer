@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.3
+
+- A new output `domain_def.json` carries `tags` (empty), as BCP-007-03 requires (`id`, `label`, `description`, `tags`). An existing file is still not rewritten. The integration test checks the four fields.
+
 ## 1.1.2
 
 ### Performance

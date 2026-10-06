@@ -169,6 +169,10 @@ if [[ "$running" != 1 ]]; then
   exit 1
 fi
 
+# BCP-007-03 schema: the output domain_def.json needs id, label, description and tags.
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if all(k in d for k in ("id","label","description")) and isinstance(d.get("tags"), dict) else 1)' "$WORK/mv/domain_def.json" ||
+  { echo "output domain_def.json is not BCP-007-03: $(cat "$WORK/mv/domain_def.json")" >&2; exit 1; }
+
 OUT="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/outputs")"
 FLOW_OUT="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["outputs"][0]["video_flow_id"])' "$OUT")"
 python3 - "$WORK/mv/$FLOW_OUT.mxl-flow/flow_def.json" <<'PY'
