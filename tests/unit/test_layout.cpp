@@ -4,6 +4,7 @@
 #include <string>
 
 #include "layout/geometry.hpp"
+#include "layout/migrate.hpp"
 #include "layout/model.hpp"
 
 using namespace mv;
@@ -143,6 +144,73 @@ TEST_CASE("layouts an older release saved load with repairs")
     CHECK(book.layouts[0].tiles[1].clockStyle == ClockStyle::Digital);
     CHECK(book.layouts[0].tiles[1].clockZone == ClockZone::Utc);
     CHECK_FALSE(validateLayout(book.layouts[0], 4).has_value());
+}
+
+TEST_CASE("the 1.1.x presets are today's presets without audio bars")
+{
+    for (int inputs : {1, 4, 9, 16, 32})
+    {
+        auto const old = legacyPresets(inputs);
+        auto now = builtinPresets(inputs);
+        REQUIRE(old.size() == now.size());
+        for (auto& layout : now)
+        {
+            for (auto& tile : layout.tiles)
+            {
+                tile.audioBars = false;
+            }
+        }
+        for (std::size_t i = 0; i < old.size(); ++i)
+        {
+            CHECK(sameLayout(old[i], now[i]));
+        }
+    }
+}
+
+TEST_CASE("unedited 1.1.x presets get today's defaults once, edited ones stay")
+{
+    LayoutBook book;
+    book.presetRevision = 1;
+    book.layouts = legacyPresets(16);
+    // Through JSON, as a 1.1.x file stores the rects: six significant digits.
+    LayoutBook loaded;
+    REQUIRE_FALSE(parseBook(bookToJson(book), loaded, 16).has_value());
+    CHECK(loaded.presetRevision == 1);
+    loaded.layouts[3].tiles[0].umdText = "CAM 1"; // an edited 4x4
+    Layout copy = loaded.layouts[1];
+    copy.name = "my wall"; // an unedited 2x2 under another name
+    loaded.layouts.push_back(copy);
+    auto const migrated = migratePresets(loaded, 16);
+    CHECK(migrated == std::vector<std::string>{"1", "2x2", "3x3", "5x5", "2+8", "1+5", "1+7", "2+6"});
+    CHECK(loaded.layouts[1].tiles[0].audioBars);
+    CHECK_FALSE(loaded.layouts[3].tiles[0].audioBars);
+    CHECK(loaded.layouts[3].tiles[0].umdText == "CAM 1");
+    CHECK_FALSE(loaded.layouts.back().tiles[0].audioBars);
+    CHECK(loaded.presetRevision == kPresetRevision);
+    // A second pass changes nothing, even if bars are switched off again by hand.
+    loaded.layouts[1].tiles[0].audioBars = false;
+    CHECK(migratePresets(loaded, 16).empty());
+    CHECK_FALSE(loaded.layouts[1].tiles[0].audioBars);
+    // A file written with another MV_MAX_INPUTS is still recognised.
+    LayoutBook fewer;
+    fewer.presetRevision = 1;
+    fewer.layouts = legacyPresets(8);
+    CHECK(migratePresets(fewer, 16).size() == 9);
+    CHECK(fewer.layouts[3].tiles.size() == 16);
+    // A book without preset_revision is from 1.1.x.
+    LayoutBook bare;
+    REQUIRE_FALSE(parseBook(R"({"version":1,"active":"1","layouts":[]})", bare, 16).has_value());
+    CHECK(bare.presetRevision == 1);
+}
+
+TEST_CASE("the book keeps the layout chosen for each head")
+{
+    LayoutBook book = defaultBook(16, "2x2");
+    book.heads = {{1, "3x3"}, {2, "4x4"}};
+    LayoutBook back;
+    REQUIRE_FALSE(parseBook(bookToJson(book), back, 16).has_value());
+    CHECK(back.heads == book.heads);
+    CHECK(back.presetRevision == kPresetRevision);
 }
 
 TEST_CASE("layout json round trip and rejection")

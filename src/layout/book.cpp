@@ -1,5 +1,6 @@
 #include "layout/book.hpp"
 
+#include "layout/migrate.hpp"
 #include "util/logging.hpp"
 
 #include <cstdio>
@@ -13,6 +14,7 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
     , path_(std::move(path))
 {
     book_ = defaultBook(maxInputs_, active);
+    std::vector<std::string> migrated;
     if (!path_.empty())
     {
         std::ifstream in(path_);
@@ -36,6 +38,7 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
                 {
                     logWarn("layout_repaired", {{"path", path_}, {"change", repair}});
                 }
+                migrated = migratePresets(parsed, maxInputs_);
                 for (auto const& preset : book_.layouts)
                 {
                     bool found = false;
@@ -56,6 +59,8 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
                     book_.active = parsed.active;
                 }
                 book_.layouts = std::move(parsed.layouts);
+                book_.heads = std::move(parsed.heads);
+                book_.presetRevision = parsed.presetRevision;
             }
         }
     }
@@ -71,6 +76,23 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
     if (!activeOk && !book_.layouts.empty())
     {
         book_.active = book_.layouts.front().name;
+    }
+    if (!migrated.empty())
+    {
+        // The file as an older release wrote it stays next to it, once.
+        auto const backup = path_ + ".bak";
+        std::error_code ec;
+        if (!std::filesystem::exists(backup, ec))
+        {
+            std::filesystem::copy_file(path_, backup, ec);
+        }
+        std::string names;
+        for (auto const& name : migrated)
+        {
+            names += (names.empty() ? "" : ",") + name;
+        }
+        logInfo("layouts_migrated", {{"path", path_}, {"layouts", names}, {"backup", backup}});
+        persistUnlocked();
     }
 }
 
@@ -90,6 +112,11 @@ std::shared_ptr<Layout const> LayoutBookStore::layout(std::string const& name) c
 bool LayoutBookStore::has(std::string const& name) const
 {
     std::lock_guard lock{mutex_};
+    return hasUnlocked(name);
+}
+
+bool LayoutBookStore::hasUnlocked(std::string const& name) const
+{
     for (auto const& item : published_)
     {
         if (item->name == name)
@@ -100,13 +127,45 @@ bool LayoutBookStore::has(std::string const& name) const
     return false;
 }
 
+void LayoutBookStore::saveHead(int head, std::string const& name)
+{
+    std::lock_guard lock{mutex_};
+    book_.heads[head] = name;
+    persistUnlocked();
+}
+
+std::optional<std::string> LayoutBookStore::savedHead(int head) const
+{
+    std::lock_guard lock{mutex_};
+    auto const it = book_.heads.find(head);
+    if (it != book_.heads.end() && hasUnlocked(it->second))
+    {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+std::string LayoutBookStore::startLayout(int head, std::string const& configured, bool configuredForHead) const
+{
+    std::lock_guard lock{mutex_};
+    if (auto const it = book_.heads.find(head); it != book_.heads.end() && hasUnlocked(it->second))
+    {
+        return it->second;
+    }
+    if (configuredForHead && hasUnlocked(configured))
+    {
+        return configured;
+    }
+    return book_.active;
+}
+
 std::string LayoutBookStore::activeName() const
 {
     std::lock_guard lock{mutex_};
     return book_.active;
 }
 
-bool LayoutBookStore::activate(std::string const& name)
+bool LayoutBookStore::activate(std::string const& name, int heads)
 {
     std::lock_guard lock{mutex_};
     for (auto const& layout : book_.layouts)
@@ -114,6 +173,10 @@ bool LayoutBookStore::activate(std::string const& name)
         if (layout.name == name)
         {
             book_.active = name;
+            for (int head = 1; head <= heads; ++head)
+            {
+                book_.heads[head] = name;
+            }
             persistUnlocked();
             return true;
         }
@@ -160,6 +223,7 @@ std::optional<std::string> LayoutBookStore::erase(std::string const& name)
         {
             book_.layouts.erase(book_.layouts.begin() + static_cast<std::ptrdiff_t>(i));
             published_.erase(published_.begin() + static_cast<std::ptrdiff_t>(i));
+            std::erase_if(book_.heads, [&](auto const& entry) { return entry.second == name; });
             persistUnlocked();
             return std::nullopt;
         }
@@ -203,6 +267,17 @@ std::optional<std::string> LayoutBookStore::replaceJson(std::string const& body)
     if (!activeFound)
     {
         parsed.active = parsed.layouts.front().name;
+    }
+    // An old export gets today's preset defaults, as the layout file does at start.
+    auto const migrated = migratePresets(parsed, maxInputs_);
+    if (!migrated.empty())
+    {
+        std::string names;
+        for (auto const& name : migrated)
+        {
+            names += (names.empty() ? "" : ",") + name;
+        }
+        logInfo("layouts_migrated", {{"source", "import"}, {"layouts", names}});
     }
     std::lock_guard lock{mutex_};
     book_ = std::move(parsed);

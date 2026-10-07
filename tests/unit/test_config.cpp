@@ -5,6 +5,7 @@
 #include "config/store.hpp"
 #include "domain/scan.hpp"
 #include "layout/book.hpp"
+#include "layout/migrate.hpp"
 #include "media/timebase.hpp"
 #include "nmos/ids.hpp"
 #include "ops/api.hpp"
@@ -211,6 +212,78 @@ TEST_CASE("an unreadable layouts file is moved aside, an older one is repaired")
     CHECK(repaired.has("mine"));
     CHECK(repaired.has("4x4"));
     CHECK(repaired.layout("mine")->tiles[0].zoneGreen == doctest::Approx(-30));
+}
+
+namespace
+{
+std::string readFile(std::string const& path)
+{
+    std::ifstream in(path);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+} // namespace
+
+TEST_CASE("a 1.1.x layout file: presets migrate once, active and head choices survive restarts")
+{
+    auto const dir = std::string("/tmp/mv-migrate-test");
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    auto const path = dir + "/layouts.json";
+    // As 1.1.3 wrote it: no preset_revision, no heads, active 3x3, one edited preset.
+    LayoutBook old;
+    old.active = "3x3";
+    old.layouts = legacyPresets(16);
+    old.layouts[5].tiles[0].umdText = "EDITED"; // 2+8
+    auto body = bookToJson(old);
+    auto const marker = std::string("\"preset_revision\":2,\"heads\":{},");
+    REQUIRE(body.find(marker) != std::string::npos);
+    body.erase(body.find(marker), marker.size());
+    {
+        std::ofstream out(path);
+        out << body;
+    }
+    {
+        LayoutBookStore store(16, "2x2", path);
+        // MV_ACTIVE_LAYOUT (2x2) is only the start of a book without a file.
+        CHECK(store.startLayout(1, "2x2", false) == "3x3");
+        CHECK(store.layout("4x4")->tiles[0].audioBars);
+        CHECK_FALSE(store.layout("2+8")->tiles[0].audioBars);
+        CHECK(store.layout("2+8")->tiles[0].umdText == "EDITED");
+        CHECK(readFile(path + ".bak") == body);
+    }
+    auto const migrated = readFile(path);
+    CHECK(migrated.find("\"preset_revision\":2") != std::string::npos);
+    {
+        // A second start changes nothing.
+        LayoutBookStore again(16, "2x2", path);
+        CHECK(readFile(path) == migrated);
+        CHECK(again.startLayout(1, "2x2", false) == "3x3");
+        again.saveHead(1, "4x4");
+    }
+    {
+        LayoutBookStore third(16, "2x2", path);
+        // Saved head layout, then MV_OUT<h>_LAYOUT, then the book's active layout.
+        CHECK(third.startLayout(1, "2x2", false) == "4x4");
+        CHECK(third.startLayout(2, "1+5", true) == "1+5");
+        CHECK(third.startLayout(2, "nope", true) == "3x3");
+        CHECK(third.activate("2+6", 2));
+    }
+    LayoutBookStore fourth(16, "2x2", path);
+    CHECK(fourth.startLayout(1, "2x2", false) == "2+6");
+    CHECK(fourth.startLayout(2, "1+5", true) == "2+6");
+    CHECK(readFile(path + ".bak") == body);
+
+    // PUT /api/v1/outputs/{h} saves the head's layout for the next start.
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};
+    ConfigStore store(env, std::nullopt);
+    RuntimeModel runtime(store.effectiveConfig());
+    Metrics metrics;
+    Api api(store.effectiveConfig(), store, fourth, runtime, metrics);
+    CHECK(api.handle(HttpRequest{"PUT", "/api/v1/outputs/1", {}, R"({"layout":"1+7"})", {}}).status == 200);
+    LayoutBookStore fifth(16, "2x2", path);
+    CHECK(fifth.startLayout(1, "2x2", false) == "1+7");
+    auto const presets = api.handle(HttpRequest{"GET", "/api/v1/presets", {}, {}, {}});
+    CHECK(presets.status == 200);
+    CHECK(presets.body.find("\"audio_bars\":true") != std::string::npos);
 }
 
 TEST_CASE("an activation is not lost to the composer's status report")

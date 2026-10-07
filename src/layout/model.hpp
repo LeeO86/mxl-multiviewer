@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -99,11 +100,18 @@ struct Layout
     std::vector<Tile> tiles;
 };
 
+// Revision of the built-in preset defaults: 1 is 1.1.x (no audio bars), 2 is 1.2 (bars on
+// input tiles). A book file without `preset_revision` is revision 1 (layout/migrate.hpp).
+inline constexpr int kPresetRevision = 2;
+
 struct LayoutBook
 {
     int version = 1;
     std::string active = "2x2";
     std::vector<Layout> layouts;
+    // The layout last chosen for each output head (1-based), kept across restarts.
+    std::map<int, std::string> heads;
+    int presetRevision = kPresetRevision;
 };
 
 std::vector<Layout> builtinPresets(int maxInputs);

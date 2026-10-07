@@ -684,6 +684,7 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
         if (!layout.empty())
         {
             head.layout = layout;
+            head.layoutSet = true;
         }
         auto const follow = raw((prefix + "AUDIO_FOLLOW").c_str());
         if (!follow.empty())

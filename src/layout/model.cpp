@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <sstream>
 
@@ -662,6 +663,18 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
     LayoutBook book;
     book.version = static_cast<int>(num(obj, "version", 1));
     book.active = str(obj, "active", "2x2");
+    book.presetRevision = static_cast<int>(num(obj, "preset_revision", 1));
+    if (auto const heads = obj.find("heads"); heads != obj.end() && heads->second.is<picojson::object>())
+    {
+        for (auto const& [key, value] : heads->second.get<picojson::object>())
+        {
+            int const head = std::atoi(key.c_str());
+            if (head >= 1 && head <= 3 && value.is<std::string>())
+            {
+                book.heads[head] = value.get<std::string>();
+            }
+        }
+    }
     auto const layouts = obj.find("layouts");
     if (layouts == obj.end() || !layouts->second.is<picojson::array>())
     {
@@ -688,7 +701,14 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
 std::string bookToJson(LayoutBook const& book)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"layouts\":[";
+    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"preset_revision\":" << book.presetRevision << ",\"heads\":{";
+    bool firstHead = true;
+    for (auto const& [head, name] : book.heads)
+    {
+        out << (firstHead ? "" : ",") << '"' << head << "\":" << quoted(name);
+        firstHead = false;
+    }
+    out << "},\"layouts\":[";
     for (std::size_t i = 0; i < book.layouts.size(); ++i)
     {
         if (i != 0)

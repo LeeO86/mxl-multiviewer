@@ -228,6 +228,10 @@ A layout is JSON, `version: 1`:
 
 The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
 
+The book also keeps the layout last chosen for each head (`"heads": {"1": "3x3"}`) and the revision of the preset defaults it follows (`preset_revision`, 2 since 1.2). A head starts on its saved layout, else on `MV_OUT<h>_LAYOUT` when that is set, else on the book's `active` layout; `MV_ACTIVE_LAYOUT` is the active layout of a book that has no file yet. `POST /api/v1/layouts/{name}/activate` makes a layout active and the saved layout of every head; `PUT /api/v1/outputs/{h}` saves it for that head. A saved name that is no longer in the book is skipped.
+
+A book below `preset_revision` 2 (written by 1.1.x, or by 1.2.0 from such a file) is migrated at start: every layout whose fields all equal the 1.1.x built-in preset of the same name (for any `MV_MAX_INPUTS`) becomes today's preset, with audio bars; edited layouts stay. Before the file is rewritten it is copied once to `<file>.bak` (an existing `.bak` is never replaced), and `layouts_migrated` names the layouts. The book is then at revision 2, so a later start changes nothing. An imported book is migrated the same way, without a `.bak`.
+
 Preset geometry:
 
 | Name | Tiles |
@@ -326,8 +330,9 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | GET | `/api/v1/layouts` | the book |
 | PUT | `/api/v1/layouts/{name}` | create or replace one layout |
 | DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active and not on an output head |
-| POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head that uses it |
-| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}`; an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400 |
+| POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head; it becomes the book's active layout and the saved layout of every head |
+| GET | `/api/v1/presets` | today's built-in presets, as a book |
+| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}`; an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400; the layout is saved for the next start |
 | GET | `/api/v1/alarms` | active alarms: input, name, `severity` (`red`, `amber`), `since` (Unix ms) |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
 | GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
@@ -371,7 +376,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_HOLD_MS` | 1000 | no | slate delay |
 | `MV_HISTORY_DURATION_NS` | 200000000 | yes | new domain only |
 | `MV_LAYOUTS_FILE` | empty | no | layout book path. Empty uses `<MV_STATE_DIR>/layouts.json` |
-| `MV_ACTIVE_LAYOUT` | `2x2` | no | initial layout for every head |
+| `MV_ACTIVE_LAYOUT` | `2x2` | no | active layout of a layout book that has no file yet; heads start on the book's saved choices (§6.1) |
 | `MV_AUDIO_CHANNELS` | 2 | no | `0`, `2`, or `16`; 0 disables audio flows |
 | `MV_AUDIO_FOLLOW` | 1 | no | input number whose audio is copied; 0 disables |
 | `MV_OVERLAY_HZ` | 25 | no | cap |
@@ -413,7 +418,7 @@ Per head `h` ≥ 2 (head 1 uses the unscoped keys):
 | Key | Meaning |
 | --- | --- |
 | `MV_OUT<h>_FORMAT` | defaults to `MV_OUTPUT_FORMAT` |
-| `MV_OUT<h>_LAYOUT` | defaults to `MV_ACTIVE_LAYOUT` |
+| `MV_OUT<h>_LAYOUT` | layout of head `h` when none was saved for it (§6.1); otherwise the book's active layout |
 | `MV_OUT<h>_AUDIO_FOLLOW` | defaults to `MV_AUDIO_FOLLOW` |
 | `MV_OUT<h>_AUDIO_CHANNELS` | defaults to `MV_AUDIO_CHANNELS` |
 

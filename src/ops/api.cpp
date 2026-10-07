@@ -231,6 +231,13 @@ HttpResponse Api::handle(HttpRequest const& request)
     {
         return jsonResponse(200, layouts_.json());
     }
+    if (path == "/api/v1/presets" && request.method == "GET")
+    {
+        // Today's built-in presets, for "preset defaults" in the editor.
+        LayoutBook presets;
+        presets.layouts = builtinPresets(config_.maxInputs);
+        return jsonResponse(200, bookToJson(presets));
+    }
     if (path.rfind("/api/v1/layouts/", 0) == 0)
     {
         auto name = path.substr(std::string("/api/v1/layouts/").size());
@@ -244,7 +251,7 @@ HttpResponse Api::handle(HttpRequest const& request)
         name = urlDecode(name);
         if (request.method == "POST" && action == "activate")
         {
-            if (!layouts_.activate(name))
+            if (!layouts_.activate(name, config_.outputs))
             {
                 return jsonResponse(404, "{\"error\":\"layout not found\"}");
             }
@@ -319,6 +326,7 @@ HttpResponse Api::handle(HttpRequest const& request)
         if (layout)
         {
             runtime_.setHeadLayout(index, *layout);
+            layouts_.saveHead(index, *layout);
         }
         if (follow)
         {
@@ -533,12 +541,18 @@ HttpResponse Api::handle(HttpRequest const& request)
             {
                 return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
             }
-            // A head whose layout the import dropped shows the book's active layout.
+            // A head takes the imported book's saved layout for it; a head whose layout the
+            // import dropped shows the book's active layout. Either is saved for the next start.
             for (int head = 1; head <= config_.outputs; ++head)
             {
-                if (!layouts_.has(runtime_.headLayout(head)))
+                if (auto const saved = layouts_.savedHead(head))
+                {
+                    runtime_.setHeadLayout(head, *saved);
+                }
+                else if (!layouts_.has(runtime_.headLayout(head)))
                 {
                     runtime_.setHeadLayout(head, layouts_.activeName());
+                    layouts_.saveHead(head, layouts_.activeName());
                     moved.push_back(head);
                 }
             }
