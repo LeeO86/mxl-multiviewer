@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.2.0
+
+### Web UI
+
+- New look shared with the other LeeO86 MXL UIs (mxl-st2110-gateway, mxl-browser-source): header with node label, status pills and version, banners for errors and lost connections, tabs that keep their place in the address (`#layout`), panels, pills, light and dark theme.
+- **Layout editor**: add input, clock, label, and empty tiles; duplicate, delete, forward/backward; drag, resize, and arrow keys snap to `MV_GRID` (from the API; it was fixed at 24); a preview of each tile with its source name, caption, live audio levels, or clock. The inspector sets the tile content (input and scale, analogue or digital clock with time zone and timecode, label text), the caption (UMD, explained on the page: NMOS sender label, fixed text, or TSL, with its text, position, size, and background), audio bars (channels, first channel, position, RMS, zones), tally, overlays, and the layout background. Save, Save as, Discard, New, Delete, Activate, Import and Export of one layout or the whole book. Unsaved changes are marked and survive tab switches; a lost WebSocket no longer reloads the layouts and wipes edits.
+- **Preview**: picture at `MV_PREVIEW_FPS` (was polled once a second), head selector, layout on air with Activate, output counters.
+- **Inputs**: video and audio state, source, format, live PPM bars with peak hold and clip per channel, alarms, receiver ids, how to route.
+- **Alarms**: table with severity and since when; explanation of each alarm.
+- **Settings**: every setting with its origin and a one-line description, editing of file values, JSON and `KEY=value` export (download, copy), import from a file or pasted text.
+
+### Overlay
+
+- Built-in presets show audio bars on every input tile (two channels on the right). Saved layouts keep their setting.
+- Audio bars have a PPM scale (0 to −60 dBFS) with labels when there is room, zones by position on the bar, a 2 s peak-hold line, and a clip light. They are drawn on input tiles only, keep clear of the caption, and are dim and crossed out when the input has no audio routed.
+- Slates: after `MV_HOLD_MS` without a frame the tile is black with `NO SIGNAL` (or `WAITING` while the flow is missing) and the input name; an input without a video route shows `NOT ROUTED`. Before, the last frame stayed forever.
+- The layout `background` colour is drawn on the CPU and CUDA backends (it was always black); letterbox areas stay black.
+- Alarm borders inside the tally border, red for no signal, black, freeze, and clip, amber for silence and format; amber badges for amber alarms.
+- Digital clocks, timecode, labels, and slates are sized to the tile; `clock_style` accepts `analog`; unknown clock styles and zones are rejected instead of becoming digital UTC.
+
+### Behaviour
+
+- The `is04` caption is the routed sender's label from the registry Query API (looked up by sender id, or by flow id when the route has none), then the tile's text, then the MXL flow label, then `MV In <n>`.
+- The audio leg is read on its own: from its own domain and sender, without a video route, re-opened on a re-route, metered on every sample, with the states `running`, `waiting`, and `no_signal`.
+- The `no_signal` alarm rises (it never did); the video state goes `holding` and then `no_signal` when frames stop. `silence` also rises when routed audio does not arrive.
+- An input recovers when its source writer restarts (the writer re-creates the flow): video and audio open the new flow without a re-route. Before, video stayed on the old flow with a frozen picture.
+- Audio-follow copies only the samples of each output frame from a ring buffer.
+- Activating a layout or changing `audio_follow` while a frame was being composed could be undone by that frame; on the CPU backend most activations were lost. Fixed.
+- Layout names with `+`, spaces, or quotes work in the API paths (percent-decoded), and quotes and backslashes in names, captions, and labels no longer break `GET /api/v1/layouts` and `layouts.json`.
+- `POST /api/v1/config/import` skips settings that come from the environment (listed in `skipped`) instead of failing.
+- Every head keeps a layout that exists: an import that drops a head's layout switches that head to the book's active layout (`heads_moved`), a book without layouts is refused, a layout on a head cannot be deleted, and `PUT /api/v1/outputs/{h}` rejects an unknown layout (404) and `audio_follow` outside 0 to `MV_MAX_INPUTS` (400).
+- Audio bars stay within the 16 metered channels (first channel + count ≤ 16).
+- `layouts.json` from an older release with values 1.2.0 rejects (audio zones out of order, bars past channel 16, unknown clock values) is repaired at start and logged; a file that cannot be read is renamed to `layouts.json.bad` instead of being overwritten by the next save.
+
+### API
+
+- `GET /preview.jpg?head=<h>`: the preview of heads 2 and 3.
+- `GET /api/v1/alarms`: `severity` and `since` per alarm.
+- `GET /api/v1/inputs` and the WebSocket: `hold_dbfs` and `clip` per channel.
+- `GET /api/v1/info`: `label`, `grid`, `preview_fps`, `hold_ms`.
+
 ## 1.1.3
 
 - A new output `domain_def.json` carries `tags` (empty), as BCP-007-03 requires (`id`, `label`, `description`, `tags`). An existing file is still not rewritten. The integration test checks the four fields.

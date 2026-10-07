@@ -31,6 +31,118 @@ TEST_CASE("presets cover the canvas without leaving it")
     auto const two = *std::find_if(layouts.begin(), layouts.end(), [](Layout const& layout) { return layout.name == "2x2"; });
     CHECK(two.tiles.size() == 4);
     CHECK(two.tiles[1].rect.x == doctest::Approx(0.5));
+    // Presets show two audio bars from the first channel on the right of every input tile.
+    for (auto const& layout : layouts)
+    {
+        for (auto const& tile : layout.tiles)
+        {
+            CHECK(tile.audioBars);
+            CHECK(tile.audioBarChannels == 2);
+            CHECK(tile.audioBarFirst == 0);
+            CHECK(tile.audioBarPosition == BarsPosition::Right);
+        }
+    }
+    // A saved tile without the key keeps the old default.
+    Layout saved;
+    CHECK_FALSE(parseLayout("{\"version\":1,\"name\":\"s\",\"tiles\":[{\"id\":\"a\",\"input\":1,\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}", saved, 4).has_value());
+    CHECK_FALSE(saved.tiles[0].audioBars);
+}
+
+TEST_CASE("layout json escapes quotes and backslashes")
+{
+    Layout layout;
+    layout.name = R"(wall "A" \ 1)";
+    Tile caption;
+    caption.id = R"(t"1)";
+    caption.umdSource = UmdSource::Manual;
+    caption.umdText = "CAM \"1\" \\ left\ttab";
+    caption.rect = {0, 0, 0.5, 1};
+    Tile label;
+    label.id = "t2";
+    label.content = TileContent::Label;
+    label.labelText = R"(C:\feed "B")";
+    label.rect = {0.5, 0, 0.5, 1};
+    layout.tiles = {caption, label};
+    Layout parsed;
+    REQUIRE_FALSE(parseLayout(layoutToJson(layout), parsed, 4).has_value());
+    CHECK(parsed.name == layout.name);
+    CHECK(parsed.tiles[0].id == caption.id);
+    CHECK(parsed.tiles[0].umdText == caption.umdText);
+    CHECK(parsed.tiles[1].labelText == label.labelText);
+
+    LayoutBook book;
+    book.active = layout.name;
+    book.layouts = {layout};
+    LayoutBook back;
+    REQUIRE_FALSE(parseBook(bookToJson(book), back, 4).has_value());
+    CHECK(back.active == layout.name);
+    CHECK(back.layouts[0].tiles[0].umdText == caption.umdText);
+}
+
+TEST_CASE("clock style accepts analog and rejects unknown values")
+{
+    auto const body = [](std::string const& style, std::string const& zone) {
+        return "{\"version\":1,\"name\":\"c\",\"tiles\":[{\"id\":\"c\",\"content\":\"clock\",\"clock_style\":\"" + style + "\",\"clock_zone\":\"" + zone +
+               "\",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body("analog", "local"), layout, 4).has_value());
+    CHECK(layout.tiles[0].clockStyle == ClockStyle::Analogue);
+    CHECK(layout.tiles[0].clockZone == ClockZone::Local);
+    CHECK(layoutToJson(layout).find("\"clock_style\":\"analogue\"") != std::string::npos);
+    REQUIRE_FALSE(parseLayout(body("digital", "tai"), layout, 4).has_value());
+    CHECK(layout.tiles[0].clockStyle == ClockStyle::Digital);
+    CHECK(layout.tiles[0].clockZone == ClockZone::Tai);
+    CHECK(parseLayout(body("sundial", "utc"), layout, 4).has_value());
+    CHECK(parseLayout(body("digital", "mars"), layout, 4).has_value());
+}
+
+TEST_CASE("audio zones must rise towards full scale")
+{
+    auto const body = [](int green, int amber) {
+        return "{\"version\":1,\"name\":\"z\",\"tiles\":[{\"id\":\"a\",\"input\":1,\"zone_green\":" + std::to_string(green) + ",\"zone_amber\":" +
+               std::to_string(amber) + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    CHECK_FALSE(parseLayout(body(-20, -10), layout, 4).has_value());
+    CHECK(layout.tiles[0].zoneGreen == doctest::Approx(-20));
+    CHECK(parseLayout(body(-9, -18), layout, 4).has_value());
+    CHECK(parseLayout(body(-18, 3), layout, 4).has_value());
+}
+
+TEST_CASE("audio bars stay within the 16 metered channels")
+{
+    auto const body = [](int first, int channels) {
+        return "{\"version\":1,\"name\":\"b\",\"tiles\":[{\"id\":\"a\",\"input\":1,\"audio_bar_first\":" + std::to_string(first) +
+               ",\"audio_bar_channels\":" + std::to_string(channels) + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    CHECK_FALSE(parseLayout(body(14, 2), layout, 4).has_value());
+    CHECK(parseLayout(body(15, 2), layout, 4).has_value());
+    CHECK(parseLayout(body(40, 1), layout, 4).has_value());
+    CHECK(parseLayout(body(0, 17), layout, 4).has_value());
+}
+
+TEST_CASE("layouts an older release saved load with repairs")
+{
+    // 1.1.x stored zones in any order, any bar channel, and kept unknown clock values out of
+    // the file only by accident of its own writer; a hand-edited file may still have them.
+    auto const body = std::string("{\"version\":1,\"active\":\"old\",\"layouts\":[{\"version\":1,\"name\":\"old\",\"tiles\":["
+                                  "{\"id\":\"a\",\"input\":1,\"zone_green\":-6,\"zone_amber\":-20,\"audio_bar_first\":40,\"rect\":{\"x\":0,\"y\":0,\"w\":0.5,\"h\":1}},"
+                                  "{\"id\":\"c\",\"content\":\"clock\",\"clock_style\":\"sundial\",\"clock_zone\":\"mars\",\"rect\":{\"x\":0.5,\"y\":0,\"w\":0.5,\"h\":1}}]}]}");
+    LayoutBook strict;
+    CHECK(parseBook(body, strict, 4).has_value());
+    LayoutBook book;
+    std::vector<std::string> repairs;
+    REQUIRE_FALSE(parseBook(body, book, 4, &repairs).has_value());
+    CHECK(repairs.size() == 4);
+    auto const& tile = book.layouts[0].tiles[0];
+    CHECK(tile.zoneGreen == doctest::Approx(-20));
+    CHECK(tile.zoneAmber == doctest::Approx(-6));
+    CHECK(tile.audioBarFirst + tile.audioBarChannels <= 16);
+    CHECK(book.layouts[0].tiles[1].clockStyle == ClockStyle::Digital);
+    CHECK(book.layouts[0].tiles[1].clockZone == ClockZone::Utc);
+    CHECK_FALSE(validateLayout(book.layouts[0], 4).has_value());
 }
 
 TEST_CASE("layout json round trip and rejection")

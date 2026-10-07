@@ -1,5 +1,7 @@
 #include "layout/book.hpp"
 
+#include "util/logging.hpp"
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -17,9 +19,23 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
         if (in)
         {
             std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            in.close();
             LayoutBook parsed;
-            if (!parseBook(body, parsed, maxInputs_))
+            std::vector<std::string> repairs;
+            if (auto const problem = parseBook(body, parsed, maxInputs_, &repairs))
             {
+                // The presets run instead. Keep the file: the next save would overwrite it.
+                auto const aside = path_ + ".bad";
+                std::error_code ec;
+                std::filesystem::rename(path_, aside, ec);
+                logError("layouts_file_invalid", {{"path", path_}, {"error", *problem}, {"moved_to", ec ? std::string{} : aside}});
+            }
+            else
+            {
+                for (auto const& repair : repairs)
+                {
+                    logWarn("layout_repaired", {{"path", path_}, {"change", repair}});
+                }
                 for (auto const& preset : book_.layouts)
                 {
                     bool found = false;
@@ -69,6 +85,19 @@ std::shared_ptr<Layout const> LayoutBookStore::layout(std::string const& name) c
         }
     }
     return published_.empty() ? nullptr : published_.front();
+}
+
+bool LayoutBookStore::has(std::string const& name) const
+{
+    std::lock_guard lock{mutex_};
+    for (auto const& item : published_)
+    {
+        if (item->name == name)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string LayoutBookStore::activeName() const
@@ -161,6 +190,19 @@ std::optional<std::string> LayoutBookStore::replaceJson(std::string const& body)
     if (auto const error = parseBook(body, parsed, maxInputs_))
     {
         return error;
+    }
+    if (parsed.layouts.empty())
+    {
+        return std::string("the layout book has no layouts");
+    }
+    bool activeFound = false;
+    for (auto const& layout : parsed.layouts)
+    {
+        activeFound = activeFound || layout.name == parsed.active;
+    }
+    if (!activeFound)
+    {
+        parsed.active = parsed.layouts.front().name;
     }
     std::lock_guard lock{mutex_};
     book_ = std::move(parsed);

@@ -7,11 +7,16 @@
 #include "util/jsonutil.hpp"
 #include "version.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <variant>
+#include <vector>
 
 namespace mv
 {
@@ -32,6 +37,66 @@ std::string legJson(LegView const& leg)
         << ",\"channels\":" << leg.channels << ",\"interlaced\":" << (leg.interlaced ? "true" : "false") << ",\"grains\":" << leg.grains
         << ",\"late\":" << leg.late << ",\"resyncs\":" << leg.resyncs << ",\"latency_ms\":" << leg.latencyMs << "}";
     return out.str();
+}
+
+// Path segments arrive percent-encoded (a layout called "2+8" is "2%2B8").
+std::string urlDecode(std::string const& text)
+{
+    auto const hex = [](char c) {
+        if (c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f')
+        {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F')
+        {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        if (text[i] == '%' && i + 2 < text.size() && hex(text[i + 1]) >= 0 && hex(text[i + 2]) >= 0)
+        {
+            out += static_cast<char>(hex(text[i + 1]) * 16 + hex(text[i + 2]));
+            i += 2;
+        }
+        else
+        {
+            out += text[i];
+        }
+    }
+    return out;
+}
+
+// The value of `key` in a query string such as "head=2&t=1", or empty.
+std::string queryValue(std::string const& query, std::string const& key)
+{
+    std::size_t pos = 0;
+    while (pos <= query.size())
+    {
+        auto const end = std::min(query.find('&', pos), query.size());
+        auto const part = query.substr(pos, end - pos);
+        if (part.rfind(key + "=", 0) == 0)
+        {
+            return urlDecode(part.substr(key.size() + 1));
+        }
+        pos = end + 1;
+    }
+    return {};
+}
+
+void numbers(std::ostringstream& out, std::array<double, 16> const& values)
+{
+    for (std::size_t c = 0; c < values.size(); ++c)
+    {
+        out << (c != 0 ? "," : "") << values[c];
+    }
 }
 
 HttpResponse jsonResponse(int status, std::string body)
@@ -80,7 +145,8 @@ HttpResponse Api::handle(HttpRequest const& request)
         HttpResponse response;
         response.status = 200;
         response.contentType = "image/jpeg";
-        response.body = runtime_.preview();
+        auto const head = queryValue(request.query, "head");
+        response.body = runtime_.preview(head.empty() ? 1 : std::atoi(head.c_str()));
         if (response.body.empty())
         {
             response.status = 204;
@@ -92,9 +158,11 @@ HttpResponse Api::handle(HttpRequest const& request)
     {
         auto const ids = makeNmosIds(config_.nmosSeed);
         std::ostringstream out;
-        out << "{\"version\":\"" << MV_VERSION << "\",\"mxl_revision\":\"" << MV_MXL_REVISION << "\",\"backend\":\"" << config_.backend
+        out << "{\"version\":\"" << MV_VERSION << "\",\"mxl_revision\":\"" << MV_MXL_REVISION << "\",\"label\":"
+            << quote(config_.nmosLabel.empty() ? config_.hostId : config_.nmosLabel) << ",\"backend\":\"" << config_.backend
             << "\",\"cuda_compiled\":" << (runtime_.cudaCompiled() ? "true" : "false") << ",\"cuda_devices\":" << runtime_.cudaDevices()
-            << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
+            << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"grid\":" << config_.grid << ",\"preview_fps\":"
+            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
             << ids.device << "\",\"domain_id\":\"" << (config_.outputDomainId.empty() ? ids.domain : config_.outputDomainId) << "\",\"overlay_blend2d\":"
             << (overlayUsesBlend2d() ? "true" : "false") << ",\"receivers\":[";
         for (int i = 1; i <= config_.maxInputs; ++i)
@@ -122,22 +190,15 @@ HttpResponse Api::handle(HttpRequest const& request)
             auto const& input = inputs[i];
             out << "{\"index\":" << input.index << ",\"video\":" << legJson(input.video) << ",\"audio\":" << legJson(input.audio) << ",\"tally\":" << input.tally
                 << ",\"tsl_text\":" << quote(input.tslText) << ",\"ppm_dbfs\":[";
-            for (int c = 0; c < 16; ++c)
-            {
-                if (c != 0)
-                {
-                    out << ',';
-                }
-                out << input.ppmDbfs[static_cast<std::size_t>(c)];
-            }
+            numbers(out, input.ppmDbfs);
+            out << "],\"hold_dbfs\":[";
+            numbers(out, input.holdDbfs);
             out << "],\"rms_dbfs\":[";
-            for (int c = 0; c < 16; ++c)
+            numbers(out, input.rmsDbfs);
+            out << "],\"clip\":[";
+            for (std::size_t c = 0; c < input.clip.size(); ++c)
             {
-                if (c != 0)
-                {
-                    out << ',';
-                }
-                out << input.rmsDbfs[static_cast<std::size_t>(c)];
+                out << (c != 0 ? "," : "") << (input.clip[c] ? "true" : "false");
             }
             out << "],\"alarms\":{\"no_signal\":" << (input.alarmNoSignal ? "true" : "false") << ",\"black\":" << (input.alarmBlack ? "true" : "false")
                 << ",\"freeze\":" << (input.alarmFreeze ? "true" : "false") << ",\"silence\":" << (input.alarmSilence ? "true" : "false")
@@ -180,6 +241,7 @@ HttpResponse Api::handle(HttpRequest const& request)
             action = name.substr(slash + 1);
             name = name.substr(0, slash);
         }
+        name = urlDecode(name);
         if (request.method == "POST" && action == "activate")
         {
             if (!layouts_.activate(name))
@@ -208,6 +270,13 @@ HttpResponse Api::handle(HttpRequest const& request)
         }
         if (request.method == "DELETE" && action.empty())
         {
+            for (int head = 1; head <= config_.outputs; ++head)
+            {
+                if (runtime_.headLayout(head) == name)
+                {
+                    return jsonResponse(409, "{\"error\":" + quote("the layout is on output " + std::to_string(head)) + "}");
+                }
+            }
             if (auto const problem = layouts_.erase(name))
             {
                 return jsonResponse(409, "{\"error\":" + quote(*problem) + "}");
@@ -230,17 +299,30 @@ HttpResponse Api::handle(HttpRequest const& request)
             return jsonResponse(400, "{\"error\":\"invalid json\"}");
         }
         auto const& obj = root.get<picojson::object>();
-        if (auto const layout = json::fieldString(root, "layout"))
+        // Layout and audio_follow are checked before either changes.
+        auto const layout = json::fieldString(root, "layout");
+        if (layout && !layouts_.has(*layout))
         {
-            if (layouts_.layout(*layout) == nullptr)
+            return jsonResponse(404, "{\"error\":\"layout not found\"}");
+        }
+        std::optional<int> follow;
+        if (obj.count("audio_follow") != 0)
+        {
+            auto const& value = obj.at("audio_follow");
+            if (!value.is<double>() || value.get<double>() != std::floor(value.get<double>()) || value.get<double>() < 0 ||
+                value.get<double>() > config_.maxInputs)
             {
-                return jsonResponse(404, "{\"error\":\"layout not found\"}");
+                return jsonResponse(400, "{\"error\":" + quote("audio_follow must be 0 (off) to " + std::to_string(config_.maxInputs)) + "}");
             }
+            follow = static_cast<int>(value.get<double>());
+        }
+        if (layout)
+        {
             runtime_.setHeadLayout(index, *layout);
         }
-        if (obj.count("audio_follow") != 0 && obj.at("audio_follow").is<double>())
+        if (follow)
         {
-            runtime_.setHeadAudio(index, static_cast<int>(obj.at("audio_follow").get<double>()), runtime_.headAudioChannels(index));
+            runtime_.setHeadAudio(index, *follow, runtime_.headAudioChannels(index));
         }
         if (auto const formatText = json::fieldString(root, "format"))
         {
@@ -270,7 +352,8 @@ HttpResponse Api::handle(HttpRequest const& request)
         bool first = true;
         for (auto const& input : runtime_.inputs())
         {
-            auto add = [&](char const* name, bool active) {
+            // §6.3: red for no signal, black, freeze, and clip; amber for silence and format.
+            auto add = [&](char const* name, bool active, AlarmIndex index, char const* severity) {
                 if (!active)
                 {
                     return;
@@ -280,14 +363,15 @@ HttpResponse Api::handle(HttpRequest const& request)
                     out << ',';
                 }
                 first = false;
-                out << "{\"input\":" << input.index << ",\"name\":" << quote(name) << ",\"active\":true}";
+                out << "{\"input\":" << input.index << ",\"name\":" << quote(name) << ",\"active\":true,\"severity\":\"" << severity
+                    << "\",\"since\":" << input.alarmSinceMs[index] << "}";
             };
-            add("no_signal", input.alarmNoSignal);
-            add("black", input.alarmBlack);
-            add("freeze", input.alarmFreeze);
-            add("silence", input.alarmSilence);
-            add("clip", input.alarmClip);
-            add("format_mismatch", input.alarmFormat);
+            add("no_signal", input.alarmNoSignal, kAlarmNoSignal, "red");
+            add("black", input.alarmBlack, kAlarmBlack, "red");
+            add("freeze", input.alarmFreeze, kAlarmFreeze, "red");
+            add("silence", input.alarmSilence, kAlarmSilence, "amber");
+            add("clip", input.alarmClip, kAlarmClip, "red");
+            add("format_mismatch", input.alarmFormat, kAlarmFormat, "amber");
         }
         out << "]}";
         return jsonResponse(200, out.str());
@@ -413,6 +497,8 @@ HttpResponse Api::handle(HttpRequest const& request)
             return jsonResponse(400, "{\"error\":\"import body must be a JSON object\"}");
         }
         auto const& obj = root.get<picojson::object>();
+        std::vector<std::string> skipped;
+        std::vector<int> moved;
         if (auto const settings = obj.find("settings"); settings != obj.end())
         {
             if (!settings->second.is<picojson::object>())
@@ -425,6 +511,13 @@ HttpResponse Api::handle(HttpRequest const& request)
                 if (!value.is<std::string>())
                 {
                     return jsonResponse(400, "{\"error\":\"settings values must be strings\"}");
+                }
+                // An export carries every setting; the environment wins over the file anyway,
+                // so keys set there are skipped instead of failing the whole import.
+                if (store_.sourceOf(key) == SettingSource::Env)
+                {
+                    skipped.push_back(key);
+                    continue;
                 }
                 changes.emplace(key, value.get<std::string>());
             }
@@ -439,6 +532,15 @@ HttpResponse Api::handle(HttpRequest const& request)
             if (auto const problem = layouts_.replaceJson(layouts->second.serialize()))
             {
                 return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
+            }
+            // A head whose layout the import dropped shows the book's active layout.
+            for (int head = 1; head <= config_.outputs; ++head)
+            {
+                if (!layouts_.has(runtime_.headLayout(head)))
+                {
+                    runtime_.setHeadLayout(head, layouts_.activeName());
+                    moved.push_back(head);
+                }
             }
         }
         bool routesRestart = false;
@@ -466,7 +568,19 @@ HttpResponse Api::handle(HttpRequest const& request)
             }
             routesRestart = true;
         }
-        return jsonResponse(200, std::string("{\"ok\":true,\"secrets\":false,\"routes_restart\":") + (routesRestart ? "true" : "false") + "}");
+        std::ostringstream out;
+        out << "{\"ok\":true,\"secrets\":false,\"routes_restart\":" << (routesRestart ? "true" : "false") << ",\"skipped\":[";
+        for (std::size_t i = 0; i < skipped.size(); ++i)
+        {
+            out << (i != 0 ? "," : "") << quote(skipped[i]);
+        }
+        out << "],\"heads_moved\":[";
+        for (std::size_t i = 0; i < moved.size(); ++i)
+        {
+            out << (i != 0 ? "," : "") << moved[i];
+        }
+        out << "]}";
+        return jsonResponse(200, out.str());
     }
     if (path == "/api/v1/config/env" && request.method == "GET")
     {

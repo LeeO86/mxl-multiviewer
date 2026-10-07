@@ -8,7 +8,7 @@ services:
       - ../tests/integration/fake_registry.py:/registry.py:ro
     command: ["python3", "/registry.py", "3210"]
   writer:
-    image: ghcr.io/leeo86/mxl-multiviewer:1.1.3
+    image: ghcr.io/leeo86/mxl-multiviewer:1.2.0
     network_mode: host
     user: "1000:1000"
     volumes:
@@ -21,7 +21,7 @@ services:
         printf '%s\n' '{"urn:x-mxl:option:history_duration/v1.0":200000000}' > /volumes/mxl/demo/options.json && \
         exec mxl-mv-writer --domain /volumes/mxl/demo --flow bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb --width 1920 --height 1080 --rate 50 --y 200 --cb 512 --cr 512
   multiviewer:
-    image: ghcr.io/leeo86/mxl-multiviewer:1.1.3
+    image: ghcr.io/leeo86/mxl-multiviewer:1.2.0
     network_mode: host
     user: "1000:1000"
     depends_on:

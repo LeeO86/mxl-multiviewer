@@ -1,7 +1,9 @@
 #include "layout/model.hpp"
 
 #include "util/jsonutil.hpp"
+#include "util/logging.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <sstream>
@@ -162,6 +164,42 @@ std::optional<BarsPosition> barsFromString(std::string const& text)
         return BarsPosition::Overlay;
     }
     return std::nullopt;
+}
+
+std::optional<ClockStyle> clockStyleFromString(std::string const& text)
+{
+    if (text == "digital")
+    {
+        return ClockStyle::Digital;
+    }
+    // "analog" is accepted as the US spelling of "analogue".
+    if (text == "analogue" || text == "analog")
+    {
+        return ClockStyle::Analogue;
+    }
+    return std::nullopt;
+}
+
+std::optional<ClockZone> clockZoneFromString(std::string const& text)
+{
+    if (text == "utc")
+    {
+        return ClockZone::Utc;
+    }
+    if (text == "tai")
+    {
+        return ClockZone::Tai;
+    }
+    if (text == "local")
+    {
+        return ClockZone::Local;
+    }
+    return std::nullopt;
+}
+
+std::string quoted(std::string const& text)
+{
+    return "\"" + jsonEscape(text) + "\"";
 }
 
 bool rectOk(NormRect const& rect)
@@ -349,6 +387,15 @@ std::vector<Layout> builtinPresets(int maxInputs)
         }
         layouts.push_back(twoPlusSix);
     }
+    // Presets show audio bars (two channels from the first, on the right). A tile that
+    // leaves out `audio_bars` still parses as false, so saved layouts keep their value.
+    for (auto& layout : layouts)
+    {
+        for (auto& tile : layout.tiles)
+        {
+            tile.audioBars = tile.content == TileContent::Input;
+        }
+    }
     return layouts;
 }
 
@@ -397,13 +444,18 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
         {
             return "tile " + tile.id + " input is out of range";
         }
-        if (tile.audioBarChannels < 1 || tile.audioBarChannels > 16 || tile.audioBarFirst < 0 || tile.audioBarFirst > 63)
+        // 16 channels per input are metered (§5.7).
+        if (tile.audioBarChannels < 1 || tile.audioBarFirst < 0 || tile.audioBarFirst + tile.audioBarChannels > 16)
         {
-            return "tile " + tile.id + " audio bar channel selection is invalid";
+            return "tile " + tile.id + " audio bars must stay within channels 1-16";
         }
         if (tile.umdFont < 8 || tile.umdFont > 200)
         {
             return "tile " + tile.id + " font size is invalid";
+        }
+        if (!(tile.zoneGreen >= -60 && tile.zoneGreen <= tile.zoneAmber && tile.zoneAmber <= 0))
+        {
+            return "tile " + tile.id + " audio zones must satisfy -60 <= zone_green <= zone_amber <= 0";
         }
         for (auto const& marker : tile.aspectMarkers)
         {
@@ -416,7 +468,7 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
     return std::nullopt;
 }
 
-std::optional<std::string> parseLayout(std::string const& body, Layout& out, int maxInputs)
+std::optional<std::string> parseLayout(std::string const& body, Layout& out, int maxInputs, std::vector<std::string>* repairs)
 {
     std::string error;
     auto const root = json::parse(body, error);
@@ -494,6 +546,26 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.audioBarPosition = *bars;
         tile.zoneGreen = num(tileObj, "zone_green", -18);
         tile.zoneAmber = num(tileObj, "zone_amber", -9);
+        if (repairs != nullptr)
+        {
+            auto const where = "layout " + layout.name + " tile " + tile.id + ": ";
+            if (!(tile.zoneGreen >= -60 && tile.zoneGreen <= tile.zoneAmber && tile.zoneAmber <= 0))
+            {
+                double const a = std::isfinite(tile.zoneGreen) ? std::clamp(tile.zoneGreen, -60.0, 0.0) : -18.0;
+                double const b = std::isfinite(tile.zoneAmber) ? std::clamp(tile.zoneAmber, -60.0, 0.0) : -9.0;
+                tile.zoneGreen = std::min(a, b);
+                tile.zoneAmber = std::max(a, b);
+                repairs->push_back(where + "audio zones set to " + std::to_string(static_cast<int>(tile.zoneGreen)) + " / " +
+                                   std::to_string(static_cast<int>(tile.zoneAmber)));
+            }
+            if (tile.audioBarChannels < 1 || tile.audioBarFirst < 0 || tile.audioBarFirst + tile.audioBarChannels > 16)
+            {
+                tile.audioBarChannels = std::clamp(tile.audioBarChannels, 1, 16);
+                tile.audioBarFirst = std::clamp(tile.audioBarFirst, 0, 16 - tile.audioBarChannels);
+                repairs->push_back(where + "audio bars set to channels " + std::to_string(tile.audioBarFirst + 1) + "-" +
+                                   std::to_string(tile.audioBarFirst + tile.audioBarChannels));
+            }
+        }
         tile.formatLabel = flag(tileObj, "format_label", true);
         tile.latency = flag(tileObj, "latency", false);
         tile.safeArea = flag(tileObj, "safe_area", false);
@@ -508,9 +580,26 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
                 }
             }
         }
-        tile.clockStyle = str(tileObj, "clock_style", "digital") == "analogue" ? ClockStyle::Analogue : ClockStyle::Digital;
-        auto const zone = str(tileObj, "clock_zone", "utc");
-        tile.clockZone = zone == "tai" ? ClockZone::Tai : zone == "local" ? ClockZone::Local : ClockZone::Utc;
+        auto const style = clockStyleFromString(str(tileObj, "clock_style", "digital"));
+        if (!style && repairs == nullptr)
+        {
+            return "clock_style is invalid";
+        }
+        if (!style)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": unknown clock_style, digital");
+        }
+        tile.clockStyle = style.value_or(ClockStyle::Digital);
+        auto const zone = clockZoneFromString(str(tileObj, "clock_zone", "utc"));
+        if (!zone && repairs == nullptr)
+        {
+            return "clock_zone is invalid";
+        }
+        if (!zone)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": unknown clock_zone, utc");
+        }
+        tile.clockZone = zone.value_or(ClockZone::Utc);
         tile.timecodeRate = str(tileObj, "timecode_rate");
         tile.labelText = str(tileObj, "label_text");
         layout.tiles.push_back(std::move(tile));
@@ -526,7 +615,7 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
 std::string layoutToJson(Layout const& layout)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"name\":\"" << layout.name << "\",\"background\":\"" << layout.background << "\",\"tiles\":[";
+    out << "{\"version\":1,\"name\":" << quoted(layout.name) << ",\"background\":" << quoted(layout.background) << ",\"tiles\":[";
     for (std::size_t i = 0; i < layout.tiles.size(); ++i)
     {
         auto const& tile = layout.tiles[i];
@@ -534,11 +623,11 @@ std::string layoutToJson(Layout const& layout)
         {
             out << ',';
         }
-        out << "{\"id\":\"" << tile.id << "\",\"content\":\"" << contentToString(tile.content) << "\",\"input\":" << tile.input << ",\"z\":" << tile.z
+        out << "{\"id\":" << quoted(tile.id) << ",\"content\":\"" << contentToString(tile.content) << "\",\"input\":" << tile.input << ",\"z\":" << tile.z
             << ",\"rect\":{\"x\":" << tile.rect.x << ",\"y\":" << tile.rect.y << ",\"w\":" << tile.rect.w << ",\"h\":" << tile.rect.h << "}"
             << ",\"scale\":\"" << scaleToString(tile.scale) << "\",\"umd\":" << (tile.umd ? "true" : "false") << ",\"umd_source\":\""
-            << umdSourceToString(tile.umdSource) << "\",\"umd_text\":\"" << tile.umdText << "\",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
-            << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":\"" << tile.umdBg << "\",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
+            << umdSourceToString(tile.umdSource) << "\",\"umd_text\":" << quoted(tile.umdText) << ",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
+            << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
             << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
             << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
@@ -551,17 +640,17 @@ std::string layoutToJson(Layout const& layout)
             {
                 out << ',';
             }
-            out << '"' << tile.aspectMarkers[m] << '"';
+            out << quoted(tile.aspectMarkers[m]);
         }
         out << "],\"clock_style\":\"" << (tile.clockStyle == ClockStyle::Analogue ? "analogue" : "digital") << "\",\"clock_zone\":\""
-            << (tile.clockZone == ClockZone::Tai ? "tai" : tile.clockZone == ClockZone::Local ? "local" : "utc") << "\",\"timecode_rate\":\""
-            << tile.timecodeRate << "\",\"label_text\":\"" << tile.labelText << "\"}";
+            << (tile.clockZone == ClockZone::Tai ? "tai" : tile.clockZone == ClockZone::Local ? "local" : "utc") << "\",\"timecode_rate\":"
+            << quoted(tile.timecodeRate) << ",\"label_text\":" << quoted(tile.labelText) << "}";
     }
     out << "]}";
     return out.str();
 }
 
-std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, int maxInputs)
+std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, int maxInputs, std::vector<std::string>* repairs)
 {
     std::string error;
     auto const root = json::parse(body, error);
@@ -582,7 +671,7 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
     for (auto const& item : layouts->second.get<picojson::array>())
     {
         Layout layout;
-        if (auto const problem = parseLayout(item.serialize(), layout, maxInputs))
+        if (auto const problem = parseLayout(item.serialize(), layout, maxInputs, repairs))
         {
             return problem;
         }
@@ -599,7 +688,7 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
 std::string bookToJson(LayoutBook const& book)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"active\":\"" << book.active << "\",\"layouts\":[";
+    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"layouts\":[";
     for (std::size_t i = 0; i < book.layouts.size(); ++i)
     {
         if (i != 0)
