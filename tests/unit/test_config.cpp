@@ -154,6 +154,65 @@ TEST_CASE("layout routes decode percent-encoded names and keep the json valid")
     CHECK(api.handle(HttpRequest{"GET", "/preview.jpg", "head=2", {}, {}}).status == 204);
 }
 
+TEST_CASE("outputs, deletes, and imports keep every head on a layout that exists")
+{
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}, {"MV_OUTPUTS", "2"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, "");
+    RuntimeModel runtime(cfg);
+    Metrics metrics;
+    Api api(cfg, store, layouts, runtime, metrics);
+    auto const put = [&](std::string const& body) { return api.handle(HttpRequest{"PUT", "/api/v1/outputs/2", {}, body, {}}).status; };
+    CHECK(put(R"({"layout":"nope"})") == 404);
+    CHECK(put(R"({"audio_follow":17})") == 400);
+    CHECK(put(R"({"audio_follow":-1})") == 400);
+    CHECK(put(R"({"audio_follow":1.5})") == 400);
+    CHECK(put(R"({"layout":"3x3","audio_follow":99})") == 400);
+    CHECK(runtime.headLayout(2) != "3x3");
+    CHECK(put(R"({"layout":"3x3","audio_follow":0})") == 200);
+    CHECK(runtime.headLayout(2) == "3x3");
+    CHECK(runtime.headAudioFollow(2) == 0);
+    // A layout on a head cannot be deleted, even when it is not the book's active one.
+    CHECK(api.handle(HttpRequest{"DELETE", "/api/v1/layouts/3x3", {}, {}, {}}).status == 409);
+    // An import without that layout moves the head to the imported book's active layout.
+    auto const doc = R"({"layouts":{"version":1,"active":"wall","layouts":[{"version":1,"name":"wall","tiles":[]},{"version":1,"name":"2x2","tiles":[]}]}})";
+    auto const result = api.handle(HttpRequest{"POST", "/api/v1/config/import", {}, doc, {}});
+    CHECK(result.status == 200);
+    CHECK(result.body.find("\"heads_moved\":[2]") != std::string::npos);
+    CHECK(runtime.headLayout(1) == "2x2");
+    CHECK(runtime.headLayout(2) == "wall");
+    // A book without layouts is refused.
+    CHECK(api.handle(HttpRequest{"POST", "/api/v1/config/import", {}, R"({"layouts":{"version":1,"active":"x","layouts":[]}})", {}}).status == 400);
+}
+
+TEST_CASE("an unreadable layouts file is moved aside, an older one is repaired")
+{
+    auto const dir = std::string("/tmp/mv-layouts-test");
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    auto const path = dir + "/layouts.json";
+    {
+        std::ofstream out(path);
+        out << "{\"version\":1,\"active\":\"mine\",\"layouts\":[{\"version\":1,\"name\":\"mine\",\"tiles\":[{\"id\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"w\":2,\"h\":1}}]}]}";
+    }
+    {
+        LayoutBookStore broken(16, "2x2", path);
+        CHECK(broken.activeName() == "2x2");
+        CHECK(std::ifstream(path + ".bad").good());
+        CHECK_FALSE(std::ifstream(path).good());
+    }
+    {
+        std::ofstream out(path);
+        out << "{\"version\":1,\"active\":\"mine\",\"layouts\":[{\"version\":1,\"name\":\"mine\",\"tiles\":[{\"id\":\"a\",\"zone_green\":-3,\"zone_amber\":-30,"
+               "\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}]}";
+    }
+    LayoutBookStore repaired(16, "2x2", path);
+    CHECK(repaired.activeName() == "mine");
+    CHECK(repaired.has("mine"));
+    CHECK(repaired.has("4x4"));
+    CHECK(repaired.layout("mine")->tiles[0].zoneGreen == doctest::Approx(-30));
+}
+
 TEST_CASE("an activation is not lost to the composer's status report")
 {
     std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};

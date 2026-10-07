@@ -111,9 +111,12 @@ LayoutBook defaultBook(int maxInputs, std::string const& active);
 
 // Returns an error string on failure.
 std::optional<std::string> validateLayout(Layout const& layout, int maxInputs);
-std::optional<std::string> parseLayout(std::string const& json, Layout& out, int maxInputs);
+// With `repairs`, values an older release accepted (audio zones out of order or range, bars
+// past channel 16, unknown clock style or zone) are corrected and each correction is
+// described there. Without it (the API) they are rejected.
+std::optional<std::string> parseLayout(std::string const& json, Layout& out, int maxInputs, std::vector<std::string>* repairs = nullptr);
 std::string layoutToJson(Layout const& layout);
-std::optional<std::string> parseBook(std::string const& json, LayoutBook& out, int maxInputs);
+std::optional<std::string> parseBook(std::string const& json, LayoutBook& out, int maxInputs, std::vector<std::string>* repairs = nullptr);
 std::string bookToJson(LayoutBook const& book);
 
 char const* contentName(TileContent content);

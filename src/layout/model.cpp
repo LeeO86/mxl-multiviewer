@@ -3,6 +3,7 @@
 #include "util/jsonutil.hpp"
 #include "util/logging.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <sstream>
@@ -443,9 +444,10 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
         {
             return "tile " + tile.id + " input is out of range";
         }
-        if (tile.audioBarChannels < 1 || tile.audioBarChannels > 16 || tile.audioBarFirst < 0 || tile.audioBarFirst > 63)
+        // 16 channels per input are metered (§5.7).
+        if (tile.audioBarChannels < 1 || tile.audioBarFirst < 0 || tile.audioBarFirst + tile.audioBarChannels > 16)
         {
-            return "tile " + tile.id + " audio bar channel selection is invalid";
+            return "tile " + tile.id + " audio bars must stay within channels 1-16";
         }
         if (tile.umdFont < 8 || tile.umdFont > 200)
         {
@@ -466,7 +468,7 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
     return std::nullopt;
 }
 
-std::optional<std::string> parseLayout(std::string const& body, Layout& out, int maxInputs)
+std::optional<std::string> parseLayout(std::string const& body, Layout& out, int maxInputs, std::vector<std::string>* repairs)
 {
     std::string error;
     auto const root = json::parse(body, error);
@@ -544,6 +546,26 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.audioBarPosition = *bars;
         tile.zoneGreen = num(tileObj, "zone_green", -18);
         tile.zoneAmber = num(tileObj, "zone_amber", -9);
+        if (repairs != nullptr)
+        {
+            auto const where = "layout " + layout.name + " tile " + tile.id + ": ";
+            if (!(tile.zoneGreen >= -60 && tile.zoneGreen <= tile.zoneAmber && tile.zoneAmber <= 0))
+            {
+                double const a = std::isfinite(tile.zoneGreen) ? std::clamp(tile.zoneGreen, -60.0, 0.0) : -18.0;
+                double const b = std::isfinite(tile.zoneAmber) ? std::clamp(tile.zoneAmber, -60.0, 0.0) : -9.0;
+                tile.zoneGreen = std::min(a, b);
+                tile.zoneAmber = std::max(a, b);
+                repairs->push_back(where + "audio zones set to " + std::to_string(static_cast<int>(tile.zoneGreen)) + " / " +
+                                   std::to_string(static_cast<int>(tile.zoneAmber)));
+            }
+            if (tile.audioBarChannels < 1 || tile.audioBarFirst < 0 || tile.audioBarFirst + tile.audioBarChannels > 16)
+            {
+                tile.audioBarChannels = std::clamp(tile.audioBarChannels, 1, 16);
+                tile.audioBarFirst = std::clamp(tile.audioBarFirst, 0, 16 - tile.audioBarChannels);
+                repairs->push_back(where + "audio bars set to channels " + std::to_string(tile.audioBarFirst + 1) + "-" +
+                                   std::to_string(tile.audioBarFirst + tile.audioBarChannels));
+            }
+        }
         tile.formatLabel = flag(tileObj, "format_label", true);
         tile.latency = flag(tileObj, "latency", false);
         tile.safeArea = flag(tileObj, "safe_area", false);
@@ -559,17 +581,25 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
             }
         }
         auto const style = clockStyleFromString(str(tileObj, "clock_style", "digital"));
-        if (!style)
+        if (!style && repairs == nullptr)
         {
             return "clock_style is invalid";
         }
-        tile.clockStyle = *style;
+        if (!style)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": unknown clock_style, digital");
+        }
+        tile.clockStyle = style.value_or(ClockStyle::Digital);
         auto const zone = clockZoneFromString(str(tileObj, "clock_zone", "utc"));
-        if (!zone)
+        if (!zone && repairs == nullptr)
         {
             return "clock_zone is invalid";
         }
-        tile.clockZone = *zone;
+        if (!zone)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": unknown clock_zone, utc");
+        }
+        tile.clockZone = zone.value_or(ClockZone::Utc);
         tile.timecodeRate = str(tileObj, "timecode_rate");
         tile.labelText = str(tileObj, "label_text");
         layout.tiles.push_back(std::move(tile));
@@ -620,7 +650,7 @@ std::string layoutToJson(Layout const& layout)
     return out.str();
 }
 
-std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, int maxInputs)
+std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, int maxInputs, std::vector<std::string>* repairs)
 {
     std::string error;
     auto const root = json::parse(body, error);
@@ -641,7 +671,7 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
     for (auto const& item : layouts->second.get<picojson::array>())
     {
         Layout layout;
-        if (auto const problem = parseLayout(item.serialize(), layout, maxInputs))
+        if (auto const problem = parseLayout(item.serialize(), layout, maxInputs, repairs))
         {
             return problem;
         }

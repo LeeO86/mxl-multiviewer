@@ -152,9 +152,10 @@ async function doImport() {
   try {
     const result = await api.post("/api/v1/config/import", importText.value);
     const skipped = result.skipped?.length ? ` Skipped (set by the environment): ${result.skipped.join(", ")}.` : "";
+    const moved = result.heads_moved?.length ? ` Output ${result.heads_moved.join(", ")} switched to the active layout: its layout is not in the import.` : "";
     importMsg.value = {
       kind: "ok",
-      text: `Imported. Settings and layouts are saved${result.routes_restart ? "; routes apply after the next restart" : ""}. Restart the multiviewer to apply settings.${skipped}`,
+      text: `Imported. Settings and layouts are saved${result.routes_restart ? "; routes apply after the next restart" : ""}. Restart the multiviewer to apply settings.${skipped}${moved}`,
     };
     await load();
     await loadExport();

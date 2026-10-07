@@ -3,6 +3,7 @@
 #include "layout/geometry.hpp"
 #include "layout/model.hpp"
 #include "media/alarm.hpp"
+#include "media/audioring.hpp"
 #include "media/frame.hpp"
 #include "media/jpeg.hpp"
 #include "media/overlay.hpp"
@@ -684,6 +685,40 @@ TEST_CASE("alarm border and badge colours follow the alarm level")
     // Nothing in the middle of either tile.
     CHECK(countPixels(overlay, 100, 100, 380, 200, inked) == 0);
     CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
+}
+
+TEST_CASE("audio ring keeps the newest samples and copies by sample index")
+{
+    AudioRing ring(8);
+    std::vector<float> left{1, 2, 3, 4, 5};
+    std::vector<float> right{-1, -2, -3, -4, -5};
+    ring.push(100, {left.data(), right.data()}, 5);
+    CHECK(ring.channels() == 2);
+    std::vector<float> out(6, 9.f);
+    ring.copy(1, 99, 6, out.data());
+    // 99 is not held and stays as it was; 100..104 are the samples.
+    CHECK(out == std::vector<float>{9, -1, -2, -3, -4, -5});
+
+    // Continuing past the capacity wraps; only the newest 8 samples remain.
+    std::vector<float> more{6, 7, 8, 9, 10, 11};
+    ring.push(105, {more.data(), more.data()}, 6);
+    std::vector<float> all(11, 0.f);
+    ring.copy(0, 100, 11, all.data());
+    CHECK(all == std::vector<float>{0, 0, 0, 4, 5, 6, 7, 8, 9, 10, 11});
+
+    // A gap starts over at the new index.
+    std::vector<float> later{42, 43};
+    ring.push(200, {later.data(), later.data()}, 2);
+    std::vector<float> gap(3, 0.f);
+    ring.copy(0, 110, 3, gap.data());
+    CHECK(gap == std::vector<float>{0, 0, 0});
+    ring.copy(0, 199, 3, gap.data());
+    CHECK(gap == std::vector<float>{0, 42, 43});
+
+    ring.clear();
+    std::vector<float> none(2, 7.f);
+    ring.copy(0, 200, 2, none.data());
+    CHECK(none == std::vector<float>{7, 7});
 }
 
 TEST_CASE("background colours convert to limited-range YCbCr")

@@ -15,7 +15,9 @@ class LayoutBookStore
 public:
     LayoutBookStore(int maxInputs, std::string const& active, std::string path);
 
+    // The named layout, or the first one of the book when the name is unknown.
     [[nodiscard]] std::shared_ptr<Layout const> layout(std::string const& name) const;
+    [[nodiscard]] bool has(std::string const& name) const;
     [[nodiscard]] std::string activeName() const;
     bool activate(std::string const& name);
     std::optional<std::string> upsert(Layout layout);

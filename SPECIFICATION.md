@@ -141,6 +141,7 @@ UMD source `is04` reads the routed sender's `label` from the registry Query API 
 - On activation: resolve domain → `mxlCreateInstance` on that directory → `mxlCreateFlowReader`. Each missing step retries with backoff 250 ms → 5 s while `master_enable` is true. State `waiting`, reason `domain_not_found` or `flow_not_found`.
 - The reader thread takes the newest complete grain (and a matching audio window) into a slot the composer can take without blocking. When caught up it waits for the next grain (`mxlFlowReaderGetGrain` with a timeout). On the CUDA backend the grain is uploaded to a device frame before the reader continues; on the CPU backend (or when that upload fails) it is unpacked into host memory.
 - If `mxlFlowReaderGetGrain` returns too-late, the reader jumps to the current head and increments `resyncs`.
+- A writer that restarts re-creates its flow; MXL then reports `MXL_ERR_FLOW_INVALID` on a read past the head. The reader releases the flow and opens it again (`waiting` while it is missing); the last frame holds meanwhile. The audio leg, which only reads while its head moves, probes past the head once a second while it is `no_signal`.
 - A format change (`flow_def.json` width, height, rate, media type, or channel count) rebuilds that input only. Other inputs and the output keep running.
 - State `running` when a grain newer than the hold deadline is in hand. State `holding` when the last good grain is still inside `MV_HOLD_MS`. State `no_signal` after that, or when the flow exists but no grain has arrived.
 
@@ -193,7 +194,7 @@ Per input channel, peak programme meter:
 - Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
 - EBU R 128 momentary loudness is not in this version.
 
-Bars: 1–16 channels, first channel selectable, position left, right, or overlay, clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
+Bars: 1–16 channels within the first 16 channels of the input (the metered ones: first channel + count ≤ 16), first channel selectable, position left, right, or overlay, clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
 
 The audio leg is read from its own flow and domain, independent of the video leg (§4.2). Every new sample is metered from the flow's head index. A head that does not move for `MV_HOLD_MS` is `no_signal`.
 
@@ -225,7 +226,7 @@ A layout is JSON, `version: 1`:
 
 `rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
 
-The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). Import and export are the same document with a `layouts` array and an `active` name. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
+The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
 
 Preset geometry:
 
@@ -254,7 +255,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `audio_bars` | bool | true in the built-in presets; false when the key is missing |
 | `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
 | `audio_bar_channels` | 1–16 | 2 |
-| `audio_bar_first` | 0-based channel | 0 |
+| `audio_bar_first` | 0-based channel; `audio_bar_first` + `audio_bar_channels` ≤ 16 | 0 |
 | `audio_bar_position` | `left`, `right`, `overlay` | `right` |
 | `zone_green`, `zone_amber` | dBFS where amber and where red start; −60 ≤ `zone_green` ≤ `zone_amber` ≤ 0 | −18 / −9 |
 | `format_label` | bool | true |
@@ -324,15 +325,15 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | GET | `/api/v1/outputs` | per-head frames, late, missed, flow ids, layout |
 | GET | `/api/v1/layouts` | the book |
 | PUT | `/api/v1/layouts/{name}` | create or replace one layout |
-| DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active |
+| DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active and not on an output head |
 | POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head that uses it |
-| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}` |
+| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}`; an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400 |
 | GET | `/api/v1/alarms` | active alarms: input, name, `severity` (`red`, `amber`), `since` (Unix ms) |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
 | GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
 | GET | `/api/v1/config/export` | one JSON document: `version`, `secrets`, `settings`, `layouts`, `routes` |
-| POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`). Settings set by the environment are skipped and listed in `skipped` |
+| POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`). Settings set by the environment are skipped and listed in `skipped`; heads moved to the active layout are listed in `heads_moved` |
 | GET | `/api/v1/config/env` | `KEY=value` text |
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.

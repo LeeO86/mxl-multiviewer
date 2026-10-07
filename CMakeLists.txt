@@ -39,6 +39,7 @@ add_library(mv-core STATIC
     src/media/scale.cpp
     src/media/ppm.cpp
     src/media/alarm.cpp
+    src/media/audioring.cpp
     src/media/overlay.cpp
     src/config/config.cpp
     src/config/store.cpp

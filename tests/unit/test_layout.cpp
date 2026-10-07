@@ -110,6 +110,41 @@ TEST_CASE("audio zones must rise towards full scale")
     CHECK(parseLayout(body(-18, 3), layout, 4).has_value());
 }
 
+TEST_CASE("audio bars stay within the 16 metered channels")
+{
+    auto const body = [](int first, int channels) {
+        return "{\"version\":1,\"name\":\"b\",\"tiles\":[{\"id\":\"a\",\"input\":1,\"audio_bar_first\":" + std::to_string(first) +
+               ",\"audio_bar_channels\":" + std::to_string(channels) + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    CHECK_FALSE(parseLayout(body(14, 2), layout, 4).has_value());
+    CHECK(parseLayout(body(15, 2), layout, 4).has_value());
+    CHECK(parseLayout(body(40, 1), layout, 4).has_value());
+    CHECK(parseLayout(body(0, 17), layout, 4).has_value());
+}
+
+TEST_CASE("layouts an older release saved load with repairs")
+{
+    // 1.1.x stored zones in any order, any bar channel, and kept unknown clock values out of
+    // the file only by accident of its own writer; a hand-edited file may still have them.
+    auto const body = std::string("{\"version\":1,\"active\":\"old\",\"layouts\":[{\"version\":1,\"name\":\"old\",\"tiles\":["
+                                  "{\"id\":\"a\",\"input\":1,\"zone_green\":-6,\"zone_amber\":-20,\"audio_bar_first\":40,\"rect\":{\"x\":0,\"y\":0,\"w\":0.5,\"h\":1}},"
+                                  "{\"id\":\"c\",\"content\":\"clock\",\"clock_style\":\"sundial\",\"clock_zone\":\"mars\",\"rect\":{\"x\":0.5,\"y\":0,\"w\":0.5,\"h\":1}}]}]}");
+    LayoutBook strict;
+    CHECK(parseBook(body, strict, 4).has_value());
+    LayoutBook book;
+    std::vector<std::string> repairs;
+    REQUIRE_FALSE(parseBook(body, book, 4, &repairs).has_value());
+    CHECK(repairs.size() == 4);
+    auto const& tile = book.layouts[0].tiles[0];
+    CHECK(tile.zoneGreen == doctest::Approx(-20));
+    CHECK(tile.zoneAmber == doctest::Approx(-6));
+    CHECK(tile.audioBarFirst + tile.audioBarChannels <= 16);
+    CHECK(book.layouts[0].tiles[1].clockStyle == ClockStyle::Digital);
+    CHECK(book.layouts[0].tiles[1].clockZone == ClockZone::Utc);
+    CHECK_FALSE(validateLayout(book.layouts[0], 4).has_value());
+}
+
 TEST_CASE("layout json round trip and rejection")
 {
     auto const book = defaultBook(16, "2x2");

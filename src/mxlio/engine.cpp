@@ -2,6 +2,7 @@
 
 #include "control/tsl.hpp"
 #include "media/alarm.hpp"
+#include "media/audioring.hpp"
 #include "domain/scan.hpp"
 #include "layout/geometry.hpp"
 #include "media/cuda_compose.hpp"
@@ -76,12 +77,6 @@ struct SavedGrain
     std::string mediaType;
 };
 
-struct AudioWindow
-{
-    std::vector<std::vector<float>> channels;
-    std::uint64_t first = 0;
-};
-
 // One input's video leg, published by its reader thread.
 struct Snap
 {
@@ -103,8 +98,6 @@ struct Snap
 // One input's audio leg, published by its audio thread.
 struct AudioSnap
 {
-    // Samples for audio-follow, kept only while a head follows this input.
-    std::shared_ptr<AudioWindow const> window;
     std::string state = "not_routed";
     std::string reason;
     int channels = 0;
@@ -192,68 +185,6 @@ std::string readFlowDef(mxlInstance instance, std::string const& flowId)
     return buffer;
 }
 
-void pushAudio(AudioWindow& window, mxlWrappedMultiBufferSlice const& slice, std::size_t count, std::uint64_t endIndex)
-{
-    int const channels = static_cast<int>(std::min<std::size_t>(slice.count, 64));
-    if (channels <= 0 || count == 0)
-    {
-        return;
-    }
-    std::uint64_t const begin = endIndex >= count ? endIndex - count : 0;
-    if (window.channels.size() != static_cast<std::size_t>(channels))
-    {
-        window.channels.assign(static_cast<std::size_t>(channels), {});
-        window.first = begin;
-    }
-    if (window.channels[0].empty())
-    {
-        window.first = begin;
-    }
-    std::uint64_t const haveEnd = window.first + window.channels[0].size();
-    if (begin > haveEnd)
-    {
-        window.channels.assign(static_cast<std::size_t>(channels), {});
-        window.first = begin;
-    }
-    std::size_t const skip = begin > window.first ? static_cast<std::size_t>(begin - window.first) : 0;
-    for (int ch = 0; ch < channels; ++ch)
-    {
-        auto& dst = window.channels[static_cast<std::size_t>(ch)];
-        if (dst.size() < skip)
-        {
-            dst.resize(skip, 0.f);
-        }
-        std::size_t filled = 0;
-        for (int frag = 0; frag < 2 && filled < count; ++frag)
-        {
-            auto const* pointer = static_cast<char const*>(slice.base.fragments[frag].pointer);
-            if (pointer == nullptr || slice.base.fragments[frag].size == 0)
-            {
-                continue;
-            }
-            auto const* src = reinterpret_cast<float const*>(pointer + static_cast<std::size_t>(ch) * slice.stride);
-            std::size_t const available = slice.base.fragments[frag].size / sizeof(float);
-            std::size_t const take = std::min(available, count - filled);
-            if (dst.size() < skip + filled + take)
-            {
-                dst.resize(skip + filled + take, 0.f);
-            }
-            std::memcpy(dst.data() + skip + filled, src, take * sizeof(float));
-            filled += take;
-        }
-    }
-    std::size_t const maxSamples = 24000;
-    if (!window.channels.empty() && window.channels[0].size() > maxSamples)
-    {
-        std::size_t const drop = window.channels[0].size() - maxSamples;
-        for (auto& channel : window.channels)
-        {
-            channel.erase(channel.begin(), channel.begin() + static_cast<std::ptrdiff_t>(std::min(drop, channel.size())));
-        }
-        window.first += drop;
-    }
-}
-
 void blit(Frame422& canvas, PixelRect const& dst, Frame422 const& tile)
 {
     int const cw = canvas.chromaWidth();
@@ -327,6 +258,8 @@ struct Engine::Impl
     std::vector<std::shared_ptr<Snap>> snaps;
     std::vector<std::shared_ptr<AudioSnap>> audioSnaps;
     std::mutex snapMu;
+    // Per input: recent audio samples for audio-follow (appended by audioMain, copied by headMain).
+    std::vector<std::shared_ptr<AudioRing>> rings;
     struct SenderLabel
     {
         std::string key;
@@ -376,6 +309,11 @@ struct Engine::Impl
         for (auto& sound : audioSnaps)
         {
             sound = std::make_shared<AudioSnap>();
+        }
+        rings.resize(static_cast<std::size_t>(config.maxInputs));
+        for (auto& ring : rings)
+        {
+            ring = std::make_shared<AudioRing>();
         }
         senderLabels.resize(static_cast<std::size_t>(config.maxInputs));
     }
@@ -508,11 +446,26 @@ struct Engine::Impl
             bump(snap, AlarmNames::freeze, kAlarmFreeze, alarms.freeze, false, snap->alarmFreeze);
             bump(snap, AlarmNames::formatMismatch, kAlarmFormat, alarms.formatMismatch, false, snap->alarmFormat);
         };
-        // §5.3: `holding` while the last grain is inside MV_HOLD_MS, then `no_signal`.
+        // No new grain in this wait (§5.3): `holding` once the last grain is three of its
+        // frames old, `no_signal` after MV_HOLD_MS. Until then black, freeze, and format keep
+        // their state: a slow or jittery source (below 20 fps, a mirror, a loaded host) misses
+        // the 50 ms wait between grains, and clearing them then kept those alarms from rising.
         auto const staleState = [&](std::shared_ptr<Snap> const& snap) {
-            bool const stale = snap->grains.empty() || mxlGetTime() > snap->grains.back().origin + holdNs;
-            snap->videoState = stale ? "no_signal" : "holding";
-            idleAlarms(snap, stale);
+            auto const now = mxlGetTime();
+            if (snap->grains.empty() || now > snap->grains.back().origin + holdNs)
+            {
+                snap->videoState = "no_signal";
+                idleAlarms(snap, true);
+                return;
+            }
+            auto const& last = snap->grains.back();
+            std::uint64_t const frameNs =
+                1000000000ull * static_cast<std::uint64_t>(std::max(1, last.rateDen)) / static_cast<std::uint64_t>(std::max(1, last.rateNum));
+            if (now > last.origin + 3 * frameNs)
+            {
+                snap->videoState = "holding";
+            }
+            bump(snap, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, snap->alarmNoSignal);
         };
         auto const waiting = [&](std::shared_ptr<Snap> const& snap, char const* reason) {
             snap->videoState = "waiting";
@@ -691,6 +644,18 @@ struct Engine::Impl
                 publishState(next);
                 continue;
             }
+            if (status == MXL_ERR_FLOW_INVALID)
+            {
+                // The writer re-created the flow (a restart deletes and re-creates it): open the
+                // new one. The last frame holds meanwhile.
+                releaseVideo();
+                video = nullptr;
+                openKey.clear();
+                metaKey.clear();
+                staleState(next);
+                publishState(next);
+                continue;
+            }
             if (status != MXL_STATUS_OK || payload == nullptr || (grain.flags & MXL_GRAIN_FLAG_INVALID) != 0)
             {
                 staleState(next);
@@ -856,6 +821,8 @@ struct Engine::Impl
         Debounce clipAlarm;
         int backoff = 250;
         std::string prevState;
+        auto& ring = *rings[static_cast<std::size_t>(input - 1)];
+        auto lastProbe = std::chrono::steady_clock::now();
         auto const release = [&] {
             if (reader != nullptr)
             {
@@ -863,6 +830,16 @@ struct Engine::Impl
                 reader = nullptr;
             }
             openFlow.clear();
+        };
+        // The writer re-created the flow: drop the reader and its instance, open again.
+        auto const reopen = [&] {
+            release();
+            if (instance != nullptr)
+            {
+                mxlDestroyInstance(instance);
+                instance = nullptr;
+            }
+            openDomain.clear();
         };
         auto const resetMeters = [&](AudioSnap& sound) {
             for (auto& meter : meters)
@@ -873,7 +850,7 @@ struct Engine::Impl
             sound.hold = silentMeters();
             sound.rms = silentMeters();
             sound.clip = {};
-            sound.window.reset();
+            ring.clear();
             lastEnd = 0;
         };
         auto const publishState = [&](std::shared_ptr<AudioSnap> const& sound, bool silence, bool clip) {
@@ -1000,7 +977,13 @@ struct Engine::Impl
                 std::uint64_t const fresh = lastEnd == 0 ? 4800 : head - lastEnd;
                 auto const count = static_cast<std::size_t>(std::min<std::uint64_t>({fresh, maxRead == 0 ? 960 : maxRead, 4800}));
                 mxlWrappedMultiBufferSlice slice{};
-                if (count > 0 && mxlFlowReaderGetSamplesNonBlocking(reader, head, count, &slice) == MXL_STATUS_OK)
+                auto const read = count > 0 ? mxlFlowReaderGetSamplesNonBlocking(reader, head, count, &slice) : MXL_ERR_UNKNOWN;
+                if (read == MXL_ERR_FLOW_INVALID)
+                {
+                    reopen();
+                    continue;
+                }
+                if (read == MXL_STATUS_OK)
                 {
                     int const channels = static_cast<int>(std::min<std::size_t>(slice.count, 64));
                     next->channels = channels;
@@ -1024,13 +1007,24 @@ struct Engine::Impl
                     }
                     if (followed(input))
                     {
-                        auto window = std::make_shared<AudioWindow>(next->window ? *next->window : AudioWindow{});
-                        pushAudio(*window, slice, count, head);
-                        next->window = std::move(window);
-                    }
-                    else
-                    {
-                        next->window.reset();
+                        // Only the new samples go into the ring (an output carries at most 16 channels).
+                        std::uint64_t first = head - count;
+                        for (int frag = 0; frag < 2; ++frag)
+                        {
+                            auto const* pointer = static_cast<char const*>(slice.base.fragments[frag].pointer);
+                            auto const samples = slice.base.fragments[frag].size / sizeof(float);
+                            if (pointer == nullptr || samples == 0)
+                            {
+                                continue;
+                            }
+                            std::vector<float const*> planes;
+                            for (int ch = 0; ch < std::min(channels, 16); ++ch)
+                            {
+                                planes.push_back(reinterpret_cast<float const*>(pointer + static_cast<std::size_t>(ch) * slice.stride));
+                            }
+                            ring.push(first, planes, samples);
+                            first += samples;
+                        }
                     }
                     lastEnd = head;
                 }
@@ -1051,6 +1045,19 @@ struct Engine::Impl
             {
                 next->state = "no_signal";
                 resetMeters(*next);
+                // A stopped head never reads, and MXL reports a re-created flow only on a
+                // read past the head: probe once a second.
+                if (now - lastProbe >= std::chrono::seconds(1))
+                {
+                    lastProbe = now;
+                    mxlWrappedMultiBufferSlice probe{};
+                    if (mxlFlowReaderGetSamplesNonBlocking(reader, head + 1, 1, &probe) == MXL_ERR_FLOW_INVALID)
+                    {
+                        reopen();
+                        publishState(next, true, false);
+                        continue;
+                    }
+                }
             }
             publishState(next, silence, clip);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1753,10 +1760,9 @@ struct Engine::Impl
             }
             int const channels = runtime.headAudioChannels(head);
             int const follow = runtime.headAudioFollow(head);
-            if (audioWriter != nullptr && follow >= 1 && (channels == 2 || channels == 16))
+            if (audioWriter != nullptr && follow >= 1 && follow <= config.maxInputs && (channels == 2 || channels == 16))
             {
-                auto const sound = audioSnap(follow);
-                auto const window = sound != nullptr ? sound->window : nullptr;
+                auto const& ring = *rings[static_cast<std::size_t>(follow - 1)];
                 std::uint64_t const samples = std::max<std::uint64_t>(1, (48000ull * static_cast<std::uint64_t>(format.rateDen)) / static_cast<std::uint64_t>(std::max(1, format.rateNum)));
                 mxlRational audioRate{48000, 1};
                 std::uint64_t const end = mxlTimestampToIndex(&audioRate, target == 0 ? outputTime : target) + samples;
@@ -1780,18 +1786,7 @@ struct Engine::Impl
                             std::size_t const room = slice.base.fragments[frag].size / sizeof(float);
                             std::size_t const take = std::min(room, count - filled);
                             std::fill(dst, dst + take, 0.f);
-                            if (window != nullptr && ch < static_cast<int>(window->channels.size()))
-                            {
-                                auto const& src = window->channels[static_cast<std::size_t>(ch)];
-                                std::uint64_t const srcBegin = window->first;
-                                std::uint64_t const want = (end - count) + filled;
-                                if (want >= srcBegin && want - srcBegin < src.size())
-                                {
-                                    std::size_t const offset = static_cast<std::size_t>(want - srcBegin);
-                                    std::size_t const n = std::min(take, src.size() - offset);
-                                    std::memcpy(dst, src.data() + offset, n * sizeof(float));
-                                }
-                            }
+                            ring.copy(ch, (end - count) + filled, take, dst);
                             filled += take;
                         }
                     }

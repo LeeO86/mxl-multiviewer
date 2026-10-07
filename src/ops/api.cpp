@@ -9,9 +9,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <variant>
 #include <vector>
@@ -268,6 +270,13 @@ HttpResponse Api::handle(HttpRequest const& request)
         }
         if (request.method == "DELETE" && action.empty())
         {
+            for (int head = 1; head <= config_.outputs; ++head)
+            {
+                if (runtime_.headLayout(head) == name)
+                {
+                    return jsonResponse(409, "{\"error\":" + quote("the layout is on output " + std::to_string(head)) + "}");
+                }
+            }
             if (auto const problem = layouts_.erase(name))
             {
                 return jsonResponse(409, "{\"error\":" + quote(*problem) + "}");
@@ -290,17 +299,30 @@ HttpResponse Api::handle(HttpRequest const& request)
             return jsonResponse(400, "{\"error\":\"invalid json\"}");
         }
         auto const& obj = root.get<picojson::object>();
-        if (auto const layout = json::fieldString(root, "layout"))
+        // Layout and audio_follow are checked before either changes.
+        auto const layout = json::fieldString(root, "layout");
+        if (layout && !layouts_.has(*layout))
         {
-            if (layouts_.layout(*layout) == nullptr)
+            return jsonResponse(404, "{\"error\":\"layout not found\"}");
+        }
+        std::optional<int> follow;
+        if (obj.count("audio_follow") != 0)
+        {
+            auto const& value = obj.at("audio_follow");
+            if (!value.is<double>() || value.get<double>() != std::floor(value.get<double>()) || value.get<double>() < 0 ||
+                value.get<double>() > config_.maxInputs)
             {
-                return jsonResponse(404, "{\"error\":\"layout not found\"}");
+                return jsonResponse(400, "{\"error\":" + quote("audio_follow must be 0 (off) to " + std::to_string(config_.maxInputs)) + "}");
             }
+            follow = static_cast<int>(value.get<double>());
+        }
+        if (layout)
+        {
             runtime_.setHeadLayout(index, *layout);
         }
-        if (obj.count("audio_follow") != 0 && obj.at("audio_follow").is<double>())
+        if (follow)
         {
-            runtime_.setHeadAudio(index, static_cast<int>(obj.at("audio_follow").get<double>()), runtime_.headAudioChannels(index));
+            runtime_.setHeadAudio(index, *follow, runtime_.headAudioChannels(index));
         }
         if (auto const formatText = json::fieldString(root, "format"))
         {
@@ -476,6 +498,7 @@ HttpResponse Api::handle(HttpRequest const& request)
         }
         auto const& obj = root.get<picojson::object>();
         std::vector<std::string> skipped;
+        std::vector<int> moved;
         if (auto const settings = obj.find("settings"); settings != obj.end())
         {
             if (!settings->second.is<picojson::object>())
@@ -510,6 +533,15 @@ HttpResponse Api::handle(HttpRequest const& request)
             {
                 return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
             }
+            // A head whose layout the import dropped shows the book's active layout.
+            for (int head = 1; head <= config_.outputs; ++head)
+            {
+                if (!layouts_.has(runtime_.headLayout(head)))
+                {
+                    runtime_.setHeadLayout(head, layouts_.activeName());
+                    moved.push_back(head);
+                }
+            }
         }
         bool routesRestart = false;
         if (auto const routes = obj.find("routes"); routes != obj.end())
@@ -541,6 +573,11 @@ HttpResponse Api::handle(HttpRequest const& request)
         for (std::size_t i = 0; i < skipped.size(); ++i)
         {
             out << (i != 0 ? "," : "") << quote(skipped[i]);
+        }
+        out << "],\"heads_moved\":[";
+        for (std::size_t i = 0; i < moved.size(); ++i)
+        {
+            out << (i != 0 ? "," : "") << moved[i];
         }
         out << "]}";
         return jsonResponse(200, out.str());

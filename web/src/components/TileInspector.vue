@@ -74,9 +74,18 @@ const umdAlpha = computed({
   get: () => Math.round(parseInt((props.tile.umd_bg || "").slice(7, 9) || "ff", 16) / 2.55),
   set: (v) => (props.tile.umd_bg = umdColor.value + hex2(Number(v) * 2.55)),
 });
+// 16 channels per input are metered: first channel + channel count stay within 1-16.
+const barChannels = computed({
+  get: () => props.tile.audio_bar_channels,
+  set: (v) => {
+    const t = props.tile;
+    t.audio_bar_channels = Math.max(1, Math.min(16, Math.round(Number(v) || 1)));
+    t.audio_bar_first = Math.min(t.audio_bar_first, 16 - t.audio_bar_channels);
+  },
+});
 const firstChannel = computed({
   get: () => props.tile.audio_bar_first + 1,
-  set: (v) => (props.tile.audio_bar_first = Math.max(0, Math.min(63, Math.round(Number(v) || 1) - 1))),
+  set: (v) => (props.tile.audio_bar_first = Math.max(0, Math.min(16 - props.tile.audio_bar_channels, Math.round(Number(v) || 1) - 1))),
 });
 
 const textLabel = computed(() => (props.tile.umd_source === "manual" ? "Caption text" : "Fallback text"));
@@ -168,10 +177,10 @@ function toggleMarker(marker) {
       <h3>Audio bars <span class="spacer"></span><label class="check"><input v-model="tile.audio_bars" type="checkbox" /> Show</label></h3>
       <div class="two">
         <Field label="Channels" id="tile-ch">
-          <input id="tile-ch" v-model.number="tile.audio_bar_channels" type="number" min="1" max="16" :disabled="!tile.audio_bars" />
+          <input id="tile-ch" v-model.number="barChannels" type="number" min="1" max="16" :disabled="!tile.audio_bars" />
         </Field>
         <Field label="First channel" id="tile-first">
-          <input id="tile-first" v-model.number="firstChannel" type="number" min="1" max="64" :disabled="!tile.audio_bars" />
+          <input id="tile-first" v-model.number="firstChannel" type="number" min="1" :max="17 - tile.audio_bar_channels" :disabled="!tile.audio_bars" />
         </Field>
         <Field label="Position" id="tile-bars-pos">
           <select id="tile-bars-pos" v-model="tile.audio_bar_position" :disabled="!tile.audio_bars">
@@ -190,7 +199,7 @@ function toggleMarker(marker) {
           <input id="tile-zone-r" v-model.number="tile.zone_amber" type="number" min="-60" max="0" :disabled="!tile.audio_bars" />
         </Field>
       </div>
-      <p class="note">Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light. Dim bars with a cross: no audio is routed to this input.</p>
+      <p class="note">Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this input.</p>
     </div>
 
     <div class="panel">

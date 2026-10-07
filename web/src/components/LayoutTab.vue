@@ -162,12 +162,15 @@ function submitImport() {
   }
   if (Array.isArray(doc?.layouts)) {
     return run(async () => {
-      await api.post("/api/v1/config/import", { layouts: doc });
+      const result = await api.post("/api/v1/config/import", { layouts: doc });
       editor.drafts = {};
       await loadBook(editor.current);
       form.value = "";
       importText.value = "";
-    }, `Imported ${doc.layouts.length} layouts.`);
+      const moved = result?.heads_moved || [];
+      const note = moved.length ? ` Output ${moved.join(", ")} now shows ${editor.book.active}: its layout is not in the import.` : "";
+      say("ok", `Imported ${doc.layouts.length} layouts.${note}`);
+    });
   }
   if (!Array.isArray(doc?.tiles)) return say("err", "Expected one layout (with tiles) or a layout book (with layouts).");
   const name = String(doc.name || "imported").trim();

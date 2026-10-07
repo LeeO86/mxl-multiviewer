@@ -25,9 +25,14 @@
 - The `is04` caption is the routed sender's label from the registry Query API (looked up by sender id, or by flow id when the route has none), then the tile's text, then the MXL flow label, then `MV In <n>`.
 - The audio leg is read on its own: from its own domain and sender, without a video route, re-opened on a re-route, metered on every sample, with the states `running`, `waiting`, and `no_signal`.
 - The `no_signal` alarm rises (it never did); the video state goes `holding` and then `no_signal` when frames stop. `silence` also rises when routed audio does not arrive.
+- An input recovers when its source writer restarts (the writer re-creates the flow): video and audio open the new flow without a re-route. Before, video stayed on the old flow with a frozen picture.
+- Audio-follow copies only the samples of each output frame from a ring buffer.
 - Activating a layout or changing `audio_follow` while a frame was being composed could be undone by that frame; on the CPU backend most activations were lost. Fixed.
 - Layout names with `+`, spaces, or quotes work in the API paths (percent-decoded), and quotes and backslashes in names, captions, and labels no longer break `GET /api/v1/layouts` and `layouts.json`.
 - `POST /api/v1/config/import` skips settings that come from the environment (listed in `skipped`) instead of failing.
+- Every head keeps a layout that exists: an import that drops a head's layout switches that head to the book's active layout (`heads_moved`), a book without layouts is refused, a layout on a head cannot be deleted, and `PUT /api/v1/outputs/{h}` rejects an unknown layout (404) and `audio_follow` outside 0 to `MV_MAX_INPUTS` (400).
+- Audio bars stay within the 16 metered channels (first channel + count ≤ 16).
+- `layouts.json` from an older release with values 1.2.0 rejects (audio zones out of order, bars past channel 16, unknown clock values) is repaired at start and logged; a file that cannot be read is renamed to `layouts.json.bad` instead of being overwritten by the next save.
 
 ### API
 
