@@ -69,7 +69,7 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 | PUT | `/api/v1/outputs/{h}` |
 | GET | `/api/v1/alarms` |
 | GET | `/api/v1/events` (WebSocket) |
-| GET | `/preview.jpg` |
+| GET | `/preview.jpg` (`?head=<h>` for heads 2 and 3) |
 | GET, PUT | `/api/v1/config` |
 | GET | `/api/v1/config/export` |
 | POST | `/api/v1/config/import` |
@@ -78,7 +78,9 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 | GET | `/readyz` |
 | GET | `/metrics` |
 
-`GET /api/v1/config/export` returns one JSON document (`version`, `secrets`, `settings`, `layouts`, `routes`). This process has no secrets, so `secrets` is false and nothing is left out. `POST /api/v1/config/import` restores that document. Routes in the file apply on the next start.
+`GET /api/v1/config/export` returns one JSON document (`version`, `secrets`, `settings`, `layouts`, `routes`). This process has no secrets, so `secrets` is false and nothing is left out. `POST /api/v1/config/import` restores that document. Settings set by the environment are skipped (listed in `skipped`). Routes in the file apply on the next start.
+
+`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`. `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, and `hold_ms`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
 
 `/readyz` is 200 when the composer heartbeat is fresh and, if a registry address is set, the Query API currently lists the node. `/metrics` is Prometheus text with the prefix `mxl_multiviewer_`.
 
@@ -150,7 +152,7 @@ curl -X PATCH -H 'Content-Type: application/json' \
   http://127.0.0.1:3262/x-nmos/connection/v1.2/single/receivers/<id>/staged
 ```
 
-Open `http://<host>:8110/` for the preview, the layout editor, inputs, alarms, and a `KEY=value` export.
+The web UI is on `http://<host>:8110/` (see Web UI below).
 
 `MV_BACKEND=auto` uses the CUDA compositor when the binary was built with nvcc and a device is visible, otherwise CPU. The image from `docker/Dockerfile` is built with CUDA 12.8 (`sm_75`, `sm_86`, `sm_89`) and links the CUDA runtime statically, so it still starts on a machine with no GPU. A GPU host also needs the NVIDIA container toolkit to inject the driver:
 
@@ -159,12 +161,24 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.1.3
+  ghcr.io/leeo86/mxl-multiviewer:1.2.0
 ```
 
 `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
 
 `docker/docker-compose.gpu.yaml` is the Compose form of that (`--gpus` via a device reservation). `deploy/mxl-multiviewer-gpu.yaml` is the Kubernetes form (`runtimeClassName: nvidia`, `nvidia.com/gpu: 1`). `deploy/mxl-multiviewer.yaml` does not request a GPU; `auto` stays on CPU. `MV_BACKEND=cuda` with no device exits 75. `MV_BACKEND=cuda` on a binary built without nvcc (the CI job, not the image) exits 78.
+
+### Web UI
+
+Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`), so a reload stays on the tab.
+
+- **Preview**: the output picture at `MV_PREVIEW_FPS`, a head selector with more than one head, the layout on air with Activate, and the output counters.
+- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour. Save, Save as, Discard, New, Delete (not the built-in presets), Activate, and Import / export of one layout or all of them. Unsaved edits survive tab switches and lost connections.
+- **Inputs**: video and audio state, source, format, live PPM levels, alarms, and the receiver ids to route to (IS-05 only).
+- **Alarms**: active alarms with severity and since when.
+- **Settings**: every setting with its origin (ENV, FILE, DEFAULT); environment values are read-only, saved values go into the configuration file and apply at the next start. Export as JSON or `KEY=value` (download or copy), import an exported document.
+
+The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
 
 ### Exit codes
 

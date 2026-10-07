@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -32,12 +33,25 @@ struct LegView
     double latencyMs = 0;
 };
 
+// Index into InputView::alarmSinceMs, in the order of the alarm names (§6.3).
+enum AlarmIndex : std::size_t
+{
+    kAlarmNoSignal = 0,
+    kAlarmBlack,
+    kAlarmFreeze,
+    kAlarmSilence,
+    kAlarmClip,
+    kAlarmFormat,
+    kAlarmCount
+};
+
 struct InputView
 {
     int index = 1;
     LegView video;
     LegView audio;
     std::array<double, 16> ppmDbfs{};
+    std::array<double, 16> holdDbfs{};
     std::array<double, 16> rmsDbfs{};
     std::array<bool, 16> clip{};
     bool alarmNoSignal = false;
@@ -46,6 +60,8 @@ struct InputView
     bool alarmSilence = false;
     bool alarmClip = false;
     bool alarmFormat = false;
+    // Wall-clock milliseconds since the Unix epoch when each alarm became active, 0 when it is not.
+    std::array<std::int64_t, kAlarmCount> alarmSinceMs{};
     std::string tslText;
     int tally = 0;
 };
@@ -72,11 +88,14 @@ class RuntimeModel
 public:
     explicit RuntimeModel(Config const& config);
 
-    void setInput(InputView view);
+    // The video reader owns `video` and the no-signal, black, freeze, and format alarms;
+    // the audio reader owns `audio`, the meters, and the silence and clip alarms.
+    void setInputVideo(InputView const& view);
+    void setInputAudio(InputView const& view);
     void setTally(int input, std::string text, int tally);
     void addLate(int input);
     void setOutput(OutputView view);
-    void setPreview(std::string jpeg);
+    void setPreview(int head, std::string jpeg);
     void setNmosUp(bool up);
     void setGpu(bool compiled, int devices);
     void touch();
@@ -84,7 +103,7 @@ public:
     [[nodiscard]] std::vector<InputView> inputs() const;
     [[nodiscard]] std::vector<OutputView> outputs() const;
     [[nodiscard]] OutputView output(int index) const;
-    [[nodiscard]] std::string preview() const;
+    [[nodiscard]] std::string preview(int head) const;
     [[nodiscard]] bool nmosUp() const;
     [[nodiscard]] bool cudaCompiled() const;
     [[nodiscard]] int cudaDevices() const;
@@ -102,7 +121,7 @@ private:
     std::vector<InputView> inputs_;
     std::vector<OutputView> outputs_;
     std::vector<VideoFormat> formats_;
-    std::string preview_;
+    std::vector<std::string> previews_;
     bool nmosUp_ = false;
     bool cudaCompiled_ = false;
     int cudaDevices_ = 0;

@@ -57,9 +57,14 @@ struct CudaComposeDesc
 {
     int width = 0;
     int height = 0;
+    // The canvas colour where no tile is (the layout background).
     std::uint16_t bgY = 64;
     std::uint16_t bgCb = 512;
     std::uint16_t bgCr = 512;
+    // Solid tiles (no picture, letterbox areas): limited-range black.
+    std::uint16_t solidY = 64;
+    std::uint16_t solidCb = 512;
+    std::uint16_t solidCr = 512;
     std::uint16_t const* backgroundY = nullptr;
     std::uint16_t const* backgroundCb = nullptr;
     std::uint16_t const* backgroundCr = nullptr;

@@ -9,10 +9,12 @@ RuntimeModel::RuntimeModel(Config const& config)
     inputs_.resize(static_cast<std::size_t>(config.maxInputs));
     outputs_.resize(static_cast<std::size_t>(config.outputs));
     formats_.resize(static_cast<std::size_t>(config.outputs));
+    previews_.resize(static_cast<std::size_t>(config.outputs));
     for (int i = 0; i < config.maxInputs; ++i)
     {
         inputs_[static_cast<std::size_t>(i)].index = i + 1;
         inputs_[static_cast<std::size_t>(i)].ppmDbfs.fill(-120);
+        inputs_[static_cast<std::size_t>(i)].holdDbfs.fill(-120);
         inputs_[static_cast<std::size_t>(i)].rmsDbfs.fill(-120);
     }
     for (int i = 0; i < config.outputs; ++i)
@@ -27,17 +29,44 @@ RuntimeModel::RuntimeModel(Config const& config)
     }
 }
 
-void RuntimeModel::setInput(InputView view)
+void RuntimeModel::setInputVideo(InputView const& view)
 {
     std::lock_guard lock{mutex_};
     if (view.index >= 1 && view.index <= static_cast<int>(inputs_.size()))
     {
         auto& slot = inputs_[static_cast<std::size_t>(view.index - 1)];
-        auto const text = slot.tslText;
-        auto const tally = slot.tally;
-        slot = std::move(view);
-        slot.tslText = text;
-        slot.tally = tally;
+        // `late` is counted by the composer (addLate).
+        auto const late = slot.video.late;
+        slot.video = view.video;
+        slot.video.late = late;
+        slot.alarmNoSignal = view.alarmNoSignal;
+        slot.alarmBlack = view.alarmBlack;
+        slot.alarmFreeze = view.alarmFreeze;
+        slot.alarmFormat = view.alarmFormat;
+        for (auto const index : {kAlarmNoSignal, kAlarmBlack, kAlarmFreeze, kAlarmFormat})
+        {
+            slot.alarmSinceMs[index] = view.alarmSinceMs[index];
+        }
+    }
+}
+
+void RuntimeModel::setInputAudio(InputView const& view)
+{
+    std::lock_guard lock{mutex_};
+    if (view.index >= 1 && view.index <= static_cast<int>(inputs_.size()))
+    {
+        auto& slot = inputs_[static_cast<std::size_t>(view.index - 1)];
+        slot.audio = view.audio;
+        slot.ppmDbfs = view.ppmDbfs;
+        slot.holdDbfs = view.holdDbfs;
+        slot.rmsDbfs = view.rmsDbfs;
+        slot.clip = view.clip;
+        slot.alarmSilence = view.alarmSilence;
+        slot.alarmClip = view.alarmClip;
+        for (auto const index : {kAlarmSilence, kAlarmClip})
+        {
+            slot.alarmSinceMs[index] = view.alarmSinceMs[index];
+        }
     }
 }
 
@@ -65,14 +94,24 @@ void RuntimeModel::setOutput(OutputView view)
     std::lock_guard lock{mutex_};
     if (view.index >= 1 && view.index <= static_cast<int>(outputs_.size()))
     {
-        outputs_[static_cast<std::size_t>(view.index - 1)] = std::move(view);
+        // Layout and audio-follow belong to the API (setHeadLayout, setHeadAudio). The
+        // composer's copy may be a frame old; writing it back lost an activation that
+        // arrived during that frame.
+        auto& slot = outputs_[static_cast<std::size_t>(view.index - 1)];
+        view.layout = slot.layout;
+        view.audioFollow = slot.audioFollow;
+        view.audioChannels = slot.audioChannels;
+        slot = std::move(view);
     }
 }
 
-void RuntimeModel::setPreview(std::string jpeg)
+void RuntimeModel::setPreview(int head, std::string jpeg)
 {
     std::lock_guard lock{mutex_};
-    preview_ = std::move(jpeg);
+    if (head >= 1 && head <= static_cast<int>(previews_.size()))
+    {
+        previews_[static_cast<std::size_t>(head - 1)] = std::move(jpeg);
+    }
 }
 
 void RuntimeModel::setNmosUp(bool up)
@@ -116,10 +155,14 @@ OutputView RuntimeModel::output(int index) const
     return {};
 }
 
-std::string RuntimeModel::preview() const
+std::string RuntimeModel::preview(int head) const
 {
     std::lock_guard lock{mutex_};
-    return preview_;
+    if (head >= 1 && head <= static_cast<int>(previews_.size()))
+    {
+        return previews_[static_cast<std::size_t>(head - 1)];
+    }
+    return {};
 }
 
 bool RuntimeModel::nmosUp() const

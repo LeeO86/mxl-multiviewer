@@ -118,7 +118,7 @@ A raster or rate change changes the flow token, which mints a new flow id. The s
 
 ### 4.3 Sender label lookup
 
-UMD source `is04` reads the routed sender's `label` from the registry Query API at `NMOS_QUERY_ADDRESS`:`NMOS_QUERY_PORT`. A failed lookup leaves the previous label, then falls back to the tile's manual text, then `MV In <n>`.
+UMD source `is04` reads the routed sender's `label` from the registry Query API at `NMOS_QUERY_ADDRESS`:`NMOS_QUERY_PORT`. A route without a sender id is looked up by its flow id (`senders?flow_id=`). A failed lookup leaves the previous label; a re-route clears it. Without a registry label the caption falls back to the tile's manual text, then the routed MXL flow's `label`, then `MV In <n>`.
 
 ---
 
@@ -188,12 +188,14 @@ Per input channel, peak programme meter:
 
 - IEC 60268-10 type IIa attack: a step reaches `1 − exp(−t/τ)` with `τ = 10 ms`.
 - Decay: 24 dB in 2.8 s (linear-amplitude exponential), the type IIa return time.
-- Scale is dBFS. 0 dBFS is full scale. The UI draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60. Colour zones default to green below −18 dBFS, amber below −9, red at and above −9. Zones are configurable per tile.
-- Peak hold default 2 s, then the same decay.
+- Scale is dBFS. 0 dBFS is full scale. The overlay draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60 beside the bars, with dBFS labels when the bar is tall enough. Colour zones default to green below −18 dBFS, amber below −9, red at and above −9, by position on the bar. Zones are configurable per tile (`zone_green`, `zone_amber`).
+- Peak hold default 2 s, then the same decay. The overlay draws it as a line on the bar.
 - Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
 - EBU R 128 momentary loudness is not in this version.
 
-Bars: 1–16 channels, first channel selectable, position left, right, or overlay, clip indicator when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999).
+Bars: 1–16 channels, first channel selectable, position left, right, or overlay, clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
+
+The audio leg is read from its own flow and domain, independent of the video leg (§4.2). Every new sample is metered from the flow's head index. A head that does not move for `MV_HOLD_MS` is `no_signal`.
 
 ---
 
@@ -249,12 +251,12 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `umd_font` | px at a 1080-tall canvas, scaled with the canvas | 28 |
 | `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
 | `tally_border`, `tally_lamp` | bool | true |
-| `audio_bars` | bool | false for presets, editable |
+| `audio_bars` | bool | true in the built-in presets; false when the key is missing |
 | `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
 | `audio_bar_channels` | 1–16 | 2 |
 | `audio_bar_first` | 0-based channel | 0 |
 | `audio_bar_position` | `left`, `right`, `overlay` | `right` |
-| `audio_zones` | three dBFS thresholds | −18 / −9 / 0 |
+| `zone_green`, `zone_amber` | dBFS where amber and where red start; −60 ≤ `zone_green` ≤ `zone_amber` ≤ 0 | −18 / −9 |
 | `format_label` | bool | true |
 | `latency` | bool, grain origin versus now | false |
 | `safe_area` | 90% and 80% rectangles | false |
@@ -262,11 +264,11 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `aspect_markers` | any of `16:9`, `4:3`, `1:1`, `9:16` | none |
 | `scale` | `fit`, `fill` | `fit` |
 
-Clock tiles: `clock_style` `analogue` or `digital`, `clock_zone` `tai`, `utc`, or `local`, optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate.
+Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local`, optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
 
-Label tiles: `label_text`.
+Label tiles: `label_text`, centred and sized to the tile.
 
-Background: `background` colour. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles.
+Background: `background` colour where no tile covers the canvas. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles. Letterbox and pillarbox areas of `fit` tiles stay limited-range black.
 
 Tally colours: red, green, amber, off. Border width is 8 px at 1080 and scales. Lamps sit at the two ends of the UMD.
 
@@ -283,11 +285,11 @@ Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear
 | `clip` | clip latch on a metered channel |
 | `format_mismatch` | routed video is outside the receiver caps (rate or raster the node did not advertise, or not v210/v210a) |
 
-An alarm shows a badge and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally. Active alarms increment `mxl_multiviewer_alarms_total`.
+An alarm shows a badge and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally: the alarm border sits inside the tally border. A tile that shows a slate (§6.4) has no badge. Active alarms increment `mxl_multiviewer_alarms_total`. `silence` also rises when routed audio does not arrive.
 
 ### 6.4 Slate
 
-After the hold time the tile is limited-range black with the text `NO SIGNAL` and the input label. `not_routed` uses `NOT ROUTED`. `waiting` uses `WAITING`.
+After the hold time the tile is limited-range black with the text `NO SIGNAL` and the input label (`MV In <n>`). `waiting` uses `WAITING`. A video leg that is not routed shows `NOT ROUTED` at once.
 
 ---
 
@@ -307,11 +309,11 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 
 ### 8.1 Pages
 
-- **Preview.** JPEG of head 1 at `MV_PREVIEW_FPS` (default 5) and `MV_PREVIEW_WIDTH` (default 480). Status badges from the WebSocket.
-- **Layout.** Canvas editor. Drag and resize with snapping to a grid of `MV_GRID` (default 24). Assign content and the options in §6.2. Save as a named layout. Activate. Import and export the book.
-- **Inputs.** For each input: state, routed sender id, source label, format, audio channel count. No source picker.
-- **Alarms.** Active and recent alarms.
-- **Settings.** Effective config with provenance. Env-set keys are read-only. Import/export of the flat JSON file. `KEY=value` export.
+- **Preview.** JPEG of one head at `MV_PREVIEW_FPS` (default 5) and `MV_PREVIEW_WIDTH` (default 480), a head selector when `MV_OUTPUTS` > 1, the head's layout with Activate, and its counters from the WebSocket.
+- **Layout.** Canvas editor. Drag and resize with snapping to a grid of `MV_GRID` (default 24), arrow keys move, Shift + arrows resize. Add input, clock, label, and empty tiles, duplicate, delete, and change the drawing order. Assign content and the options in §6.2. Save, save as a named layout, delete (not the built-in presets or the active layout), activate. Import and export one layout or the book. Unsaved edits stay in the page until they are saved or discarded.
+- **Inputs.** For each input: video and audio state, source label, flow ids, format, audio channel count, live PPM bars, alarms, and the receiver ids. No source picker.
+- **Alarms.** Active alarms with severity and the time they became active.
+- **Settings.** Effective config with provenance. Env-set keys are read-only. Import and export of the configuration document. `KEY=value` export.
 
 ### 8.2 REST
 
@@ -325,15 +327,17 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active |
 | POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head that uses it |
 | PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}` |
-| GET | `/api/v1/alarms` | alarm list |
+| GET | `/api/v1/alarms` | active alarms: input, name, `severity` (`red`, `amber`), `since` (Unix ms) |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
-| GET | `/preview.jpg` | latest JPEG of head 1 |
+| GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
 | GET | `/api/v1/config/export` | one JSON document: `version`, `secrets`, `settings`, `layouts`, `routes` |
-| POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`) |
+| POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`). Settings set by the environment are skipped and listed in `skipped` |
 | GET | `/api/v1/config/env` | `KEY=value` text |
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
+
+`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, and `hold_ms`. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each). Layout names in paths are percent-decoded.
 
 ### 8.3 Ops
 

@@ -1061,9 +1061,9 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         args.inH = tile.srcHeight;
         args.bob = tile.bob ? 1 : 0;
         args.solid = tile.solid || (tile.y == nullptr && tile.frame == nullptr) ? 1 : 0;
-        args.solidY = desc.bgY;
-        args.solidCb = desc.bgCb;
-        args.solidCr = desc.bgCr;
+        args.solidY = desc.solidY;
+        args.solidCb = desc.solidCb;
+        args.solidCr = desc.solidCr;
         if (args.solid)
         {
             if (!launchScale(gpu, args))

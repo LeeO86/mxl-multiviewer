@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,6 +20,16 @@ struct Rgba
 
 Rgba parseHexColor(std::string const& text, Rgba fallback = {0, 0, 0, 255});
 
+// 10-bit limited-range YCbCr of an RGB colour, with the overlay blend's coefficients
+// (prepareOverlay). Alpha is ignored. Used for the layout background colour.
+struct Ycbcr10
+{
+    std::uint16_t y = 64;
+    std::uint16_t cb = 512;
+    std::uint16_t cr = 512;
+};
+Ycbcr10 toYcbcr10(Rgba color);
+
 struct Overlay
 {
     int width = 0;
@@ -30,10 +41,34 @@ struct Overlay
     void fillRect(int x, int y, int w, int h, Rgba color);
     void strokeRect(int x, int y, int w, int h, int thickness, Rgba color);
     void text(int x, int y, std::string const& value, int pixelSize, Rgba color);
-    void line(int x0, int y0, int x1, int y1, Rgba color);
+    // Advance width of `value` as text() draws it at this size.
+    [[nodiscard]] int textWidth(std::string const& value, int pixelSize) const;
+    void line(int x0, int y0, int x1, int y1, Rgba color, double width = 1.6);
 
     // Set by renderOverlay while a Blend2D context owns the frame. Null on the bitmap path.
     void* blContext = nullptr;
+};
+
+// A meter value below the bottom of the scale (no audio).
+inline constexpr double kSilentDbfs = -120.0;
+
+inline constexpr std::array<double, 16> silentMeters()
+{
+    std::array<double, 16> values{};
+    for (auto& value : values)
+    {
+        value = kSilentDbfs;
+    }
+    return values;
+}
+
+// Alarm colour of a tile (SPECIFICATION.md §6.3): red for no signal, black, freeze and
+// clip; amber for silence and format mismatch.
+enum class AlarmLevel
+{
+    None,
+    Red,
+    Amber
 };
 
 struct OverlayTile
@@ -48,12 +83,16 @@ struct OverlayTile
     int tally = 0;
     bool tallyBorder = false;
     bool tallyLamp = false;
+    // Audio bars (§5.7). Only input tiles set this.
     bool bars = false;
+    // False when the input's audio leg is not routed: dim, empty bars with a strike.
+    bool audioRouted = true;
     bool showRms = false;
     int barChannels = 2;
-    double ppmDbfs[16] = {};
-    double rmsDbfs[16] = {};
-    bool clip[16] = {};
+    std::array<double, 16> ppmDbfs = silentMeters();
+    std::array<double, 16> holdDbfs = silentMeters();
+    std::array<double, 16> rmsDbfs = silentMeters();
+    std::array<bool, 16> clip{};
     BarsPosition barsPosition = BarsPosition::Right;
     double zoneGreen = -18;
     double zoneAmber = -9;
@@ -62,7 +101,13 @@ struct OverlayTile
     bool safeArea = false;
     bool centre = false;
     std::vector<std::string> aspectMarkers;
+    // Alarm badge text and the colour of badge and alarm border.
     std::string badge;
+    AlarmLevel alarm = AlarmLevel::None;
+    // Text over the black tile after MV_HOLD_MS (§6.4): NO SIGNAL, NOT ROUTED or WAITING,
+    // with the input label under it.
+    std::string slate;
+    std::string slateLabel;
     bool clock = false;
     bool analogue = false;
     int clockHour = 0;
@@ -72,6 +117,10 @@ struct OverlayTile
     std::string timecodeText;
     std::string labelText;
 };
+
+// PPM scale marks in dBFS (§5.7), and the meter range they cover.
+inline constexpr std::array<int, 8> kPpmMarks{0, -6, -12, -18, -24, -36, -48, -60};
+inline constexpr double kMeterFloorDbfs = -60.0;
 
 void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles);
 

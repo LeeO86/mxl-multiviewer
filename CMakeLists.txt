@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(mxl-multiviewer VERSION 1.1.3 LANGUAGES CXX)
+project(mxl-multiviewer VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,6 +119,7 @@ if(mxl_FOUND)
         set(MV_UI_SOURCE ${WEBUI_GENERATED})
     elseif(NPM_EXECUTABLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/web/package.json)
         set(WEBUI_HTML ${CMAKE_CURRENT_BINARY_DIR}/webui/index.html)
+        file(GLOB_RECURSE MV_WEB_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/src/*)
         add_custom_command(
             OUTPUT ${WEBUI_HTML}
             COMMAND ${NPM_EXECUTABLE} ci --no-fund --no-audit
@@ -126,7 +127,7 @@ if(mxl_FOUND)
             COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/webui
             COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/web/dist/index.html ${WEBUI_HTML}
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/web
-            DEPENDS web/package.json web/index.html web/vite.config.js web/src/main.js web/src/App.vue
+            DEPENDS web/package.json web/index.html web/vite.config.js ${MV_WEB_SOURCES}
             COMMENT "Building Vue web UI"
             VERBATIM
         )

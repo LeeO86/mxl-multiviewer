@@ -521,3 +521,182 @@ TEST_CASE("overlay changes cover every changed pixel and nothing else")
     CHECK(all[0].w == width);
     CHECK(all[0].h == height);
 }
+
+namespace
+{
+std::uint8_t const* pixel(Overlay const& overlay, int x, int y)
+{
+    return overlay.rgba.data() + static_cast<std::size_t>((y * overlay.width + x) * 4);
+}
+
+// Pixels in [x0, x1) × [y0, y1) that pass `test`.
+template <typename Test>
+int countPixels(Overlay const& overlay, int x0, int y0, int x1, int y1, Test test)
+{
+    int count = 0;
+    for (int y = y0; y < y1; ++y)
+    {
+        for (int x = x0; x < x1; ++x)
+        {
+            if (test(pixel(overlay, x, y)))
+            {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+bool inked(std::uint8_t const* px)
+{
+    return px[3] != 0;
+}
+
+// Width of the ink in a region (0 when empty).
+int inkWidth(Overlay const& overlay, int x0, int y0, int x1, int y1)
+{
+    int left = x1;
+    int right = x0 - 1;
+    for (int y = y0; y < y1; ++y)
+    {
+        for (int x = x0; x < x1; ++x)
+        {
+            if (inked(pixel(overlay, x, y)))
+            {
+                left = std::min(left, x);
+                right = std::max(right, x);
+            }
+        }
+    }
+    return right >= left ? right - left + 1 : 0;
+}
+} // namespace
+
+TEST_CASE("audio bars draw zones, PPM scale, peak hold, and clip")
+{
+    // 1080 canvas: 14 px bars, 6 px margin, meter from y=15 to y=534 (-60..0 dBFS).
+    Overlay overlay;
+    overlay.resize(1920, 1080);
+    OverlayTile tile;
+    tile.rect = {0, 0, 960, 540};
+    tile.bars = true;
+    tile.barChannels = 2;
+    tile.ppmDbfs[0] = -6;
+    tile.ppmDbfs[1] = -30;
+    tile.holdDbfs[1] = -12;
+    tile.clip[0] = true;
+    renderOverlay(overlay, {tile});
+    auto const red = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 180 && px[1] < 90; };
+    auto const amber = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 180 && px[1] > 130 && px[2] < 90; };
+    auto const green = [](std::uint8_t const* px) { return px[3] > 200 && px[0] < 90 && px[1] > 150; };
+    // Channel 0 (x 924..937) at -6 dBFS: red above -9, amber to -18, green below.
+    CHECK(red(pixel(overlay, 930, 80)));
+    CHECK(amber(pixel(overlay, 930, 130)));
+    CHECK(green(pixel(overlay, 930, 300)));
+    // Clip indicator above channel 0 lit, above channel 1 dark.
+    CHECK(pixel(overlay, 930, 9)[0] > 230);
+    CHECK(pixel(overlay, 946, 9)[0] < 140);
+    // Channel 1 (x 940..953) at -30 dBFS: green low, empty above, peak hold at -12 (y 118).
+    CHECK(green(pixel(overlay, 946, 400)));
+    CHECK(pixel(overlay, 946, 200)[1] < 60);
+    CHECK(pixel(overlay, 946, 118)[0] > 230);
+    CHECK(pixel(overlay, 946, 118)[1] > 190);
+    // Ticks left of the bars and the dBFS labels left of them.
+    CHECK(pixel(overlay, 920, 171)[0] > 150);
+    CHECK(countPixels(overlay, 870, 10, 917, 540, [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; }) > 40);
+    // Nothing outside the bar column.
+    CHECK(countPixels(overlay, 0, 0, 860, 540, inked) == 0);
+
+    Overlay unrouted;
+    unrouted.resize(1920, 1080);
+    tile.audioRouted = false;
+    renderOverlay(unrouted, {tile});
+    // No fill and no scale without routed audio, only dim bars and a cross.
+    CHECK(countPixels(unrouted, 900, 0, 960, 540, red) == 0);
+    CHECK(countPixels(unrouted, 870, 10, 917, 540, [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; }) == 0);
+    CHECK(pixel(unrouted, 930, 450)[3] < 200);
+    CHECK(pixel(unrouted, 939, 274)[0] > 150);
+}
+
+TEST_CASE("digital clock and label text scale with the tile")
+{
+    Overlay overlay;
+    overlay.resize(1920, 1080);
+    OverlayTile small;
+    small.rect = {0, 0, 240, 135};
+    small.clock = true;
+    small.clockText = "12:34:56";
+    OverlayTile big = small;
+    big.rect = {960, 540, 960, 540};
+    OverlayTile label;
+    label.rect = {960, 0, 960, 270};
+    label.labelText = "Studio 2";
+    renderOverlay(overlay, {small, big, label});
+    int const smallW = inkWidth(overlay, 0, 0, 240, 135);
+    int const bigW = inkWidth(overlay, 960, 540, 1920, 1080);
+    CHECK(smallW > 120);
+    CHECK(bigW > 576);
+    CHECK(bigW > 3 * smallW);
+    // Both fit inside their tiles.
+    CHECK(smallW < 240);
+    CHECK(bigW < 960);
+    CHECK(inkWidth(overlay, 960, 0, 1920, 270) > 300);
+}
+
+TEST_CASE("slate shows the state and the input in the middle of the tile")
+{
+    Overlay overlay;
+    overlay.resize(960, 540);
+    OverlayTile tile;
+    tile.rect = {0, 0, 480, 270};
+    tile.slate = "NO SIGNAL";
+    tile.slateLabel = "MV In 3";
+    renderOverlay(overlay, {tile});
+    CHECK(countPixels(overlay, 0, 95, 480, 140, inked) > 200);
+    CHECK(countPixels(overlay, 0, 145, 480, 178, inked) > 30);
+    CHECK(countPixels(overlay, 0, 0, 480, 80, inked) == 0);
+    CHECK(countPixels(overlay, 0, 190, 480, 270, inked) == 0);
+}
+
+TEST_CASE("alarm border and badge colours follow the alarm level")
+{
+    // 540 canvas: tally border 4 px, alarm border 2 px inside it.
+    Overlay overlay;
+    overlay.resize(960, 540);
+    OverlayTile silence;
+    silence.rect = {0, 0, 480, 270};
+    silence.alarm = AlarmLevel::Amber;
+    OverlayTile black;
+    black.rect = {480, 0, 480, 270};
+    black.alarm = AlarmLevel::Red;
+    black.badge = "BLACK";
+    renderOverlay(overlay, {silence, black});
+    auto const* amberEdge = pixel(overlay, 5, 135);
+    CHECK(amberEdge[3] > 200);
+    CHECK(amberEdge[0] > 200);
+    CHECK(amberEdge[1] > 120);
+    CHECK(amberEdge[2] < 80);
+    auto const* redEdge = pixel(overlay, 485, 135);
+    CHECK(redEdge[3] > 200);
+    CHECK(redEdge[0] > 200);
+    CHECK(redEdge[1] < 80);
+    CHECK(countPixels(overlay, 680, 8, 760, 22, [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 150 && px[1] < 80; }) > 20);
+    // Nothing in the middle of either tile.
+    CHECK(countPixels(overlay, 100, 100, 380, 200, inked) == 0);
+    CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
+}
+
+TEST_CASE("background colours convert to limited-range YCbCr")
+{
+    auto const black = toYcbcr10(parseHexColor("#000000"));
+    CHECK(black.y == 64);
+    CHECK(black.cb == 512);
+    CHECK(black.cr == 512);
+    auto const white = toYcbcr10(parseHexColor("#ffffff"));
+    CHECK(white.y == 940);
+    CHECK(white.cb == 512);
+    CHECK(white.cr == 512);
+    CHECK(toYcbcr10(parseHexColor("#101010")).y == 119);
+    auto const blue = toYcbcr10(parseHexColor("#0000ff"));
+    CHECK(blue.cb > 900);
+}

@@ -82,29 +82,45 @@ struct AudioWindow
     std::uint64_t first = 0;
 };
 
+// One input's video leg, published by its reader thread.
 struct Snap
 {
     std::vector<SavedGrain> grains;
-    AudioWindow audio;
     std::string videoState = "not_routed";
-    std::string audioState = "not_routed";
     std::string videoReason;
-    std::string audioReason;
     std::string senderId;
-    std::string audioSender;
+    // The MXL flow label of the routed flow.
     std::string label;
     std::uint64_t grainsRead = 0;
     std::uint64_t resyncs = 0;
-    std::array<double, 16> ppm{};
-    std::array<double, 16> rms{};
-    std::array<bool, 16> clip{};
     bool alarmNoSignal = false;
     bool alarmBlack = false;
     bool alarmFreeze = false;
+    bool alarmFormat = false;
+    std::array<std::int64_t, kAlarmCount> alarmSince{};
+};
+
+// One input's audio leg, published by its audio thread.
+struct AudioSnap
+{
+    // Samples for audio-follow, kept only while a head follows this input.
+    std::shared_ptr<AudioWindow const> window;
+    std::string state = "not_routed";
+    std::string reason;
+    int channels = 0;
+    std::array<double, 16> ppm = silentMeters();
+    std::array<double, 16> hold = silentMeters();
+    std::array<double, 16> rms = silentMeters();
+    std::array<bool, 16> clip{};
     bool alarmSilence = false;
     bool alarmClip = false;
-    bool alarmFormat = false;
+    std::array<std::int64_t, kAlarmCount> alarmSince{};
 };
+
+std::int64_t wallClockMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 struct FlowMeta
 {
@@ -226,7 +242,7 @@ void pushAudio(AudioWindow& window, mxlWrappedMultiBufferSlice const& slice, std
             filled += take;
         }
     }
-    std::size_t const maxSamples = 48000;
+    std::size_t const maxSamples = 24000;
     if (!window.channels.empty() && window.channels[0].size() > maxSamples)
     {
         std::size_t const drop = window.channels[0].size() - maxSamples;
@@ -252,6 +268,25 @@ void blit(Frame422& canvas, PixelRect const& dst, Frame422 const& tile)
                 canvas.cb[static_cast<std::size_t>((dst.y + y) * cw + (dst.x + x) / 2)] = tile.cb[static_cast<std::size_t>(y * tw + x / 2)];
                 canvas.cr[static_cast<std::size_t>((dst.y + y) * cw + (dst.x + x) / 2)] = tile.cr[static_cast<std::size_t>(y * tw + x / 2)];
             }
+        }
+    }
+}
+
+// Limited-range black into a rectangle of the canvas: letterbox areas of fit tiles (§5.5).
+void fillBlack(Frame422& canvas, PixelRect const& rect)
+{
+    int const cw = canvas.chromaWidth();
+    int const x0 = std::clamp(rect.x, 0, canvas.width);
+    int const x1 = std::clamp(rect.x + rect.w, 0, canvas.width);
+    for (int y = std::max(0, rect.y); y < std::min(canvas.height, rect.y + rect.h); ++y)
+    {
+        std::fill(canvas.y.begin() + y * canvas.width + x0, canvas.y.begin() + y * canvas.width + x1, std::uint16_t{64});
+        int const c0 = std::min(cw, (x0 + 1) / 2);
+        int const c1 = std::min(cw, x1 / 2);
+        if (c1 > c0)
+        {
+            std::fill(canvas.cb.begin() + y * cw + c0, canvas.cb.begin() + y * cw + c1, std::uint16_t{512});
+            std::fill(canvas.cr.begin() + y * cw + c0, canvas.cr.begin() + y * cw + c1, std::uint16_t{512});
         }
     }
 }
@@ -290,7 +325,16 @@ struct Engine::Impl
     std::vector<Route> videoRoutes;
     std::vector<Route> audioRoutes;
     std::vector<std::shared_ptr<Snap>> snaps;
+    std::vector<std::shared_ptr<AudioSnap>> audioSnaps;
     std::mutex snapMu;
+    struct SenderLabel
+    {
+        std::string key;
+        std::string label;
+    };
+    // Per input: the registry label of the routed sender (labelMain).
+    std::vector<SenderLabel> senderLabels;
+    std::mutex labelMu;
     std::vector<std::thread> threads;
     std::function<void(int, std::string const&, std::string const&, VideoFormat const&)> onFlow;
     int tslUdp = -1;
@@ -327,9 +371,13 @@ struct Engine::Impl
         for (auto& snap : snaps)
         {
             snap = std::make_shared<Snap>();
-            snap->ppm.fill(-120);
-            snap->rms.fill(-120);
         }
+        audioSnaps.resize(static_cast<std::size_t>(config.maxInputs));
+        for (auto& sound : audioSnaps)
+        {
+            sound = std::make_shared<AudioSnap>();
+        }
+        senderLabels.resize(static_cast<std::size_t>(config.maxInputs));
     }
 
     Route videoRoute(int input)
@@ -354,6 +402,44 @@ struct Engine::Impl
     {
         std::lock_guard lock{snapMu};
         snaps[static_cast<std::size_t>(input - 1)] = std::move(next);
+    }
+
+    std::shared_ptr<AudioSnap> audioSnap(int input)
+    {
+        std::lock_guard lock{snapMu};
+        return audioSnaps[static_cast<std::size_t>(input - 1)];
+    }
+
+    void publishAudio(int input, std::shared_ptr<AudioSnap> next)
+    {
+        std::lock_guard lock{snapMu};
+        audioSnaps[static_cast<std::size_t>(input - 1)] = std::move(next);
+    }
+
+    std::string senderLabel(int input)
+    {
+        std::lock_guard lock{labelMu};
+        return senderLabels[static_cast<std::size_t>(input - 1)].label;
+    }
+
+    // Debounces one alarm of an input (§6.3) and keeps the wall-clock time it became active.
+    void bumpAlarm(int input, char const* name, Debounce& debounce, bool raw, bool& flag, std::int64_t& since)
+    {
+        auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (debounce.update(raw, nowMs, config.alarmDebounceMs, config.alarmClearMs))
+        {
+            if (debounce.active)
+            {
+                metrics.inc("alarms_total", {{"input", std::to_string(input)}, {"name", name}});
+                since = wallClockMs();
+            }
+            else
+            {
+                since = 0;
+            }
+        }
+        flag = debounce.active;
+        metrics.set("alarms", {{"input", std::to_string(input)}, {"name", name}}, flag ? 1 : 0);
     }
 
     void ensureDomain()
@@ -396,40 +482,57 @@ struct Engine::Impl
     {
         mxlInstance instance = nullptr;
         mxlFlowReader video = nullptr;
-        mxlFlowReader audio = nullptr;
         // CUDA locks the reader's grain memory; unlock it before the reader unmaps it.
         auto const releaseVideo = [&] {
             cudaReleaseHostMemory();
             mxlReleaseFlowReader(instance, video);
         };
         std::string openKey;
+        // The route the grains in the snapshot came from: a re-route drops them at once.
+        std::string grainsKey;
         FlowMeta meta;
         std::string metaKey;
         int backoff = 250;
         AlarmSet alarms;
-        PpmMeter meters[16];
         // CPU backend: buffers for copies of the packed grains (see SavedGrain::v210).
         std::vector<std::shared_ptr<std::vector<std::uint8_t>>> grainPool;
         std::string prevState;
+        std::uint64_t const holdNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull;
+        auto const bump = [&](std::shared_ptr<Snap> const& snap, char const* name, AlarmIndex index, Debounce& debounce, bool raw, bool& flag) {
+            bumpAlarm(input, name, debounce, raw, flag, snap->alarmSince[index]);
+        };
+        // Without a new grain only the no-signal alarm can rise; the picture alarms clear.
+        auto const idleAlarms = [&](std::shared_ptr<Snap> const& snap, bool noSignal) {
+            bump(snap, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, noSignal, snap->alarmNoSignal);
+            bump(snap, AlarmNames::black, kAlarmBlack, alarms.black, false, snap->alarmBlack);
+            bump(snap, AlarmNames::freeze, kAlarmFreeze, alarms.freeze, false, snap->alarmFreeze);
+            bump(snap, AlarmNames::formatMismatch, kAlarmFormat, alarms.formatMismatch, false, snap->alarmFormat);
+        };
+        // §5.3: `holding` while the last grain is inside MV_HOLD_MS, then `no_signal`.
+        auto const staleState = [&](std::shared_ptr<Snap> const& snap) {
+            bool const stale = snap->grains.empty() || mxlGetTime() > snap->grains.back().origin + holdNs;
+            snap->videoState = stale ? "no_signal" : "holding";
+            idleAlarms(snap, stale);
+        };
+        auto const waiting = [&](std::shared_ptr<Snap> const& snap, char const* reason) {
+            snap->videoState = "waiting";
+            snap->videoReason = reason;
+            idleAlarms(snap, true);
+        };
         auto const publishState = [&](std::shared_ptr<Snap> const& snap) {
+            auto const route = videoRoute(input);
             InputView view;
             view.index = input;
-            view.video.enable = videoRoute(input).enable;
-            view.video.domainId = videoRoute(input).domainId;
-            view.video.flowId = videoRoute(input).flowId;
-            view.video.senderId = videoRoute(input).senderId;
+            view.video.enable = route.enable;
+            view.video.domainId = route.domainId;
+            view.video.flowId = route.flowId;
+            view.video.senderId = route.senderId;
             view.video.state = snap->videoState;
             view.video.reason = snap->videoReason;
-            view.video.label = snap->label;
+            auto const registered = senderLabel(input);
+            view.video.label = registered.empty() ? snap->label : registered;
             view.video.grains = snap->grainsRead;
             view.video.resyncs = snap->resyncs;
-            view.audio.enable = audioRoute(input).enable;
-            view.audio.domainId = audioRoute(input).domainId;
-            view.audio.flowId = audioRoute(input).flowId;
-            view.audio.senderId = audioRoute(input).senderId;
-            view.audio.state = snap->audioState;
-            view.audio.reason = snap->audioReason;
-            view.audio.channels = static_cast<int>(snap->audio.channels.size());
             if (!snap->grains.empty())
             {
                 auto const& grain = snap->grains.back();
@@ -445,16 +548,12 @@ struct Engine::Impl
                     view.video.latencyMs = static_cast<double>(now - grain.origin) / 1e6;
                 }
             }
-            view.ppmDbfs = snap->ppm;
-            view.rmsDbfs = snap->rms;
-            view.clip = snap->clip;
             view.alarmNoSignal = snap->alarmNoSignal;
             view.alarmBlack = snap->alarmBlack;
             view.alarmFreeze = snap->alarmFreeze;
-            view.alarmSilence = snap->alarmSilence;
-            view.alarmClip = snap->alarmClip;
             view.alarmFormat = snap->alarmFormat;
-            runtime.setInput(view);
+            view.alarmSinceMs = snap->alarmSince;
+            runtime.setInputVideo(view);
             if (prevState != snap->videoState)
             {
                 if (!prevState.empty())
@@ -470,21 +569,19 @@ struct Engine::Impl
         while (run.load())
         {
             auto route = videoRoute(input);
-            auto const sound = audioRoute(input);
             auto next = std::make_shared<Snap>(*snap(input));
             if (!route.enable || route.flowId.empty() || route.domainId.empty())
             {
                 next->videoState = "not_routed";
                 next->videoReason.clear();
+                next->grains.clear();
+                next->label.clear();
+                grainsKey.clear();
+                alarms.haveHash = false;
                 if (video != nullptr)
                 {
                     releaseVideo();
                     video = nullptr;
-                }
-                if (audio != nullptr)
-                {
-                    mxlReleaseFlowReader(instance, audio);
-                    audio = nullptr;
                 }
                 if (instance != nullptr)
                 {
@@ -492,6 +589,7 @@ struct Engine::Impl
                     instance = nullptr;
                 }
                 openKey.clear();
+                idleAlarms(next, false);
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -499,25 +597,26 @@ struct Engine::Impl
             auto const domain = resolveDomain(config.scanPath, route.domainId);
             if (!domain)
             {
-                next->videoState = "waiting";
-                next->videoReason = "domain_not_found";
+                waiting(next, "domain_not_found");
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
                 backoff = std::min(5000, backoff * 2);
                 continue;
             }
             auto const key = domain->path + "|" + route.flowId;
+            if (!next->grains.empty() && grainsKey != key)
+            {
+                // Another flow is routed now: never show the previous source under it.
+                next->grains.clear();
+                next->label.clear();
+                alarms.haveHash = false;
+            }
             if (instance == nullptr || openKey.substr(0, domain->path.size()) != domain->path)
             {
                 if (video != nullptr)
                 {
                     releaseVideo();
                     video = nullptr;
-                }
-                if (audio != nullptr)
-                {
-                    mxlReleaseFlowReader(instance, audio);
-                    audio = nullptr;
                 }
                 if (instance != nullptr)
                 {
@@ -528,8 +627,7 @@ struct Engine::Impl
             }
             if (instance == nullptr)
             {
-                next->videoState = "waiting";
-                next->videoReason = "domain_not_found";
+                waiting(next, "domain_not_found");
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
                 backoff = std::min(5000, backoff * 2);
@@ -544,8 +642,8 @@ struct Engine::Impl
                 }
                 if (mxlCreateFlowReader(instance, route.flowId.c_str(), nullptr, &video) != MXL_STATUS_OK)
                 {
-                    next->videoState = "waiting";
-                    next->videoReason = "flow_not_found";
+                    video = nullptr;
+                    waiting(next, "flow_not_found");
                     publishState(next);
                     std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
                     backoff = std::min(5000, backoff * 2);
@@ -553,25 +651,6 @@ struct Engine::Impl
                 }
                 openKey = key;
                 backoff = 250;
-            }
-            if (sound.enable && !sound.flowId.empty())
-            {
-                auto const audioDomain = resolveDomain(config.scanPath, sound.domainId.empty() ? route.domainId : sound.domainId);
-                if (audioDomain && audioDomain->path == domain->path && audio == nullptr)
-                {
-                    if (mxlCreateFlowReader(instance, sound.flowId.c_str(), nullptr, &audio) != MXL_STATUS_OK)
-                    {
-                        audio = nullptr;
-                        next->audioState = "waiting";
-                        next->audioReason = "flow_not_found";
-                    }
-                }
-            }
-            else if (audio != nullptr)
-            {
-                mxlReleaseFlowReader(instance, audio);
-                audio = nullptr;
-                next->audioState = "not_routed";
             }
 
             // A flow definition never changes for a flow id: parse it once per opened flow.
@@ -583,8 +662,7 @@ struct Engine::Impl
             mxlFlowInfo info{};
             if (mxlFlowReaderGetInfo(video, &info) != MXL_STATUS_OK)
             {
-                next->videoState = "waiting";
-                next->videoReason = "flow_not_found";
+                waiting(next, "flow_not_found");
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
@@ -609,15 +687,13 @@ struct Engine::Impl
             }
             if (status == MXL_ERR_TIMEOUT)
             {
+                staleState(next);
                 publishState(next);
                 continue;
             }
             if (status != MXL_STATUS_OK || payload == nullptr || (grain.flags & MXL_GRAIN_FLAG_INVALID) != 0)
             {
-                if (next->grains.empty())
-                {
-                    next->videoState = "no_signal";
-                }
+                staleState(next);
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
@@ -698,38 +774,13 @@ struct Engine::Impl
             {
                 next->grains.erase(next->grains.begin());
             }
+            grainsKey = key;
             ++next->grainsRead;
             metrics.inc("grains_read_total", {{"input", std::to_string(input)}});
             next->videoState = "running";
             next->videoReason.clear();
             next->label = meta.label.empty() ? next->label : meta.label;
             next->senderId = route.senderId;
-            if (audio != nullptr)
-            {
-                mxlRational audioRate{48000, 1};
-                std::uint64_t const sampleEnd = mxlTimestampToIndex(&audioRate, saved.origin) + 1;
-                std::size_t maxRead = 0;
-                mxlFlowReaderGetMaxReadLengthSamples(audio, &maxRead);
-                std::size_t const count = std::min<std::size_t>(maxRead == 0 ? 960 : maxRead, 2000);
-                mxlWrappedMultiBufferSlice slice{};
-                if (count > 0 && mxlFlowReaderGetSamplesNonBlocking(audio, sampleEnd, count, &slice) == MXL_STATUS_OK)
-                {
-                    pushAudio(next->audio, slice, count, sampleEnd);
-                    next->audioState = "running";
-                    PpmConfig ppm;
-                    ppm.clipLinear = config.clipLinear;
-                    for (std::size_t ch = 0; ch < next->audio.channels.size() && ch < 16; ++ch)
-                    {
-                        auto const& samples = next->audio.channels[ch];
-                        int const take = std::min<int>(static_cast<int>(samples.size()), 960);
-                        meters[ch].process(samples.data() + samples.size() - static_cast<std::size_t>(take), take, 48000.0, ppm);
-                        next->ppm[ch] = meters[ch].levelDbfs();
-                        next->rms[ch] = meters[ch].rmsDbfs();
-                        next->clip[ch] = meters[ch].clip;
-                    }
-                }
-            }
-            auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             double sum = 0;
             int samples = 0;
             // Without an unpacked frame (CUDA, and the CPU backend's packed copy) the same luma
@@ -756,48 +807,17 @@ struct Engine::Impl
             bool const freeze = alarms.haveHash && hash == alarms.lastHash;
             alarms.lastHash = hash;
             alarms.haveHash = true;
-            bool silence = false;
-            if (audio != nullptr)
-            {
-                silence = true;
-                for (double dbfs : next->ppm)
-                {
-                    if (dbfs > config.silenceDbfs)
-                    {
-                        silence = false;
-                    }
-                }
-            }
-            bool clip = false;
-            for (bool flag : next->clip)
-            {
-                clip = clip || flag;
-            }
             bool const formatBad = width > 3840 || height > 2160 || !allowedRate(meta.rateNum, meta.rateDen) ||
                                    (meta.mediaType != "video/v210" && meta.mediaType != "video/v210a" && !meta.mediaType.empty());
-            auto bump = [&](char const* name, Debounce& debounce, bool raw, bool& flag) {
-                if (debounce.update(raw, nowMs, config.alarmDebounceMs, config.alarmClearMs) && debounce.active)
-                {
-                    metrics.inc("alarms_total", {{"input", std::to_string(input)}, {"name", name}});
-                }
-                flag = debounce.active;
-                metrics.set("alarms", {{"input", std::to_string(input)}, {"name", name}}, flag ? 1 : 0);
-            };
-            bump("no_signal", alarms.noSignal, false, next->alarmNoSignal);
-            bump("black", alarms.black, black, next->alarmBlack);
-            bump("freeze", alarms.freeze, freeze, next->alarmFreeze);
-            bump("silence", alarms.silence, silence, next->alarmSilence);
-            bump("clip", alarms.clip, clip, next->alarmClip);
-            bump("format_mismatch", alarms.formatMismatch, formatBad, next->alarmFormat);
+            bump(next, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, next->alarmNoSignal);
+            bump(next, AlarmNames::black, kAlarmBlack, alarms.black, black, next->alarmBlack);
+            bump(next, AlarmNames::freeze, kAlarmFreeze, alarms.freeze, freeze, next->alarmFreeze);
+            bump(next, AlarmNames::formatMismatch, kAlarmFormat, alarms.formatMismatch, formatBad, next->alarmFormat);
             publishState(next);
         }
         if (video != nullptr && instance != nullptr)
         {
             releaseVideo();
-        }
-        if (audio != nullptr && instance != nullptr)
-        {
-            mxlReleaseFlowReader(instance, audio);
         }
         if (instance != nullptr)
         {
@@ -805,29 +825,341 @@ struct Engine::Impl
         }
     }
 
-    // The overlay items of one head (UMD, tally, meters, alarms, clocks), from input
-    // snapshots and runtime state only, so the overlay thread can build them.
+    // True while a head copies this input's audio (audio-follow).
+    bool followed(int input) const
+    {
+        for (int head = 1; head <= config.outputs; ++head)
+        {
+            if (runtime.headAudioFollow(head) == input && runtime.headAudioChannels(head) > 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The audio leg of one input, independent of its video leg (§4.2: they may come from
+    // different senders and domains). Meters every new sample from the flow's own head.
+    void audioMain(int input)
+    {
+        mxlInstance instance = nullptr;
+        mxlFlowReader reader = nullptr;
+        std::string openDomain;
+        std::string openFlow;
+        PpmMeter meters[16];
+        PpmConfig ballistics;
+        ballistics.clipLinear = config.clipLinear;
+        std::uint64_t lastEnd = 0;
+        std::uint64_t lastHead = 0;
+        auto lastMove = std::chrono::steady_clock::now();
+        Debounce silenceAlarm;
+        Debounce clipAlarm;
+        int backoff = 250;
+        std::string prevState;
+        auto const release = [&] {
+            if (reader != nullptr)
+            {
+                mxlReleaseFlowReader(instance, reader);
+                reader = nullptr;
+            }
+            openFlow.clear();
+        };
+        auto const resetMeters = [&](AudioSnap& sound) {
+            for (auto& meter : meters)
+            {
+                meter = PpmMeter{};
+            }
+            sound.ppm = silentMeters();
+            sound.hold = silentMeters();
+            sound.rms = silentMeters();
+            sound.clip = {};
+            sound.window.reset();
+            lastEnd = 0;
+        };
+        auto const publishState = [&](std::shared_ptr<AudioSnap> const& sound, bool silence, bool clip) {
+            bumpAlarm(input, AlarmNames::silence, silenceAlarm, silence, sound->alarmSilence, sound->alarmSince[kAlarmSilence]);
+            bumpAlarm(input, AlarmNames::clip, clipAlarm, clip, sound->alarmClip, sound->alarmSince[kAlarmClip]);
+            auto const route = audioRoute(input);
+            InputView view;
+            view.index = input;
+            view.audio.enable = route.enable;
+            view.audio.domainId = route.domainId;
+            view.audio.flowId = route.flowId;
+            view.audio.senderId = route.senderId;
+            view.audio.state = sound->state;
+            view.audio.reason = sound->reason;
+            view.audio.channels = sound->channels;
+            view.ppmDbfs = sound->ppm;
+            view.holdDbfs = sound->hold;
+            view.rmsDbfs = sound->rms;
+            view.clip = sound->clip;
+            view.alarmSilence = sound->alarmSilence;
+            view.alarmClip = sound->alarmClip;
+            view.alarmSinceMs = sound->alarmSince;
+            runtime.setInputAudio(view);
+            if (prevState != sound->state)
+            {
+                if (!prevState.empty())
+                {
+                    metrics.set("input_state", {{"input", std::to_string(input)}, {"kind", "audio"}, {"state", prevState}}, 0);
+                }
+                metrics.set("input_state", {{"input", std::to_string(input)}, {"kind", "audio"}, {"state", sound->state}}, 1);
+                prevState = sound->state;
+            }
+            publishAudio(input, sound);
+        };
+        auto const waitingFor = [&](std::shared_ptr<AudioSnap> const& sound, char const* reason) {
+            sound->state = "waiting";
+            sound->reason = reason;
+            resetMeters(*sound);
+            // Routed audio that does not arrive is silence on the wall.
+            publishState(sound, true, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
+            backoff = std::min(5000, backoff * 2);
+        };
+
+        while (run.load())
+        {
+            auto const route = audioRoute(input);
+            auto next = std::make_shared<AudioSnap>(*audioSnap(input));
+            if (!route.enable || route.flowId.empty())
+            {
+                release();
+                if (instance != nullptr)
+                {
+                    mxlDestroyInstance(instance);
+                    instance = nullptr;
+                    openDomain.clear();
+                }
+                next->state = "not_routed";
+                next->reason.clear();
+                next->channels = 0;
+                resetMeters(*next);
+                publishState(next, false, false);
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            auto const domain = resolveDomain(config.scanPath, route.domainId.empty() ? videoRoute(input).domainId : route.domainId);
+            if (!domain)
+            {
+                waitingFor(next, "domain_not_found");
+                continue;
+            }
+            if (instance == nullptr || openDomain != domain->path)
+            {
+                release();
+                if (instance != nullptr)
+                {
+                    mxlDestroyInstance(instance);
+                }
+                instance = mxlCreateInstance(domain->path.c_str(), nullptr);
+                openDomain = instance != nullptr ? domain->path : std::string{};
+            }
+            if (instance == nullptr)
+            {
+                waitingFor(next, "domain_not_found");
+                continue;
+            }
+            if (openFlow != route.flowId)
+            {
+                // A re-route to another audio flow opens that flow (§4.2).
+                release();
+                resetMeters(*next);
+                if (mxlCreateFlowReader(instance, route.flowId.c_str(), nullptr, &reader) != MXL_STATUS_OK)
+                {
+                    reader = nullptr;
+                    waitingFor(next, "flow_not_found");
+                    continue;
+                }
+                openFlow = route.flowId;
+                backoff = 250;
+                lastHead = 0;
+            }
+            mxlFlowInfo info{};
+            if (mxlFlowReaderGetInfo(reader, &info) != MXL_STATUS_OK)
+            {
+                release();
+                waitingFor(next, "flow_not_found");
+                continue;
+            }
+            // Continuous flows only move runtime.headIndex; a head that stops for
+            // MV_HOLD_MS is no signal.
+            auto const head = info.runtime.headIndex;
+            auto const now = std::chrono::steady_clock::now();
+            if (head != lastHead)
+            {
+                lastHead = head;
+                lastMove = now;
+            }
+            bool const moving = head != 0 && head != MXL_UNDEFINED_INDEX && now - lastMove <= std::chrono::milliseconds(config.holdMs);
+            if (moving && head > lastEnd)
+            {
+                std::size_t maxRead = 0;
+                mxlFlowReaderGetMaxReadLengthSamples(reader, &maxRead);
+                // Every sample since the last read, at most 100 ms (a first read, or after a stall).
+                std::uint64_t const fresh = lastEnd == 0 ? 4800 : head - lastEnd;
+                auto const count = static_cast<std::size_t>(std::min<std::uint64_t>({fresh, maxRead == 0 ? 960 : maxRead, 4800}));
+                mxlWrappedMultiBufferSlice slice{};
+                if (count > 0 && mxlFlowReaderGetSamplesNonBlocking(reader, head, count, &slice) == MXL_STATUS_OK)
+                {
+                    int const channels = static_cast<int>(std::min<std::size_t>(slice.count, 64));
+                    next->channels = channels;
+                    for (int ch = 0; ch < std::min(channels, 16); ++ch)
+                    {
+                        auto const index = static_cast<std::size_t>(ch);
+                        for (int frag = 0; frag < 2; ++frag)
+                        {
+                            auto const* pointer = static_cast<char const*>(slice.base.fragments[frag].pointer);
+                            auto const samples = slice.base.fragments[frag].size / sizeof(float);
+                            if (pointer != nullptr && samples > 0)
+                            {
+                                meters[ch].process(reinterpret_cast<float const*>(pointer + static_cast<std::size_t>(ch) * slice.stride), static_cast<int>(samples),
+                                    48000.0, ballistics);
+                            }
+                        }
+                        next->ppm[index] = meters[ch].levelDbfs();
+                        next->hold[index] = meters[ch].holdDbfs();
+                        next->rms[index] = meters[ch].rmsDbfs();
+                        next->clip[index] = meters[ch].clip;
+                    }
+                    if (followed(input))
+                    {
+                        auto window = std::make_shared<AudioWindow>(next->window ? *next->window : AudioWindow{});
+                        pushAudio(*window, slice, count, head);
+                        next->window = std::move(window);
+                    }
+                    else
+                    {
+                        next->window.reset();
+                    }
+                    lastEnd = head;
+                }
+            }
+            next->reason.clear();
+            bool silence = true;
+            bool clip = false;
+            if (moving)
+            {
+                next->state = "running";
+                for (int ch = 0; ch < std::min(next->channels, 16); ++ch)
+                {
+                    silence = silence && next->ppm[static_cast<std::size_t>(ch)] < config.silenceDbfs;
+                    clip = clip || next->clip[static_cast<std::size_t>(ch)];
+                }
+            }
+            else
+            {
+                next->state = "no_signal";
+                resetMeters(*next);
+            }
+            publishState(next, silence, clip);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        release();
+        if (instance != nullptr)
+        {
+            mxlDestroyInstance(instance);
+        }
+    }
+
+    // Looks up the routed senders' labels in the registry Query API for UMD source is04
+    // (§4.3). A route without a sender id is looked up by its flow id. A failed lookup
+    // keeps the previous label; a re-route clears it.
+    void labelMain()
+    {
+        std::string const base = "http://" + config.nmosQueryAddress + ":" + std::to_string(config.nmosQueryPort) + "/x-nmos/query/v1.3/senders";
+        std::vector<std::chrono::steady_clock::time_point> checked(static_cast<std::size_t>(config.maxInputs));
+        while (run.load())
+        {
+            for (int input = 1; input <= config.maxInputs && run.load(); ++input)
+            {
+                auto const index = static_cast<std::size_t>(input - 1);
+                auto const route = videoRoute(input);
+                std::string const key = !route.enable || route.flowId.empty() ? std::string{} : route.senderId.empty() ? "flow:" + route.flowId : route.senderId;
+                {
+                    std::lock_guard lock{labelMu};
+                    if (senderLabels[index].key != key)
+                    {
+                        senderLabels[index] = {key, {}};
+                        checked[index] = {};
+                    }
+                }
+                auto const now = std::chrono::steady_clock::now();
+                if (key.empty() || (checked[index] != std::chrono::steady_clock::time_point{} && now - checked[index] < std::chrono::seconds(10)))
+                {
+                    continue;
+                }
+                checked[index] = now;
+                auto const result = httpGet(route.senderId.empty() ? base + "?flow_id=" + route.flowId : base + "/" + route.senderId, 500);
+                if (result.status != 200)
+                {
+                    continue;
+                }
+                std::string error;
+                auto root = json::parse(result.body, error);
+                if (!error.empty())
+                {
+                    continue;
+                }
+                if (root.is<picojson::array>())
+                {
+                    auto const& items = root.get<picojson::array>();
+                    if (items.empty())
+                    {
+                        continue;
+                    }
+                    root = picojson::value(items.front());
+                }
+                if (auto const label = json::fieldString(root, "label"))
+                {
+                    std::lock_guard lock{labelMu};
+                    if (senderLabels[index].key == key)
+                    {
+                        senderLabels[index].label = *label;
+                    }
+                }
+            }
+            for (int i = 0; i < 10 && run.load(); ++i)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+    }
+
+    // The overlay items of one head (UMD, tally, meters, alarms, slates, clocks), from
+    // input snapshots and runtime state only, so the overlay thread can build them.
     std::vector<OverlayTile> overlayTiles(std::vector<Tile> const& tiles, VideoFormat const& format)
     {
         std::vector<OverlayTile> drawn;
+        auto const inputs = runtime.inputs();
+        auto const now = mxlGetTime();
+        // The composer shows a grain until it is older than MV_HOLD_MS at its read point.
+        std::uint64_t const frameNs = 1000000000ull * static_cast<std::uint64_t>(std::max(1, format.rateDen)) / static_cast<std::uint64_t>(std::max(1, format.rateNum));
+        std::uint64_t const staleNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull + frameNs * static_cast<std::uint64_t>(config.inputOffsetGrains);
         for (auto const& tile : tiles)
         {
             OverlayTile item;
             item.rect = rectToPixels(tile.rect, format.width, format.height);
-            item.umd = tile.umd && tile.content == TileContent::Input;
-            auto const current = tile.content == TileContent::Input ? snap(tile.input) : nullptr;
-            auto const viewIn = tile.content == TileContent::Input ? runtime.inputs()[static_cast<std::size_t>(tile.input - 1)] : InputView{};
+            bool const isInput = tile.content == TileContent::Input && tile.input >= 1 && tile.input <= config.maxInputs;
+            item.umd = tile.umd && isInput;
+            auto const current = isInput ? snap(tile.input) : nullptr;
+            auto const sound = isInput ? audioSnap(tile.input) : nullptr;
+            auto const viewIn = isInput ? inputs[static_cast<std::size_t>(tile.input - 1)] : InputView{};
+            std::string const inputName = "MV In " + std::to_string(tile.input);
             if (tile.umdSource == UmdSource::Manual)
             {
                 item.umdText = tile.umdText;
             }
             else if (tile.umdSource == UmdSource::Tsl)
             {
-                item.umdText = viewIn.tslText.empty() ? tile.umdText : viewIn.tslText;
+                item.umdText = !viewIn.tslText.empty() ? viewIn.tslText : !tile.umdText.empty() ? tile.umdText : inputName;
             }
             else if (current != nullptr)
             {
-                item.umdText = current->label.empty() ? ("MV In " + std::to_string(tile.input)) : current->label;
+                // §4.3: the routed sender's registry label, then the tile's text, then the
+                // MXL flow label (a lab without a registry), then MV In <n>.
+                auto const registered = senderLabel(tile.input);
+                item.umdText = !registered.empty() ? registered : !tile.umdText.empty() ? tile.umdText : !current->label.empty() ? current->label : inputName;
             }
             item.umdPosition = tile.umdPosition;
             item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
@@ -836,21 +1168,32 @@ struct Engine::Impl
             item.tallyBorder = tile.tallyBorder;
             item.tallyLamp = tile.tallyLamp;
             item.umdFg = tallyRgba(item.tally);
-            item.bars = tile.audioBars;
+            // Bars only on input tiles; the flag is ignored on clock, label, and empty tiles.
+            item.bars = tile.audioBars && isInput;
             item.showRms = tile.audioBarRms;
             item.barChannels = tile.audioBarChannels;
             item.barsPosition = tile.audioBarPosition;
             item.zoneGreen = tile.zoneGreen;
             item.zoneAmber = tile.zoneAmber;
-            if (current != nullptr)
+            if (sound != nullptr)
             {
+                item.audioRouted = sound->state != "not_routed";
                 for (int c = 0; c < 16; ++c)
                 {
                     int const src = tile.audioBarFirst + c;
-                    item.ppmDbfs[c] = src < 16 ? current->ppm[static_cast<std::size_t>(src)] : -120;
-                    item.rmsDbfs[c] = src < 16 ? current->rms[static_cast<std::size_t>(src)] : -120;
-                    item.clip[c] = src < 16 && current->clip[static_cast<std::size_t>(src)];
+                    if (src < 16)
+                    {
+                        auto const from = static_cast<std::size_t>(src);
+                        auto const to = static_cast<std::size_t>(c);
+                        item.ppmDbfs[to] = sound->ppm[from];
+                        item.holdDbfs[to] = sound->hold[from];
+                        item.rmsDbfs[to] = sound->rms[from];
+                        item.clip[to] = sound->clip[from];
+                    }
                 }
+            }
+            if (current != nullptr)
+            {
                 if (tile.formatLabel && !current->grains.empty())
                 {
                     auto const& grain = current->grains.back();
@@ -858,33 +1201,60 @@ struct Engine::Impl
                 }
                 if (tile.latency && !current->grains.empty())
                 {
-                    auto const now = mxlGetTime();
                     auto const origin = current->grains.back().origin;
                     item.latencyText = std::to_string(static_cast<int>((now > origin ? now - origin : 0) / 1000000ull)) + " ms";
                 }
-                if (current->alarmNoSignal)
+                // §6.4: after the hold time the tile is black with a slate and the input name.
+                auto const route = videoRoute(tile.input);
+                bool const routed = route.enable && !route.flowId.empty() && !route.domainId.empty();
+                bool const picture = !current->grains.empty() && now <= current->grains.back().origin + staleNs;
+                if (!routed)
                 {
-                    item.badge = "NO SIGNAL";
+                    item.slate = "NOT ROUTED";
                 }
-                else if (current->alarmBlack)
+                else if (!picture)
                 {
-                    item.badge = "BLACK";
+                    item.slate = current->videoState == "waiting" ? "WAITING" : "NO SIGNAL";
                 }
-                else if (current->alarmFreeze)
+                if (!item.slate.empty())
                 {
-                    item.badge = "FREEZE";
+                    item.slateLabel = inputName;
+                    item.formatText.clear();
+                    item.latencyText.clear();
                 }
-                else if (current->alarmClip)
+                // §6.3: red for no signal, black, freeze, and clip; amber for silence and format.
+                bool const clip = sound != nullptr && sound->alarmClip;
+                bool const silence = sound != nullptr && sound->alarmSilence;
+                bool const red = current->alarmNoSignal || current->alarmBlack || current->alarmFreeze || clip;
+                bool const amber = silence || current->alarmFormat;
+                item.alarm = red ? AlarmLevel::Red : amber ? AlarmLevel::Amber : AlarmLevel::None;
+                // A slate already says what is wrong; the badge names the first other alarm.
+                if (item.slate.empty())
                 {
-                    item.badge = "CLIP";
-                }
-                else if (current->alarmSilence)
-                {
-                    item.badge = "SILENCE";
-                }
-                else if (current->alarmFormat)
-                {
-                    item.badge = "FORMAT";
+                    if (current->alarmNoSignal)
+                    {
+                        item.badge = "NO SIGNAL";
+                    }
+                    else if (current->alarmBlack)
+                    {
+                        item.badge = "BLACK";
+                    }
+                    else if (current->alarmFreeze)
+                    {
+                        item.badge = "FREEZE";
+                    }
+                    else if (clip)
+                    {
+                        item.badge = "CLIP";
+                    }
+                    else if (silence)
+                    {
+                        item.badge = "SILENCE";
+                    }
+                    else if (current->alarmFormat)
+                    {
+                        item.badge = "FORMAT";
+                    }
                 }
             }
             item.safeArea = tile.safeArea;
@@ -1104,6 +1474,8 @@ struct Engine::Impl
             std::sort(tiles.begin(), tiles.end(), [](Tile const& a, Tile const& b) { return a.z < b.z; });
             struct Source
             {
+                // The whole tile; place.dst is the picture inside it.
+                PixelRect rect;
                 Placement place;
                 std::shared_ptr<Frame422> frame;
                 // Held until compose returns, so the device frame is not recycled under it.
@@ -1119,6 +1491,7 @@ struct Engine::Impl
             std::uint64_t const offset = frameDur * static_cast<std::uint64_t>(config.inputOffsetGrains);
             std::uint64_t const outputTime = when;
             std::uint64_t const target = outputTime > offset ? outputTime - offset : 0;
+            std::uint64_t const holdNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull;
             for (auto const& tile : tiles)
             {
                 if (tile.content != TileContent::Input)
@@ -1139,8 +1512,15 @@ struct Engine::Impl
                     runtime.addLate(tile.input);
                     metrics.inc("input_late_grains_total", {{"input", std::to_string(tile.input)}});
                 }
+                // §5.3/§6.4: the last frame holds for MV_HOLD_MS, then the tile is black
+                // and the overlay draws the slate.
+                if (best != nullptr && target > best->origin + holdNs)
+                {
+                    best = nullptr;
+                }
                 auto const px = rectToPixels(tile.rect, format.width, format.height);
                 Source source;
+                source.rect = px;
                 source.place = best != nullptr ? placeTile(px, best->width, best->height, tile.scale) : Placement{};
                 if (best == nullptr)
                 {
@@ -1164,6 +1544,8 @@ struct Engine::Impl
                 coverFrame(coveredBackground, background);
                 ++backgroundVersion;
             }
+            // The layout's background colour where no tile is (§6.2); MV_BACKGROUND_FILE covers it.
+            Ycbcr10 const bg = toYcbcr10(parseHexColor(layout ? layout->background : std::string("#101010"), {16, 16, 16, 255}));
             auto const overlayFrame = overlayOf(head);
             bool const withOverlay = overlayFrame != nullptr && overlayFrame->width == format.width && overlayFrame->height == format.height;
             packedOut.resize(static_cast<std::size_t>(v210RowBytes(format.width)) * static_cast<std::size_t>(format.height));
@@ -1180,6 +1562,19 @@ struct Engine::Impl
                 views.reserve(sources.size());
                 for (auto const& source : sources)
                 {
+                    bool const letterbox = (source.frame != nullptr || source.gpu != nullptr) &&
+                                           (source.place.dst.x != source.rect.x || source.place.dst.y != source.rect.y || source.place.dst.w != source.rect.w ||
+                                               source.place.dst.h != source.rect.h);
+                    if (letterbox)
+                    {
+                        CudaTileView bars;
+                        bars.dstX = source.rect.x;
+                        bars.dstY = source.rect.y;
+                        bars.dstW = source.rect.w;
+                        bars.dstH = source.rect.h;
+                        bars.solid = true;
+                        views.push_back(bars);
+                    }
                     CudaTileView viewTile;
                     viewTile.dstX = source.place.dst.x;
                     viewTile.dstY = source.place.dst.y;
@@ -1215,9 +1610,9 @@ struct Engine::Impl
                 CudaComposeDesc desc;
                 desc.width = format.width;
                 desc.height = format.height;
-                desc.bgY = 64;
-                desc.bgCb = 512;
-                desc.bgCr = 512;
+                desc.bgY = bg.y;
+                desc.bgCb = bg.cb;
+                desc.bgCr = bg.cr;
                 if (coveredBackground.width == format.width && coveredBackground.height == format.height)
                 {
                     desc.backgroundY = coveredBackground.y.data();
@@ -1308,11 +1703,17 @@ struct Engine::Impl
                 }
                 else
                 {
-                    canvas.fill(64, 512, 512);
+                    canvas.fill(bg.y, bg.cb, bg.cr);
                 }
                 for (std::size_t i = 0; i < sources.size(); ++i)
                 {
-                    blit(canvas, sources[i].place.dst, tileImages[i]);
+                    auto const& source = sources[i];
+                    if (source.place.dst.x != source.rect.x || source.place.dst.y != source.rect.y || source.place.dst.w != source.rect.w ||
+                        source.place.dst.h != source.rect.h)
+                    {
+                        fillBlack(canvas, source.rect);
+                    }
+                    blit(canvas, source.place.dst, tileImages[i]);
                 }
                 if (withOverlay)
                 {
@@ -1354,7 +1755,8 @@ struct Engine::Impl
             int const follow = runtime.headAudioFollow(head);
             if (audioWriter != nullptr && follow >= 1 && (channels == 2 || channels == 16))
             {
-                auto const source = snap(follow);
+                auto const sound = audioSnap(follow);
+                auto const window = sound != nullptr ? sound->window : nullptr;
                 std::uint64_t const samples = std::max<std::uint64_t>(1, (48000ull * static_cast<std::uint64_t>(format.rateDen)) / static_cast<std::uint64_t>(std::max(1, format.rateNum)));
                 mxlRational audioRate{48000, 1};
                 std::uint64_t const end = mxlTimestampToIndex(&audioRate, target == 0 ? outputTime : target) + samples;
@@ -1378,10 +1780,10 @@ struct Engine::Impl
                             std::size_t const room = slice.base.fragments[frag].size / sizeof(float);
                             std::size_t const take = std::min(room, count - filled);
                             std::fill(dst, dst + take, 0.f);
-                            if (ch < static_cast<int>(source->audio.channels.size()))
+                            if (window != nullptr && ch < static_cast<int>(window->channels.size()))
                             {
-                                auto const& src = source->audio.channels[static_cast<std::size_t>(ch)];
-                                std::uint64_t const srcBegin = source->audio.first;
+                                auto const& src = window->channels[static_cast<std::size_t>(ch)];
+                                std::uint64_t const srcBegin = window->first;
                                 std::uint64_t const want = (end - count) + filled;
                                 if (want >= srcBegin && want - srcBegin < src.size())
                                 {
@@ -1415,13 +1817,13 @@ struct Engine::Impl
             }
             runtime.setOutput(view);
             runtime.touch();
-            if (head == 1 && ++previewDiv >= std::max(1, format.rateNum / std::max(1, format.rateDen) / std::max(1, config.previewFps)))
+            if (++previewDiv >= std::max(1, format.rateNum / std::max(1, format.rateDen) / std::max(1, config.previewFps)))
             {
                 previewDiv = 0;
                 // CUDA: sample the written grain at preview size; a full unpack of the
                 // output on this thread made frames late.
-                runtime.setPreview(cudaFrame ? encodePreviewJpeg(out, static_cast<int>(v210RowBytes(format.width)), format.width, format.height, config.previewWidth, 60)
-                                             : encodePreviewJpeg(canvas, config.previewWidth, 60));
+                runtime.setPreview(head, cudaFrame ? encodePreviewJpeg(out, static_cast<int>(v210RowBytes(format.width)), format.width, format.height, config.previewWidth, 60)
+                                                   : encodePreviewJpeg(canvas, config.previewWidth, 60));
             }
             ++index;
         }
@@ -1492,7 +1894,8 @@ struct Engine::Impl
             }
             first = false;
             out << "{\"input\":" << input << ",\"video\":" << (video ? "true" : "false") << ",\"enable\":" << (route.enable ? "true" : "false")
-                << ",\"domain_id\":\"" << route.domainId << "\",\"flow_id\":\"" << route.flowId << "\",\"sender_id\":\"" << route.senderId << "\"}";
+                << ",\"domain_id\":\"" << jsonEscape(route.domainId) << "\",\"flow_id\":\"" << jsonEscape(route.flowId) << "\",\"sender_id\":\""
+                << jsonEscape(route.senderId) << "\"}";
         };
         for (int input = 1; input <= config.maxInputs; ++input)
         {
@@ -1744,6 +2147,11 @@ void Engine::start()
     for (int input = 1; input <= impl_->config.maxInputs; ++input)
     {
         impl_->threads.emplace_back([this, input] { impl_->readerMain(input); });
+        impl_->threads.emplace_back([this, input] { impl_->audioMain(input); });
+    }
+    if (impl_->config.nmosEnable && !impl_->config.nmosQueryAddress.empty())
+    {
+        impl_->threads.emplace_back([this] { impl_->labelMain(); });
     }
     impl_->overlays.assign(static_cast<std::size_t>(impl_->config.outputs), nullptr);
     for (int head = 1; head <= impl_->config.outputs; ++head)
