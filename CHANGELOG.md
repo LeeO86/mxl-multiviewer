@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.1
+
+Fixes from the platform rollout of 1.2.0.
+
+### Behaviour
+
+- A head starts on the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}`), else on `MV_OUT<h>_LAYOUT` when set, else on the layout book's active layout. Before, every head started on `MV_ACTIVE_LAYOUT` (default `2x2`) although `layouts.json` named another active layout, and a layout set with `PUT /api/v1/outputs/{h}` was lost at the next start. The book file keeps the choices in `heads`.
+- Layouts that are unedited 1.1.x built-in presets get the 1.2 preset defaults (audio bars on) at the first start; edited layouts stay as they are. The original file is kept once as `layouts.json.bak`, `layouts_migrated` lists the layouts, and the book records `preset_revision: 2`, so later starts change nothing. An imported 1.1.x book is migrated the same way.
+
+### Web UI
+
+- Layout editor: "Preset defaults…" resets a built-in preset to today's definition (after a confirmation, unsaved until Save); "Apply to all input tiles" copies the audio bar settings of the selected tile to every input tile.
+
+### API
+
+- `GET /api/v1/presets`: today's built-in presets.
+- `GET /api/v1/layouts` and the export carry `heads` and `preset_revision`.
+
 ## 1.2.0
 
 ### Web UI

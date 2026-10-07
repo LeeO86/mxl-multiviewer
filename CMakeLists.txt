@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(mxl-multiviewer VERSION 1.2.0 LANGUAGES CXX)
+project(mxl-multiviewer VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,6 +45,7 @@ add_library(mv-core STATIC
     src/config/store.cpp
     src/domain/scan.cpp
     src/layout/model.cpp
+    src/layout/migrate.cpp
     src/layout/geometry.cpp
     src/nmos/ids.cpp
     src/control/tsl.cpp

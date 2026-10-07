@@ -132,6 +132,19 @@ function confirmDelete() {
   }, `Deleted ${name}.`);
 }
 
+/** Replaces the tiles of a built-in preset with today's definition (unsaved until Save). */
+function applyPreset() {
+  const name = editor.current;
+  run(async () => {
+    const presets = await api.get("/api/v1/presets");
+    const preset = presets.layouts.find((l) => l.name === name);
+    if (!preset) throw new Error(`${name} is not a built-in preset`);
+    editor.drafts[name] = clone(preset);
+    editor.selectedId = "";
+    form.value = "";
+  }, `${name} now has the built-in preset defaults. Save to keep them.`);
+}
+
 function revert() {
   const name = editor.current;
   discard(name);
@@ -331,6 +344,15 @@ onUnmounted(() => clearInterval(clockTimer));
           >
             Delete…
           </button>
+          <button
+            v-if="PRESETS.includes(editor.current)"
+            class="btn secondary"
+            title="Reset this preset to the built-in definition"
+            :aria-pressed="form === 'preset'"
+            @click="openForm('preset')"
+          >
+            Preset defaults…
+          </button>
           <button class="btn secondary" :aria-pressed="form === 'import'" @click="openForm('import')">Import / export…</button>
         </div>
         <span class="spacer"></span>
@@ -351,6 +373,14 @@ onUnmounted(() => clearInterval(clockTimer));
         <button class="btn secondary" type="button" @click="form = ''">Cancel</button>
         <span class="note">An existing layout with that name is replaced.</span>
       </form>
+      <div v-if="form === 'preset'" class="inline-form">
+        <span>
+          Replace every tile of <strong>{{ editor.current }}</strong> with the built-in preset (audio bars on, default captions)? Your changes to it are
+          lost when you save.
+        </span>
+        <button class="btn" @click="applyPreset">Apply preset defaults</button>
+        <button class="btn secondary" @click="form = ''">Cancel</button>
+      </div>
       <div v-if="form === 'delete'" class="inline-form">
         <span>Delete the layout <strong>{{ editor.current }}</strong>? This cannot be undone.</span>
         <button class="btn danger" @click="confirmDelete">Delete</button>
@@ -419,7 +449,7 @@ onUnmounted(() => clearInterval(clockTimer));
         </div>
       </div>
       <div class="inspector">
-        <TileInspector v-if="selected" :tile="selected" :grid="grid" :max-inputs="maxInputs" :layer="layer" />
+        <TileInspector v-if="selected" :tile="selected" :layout="layout" :grid="grid" :max-inputs="maxInputs" :layer="layer" />
         <div v-else class="panel">
           <h3>Tile</h3>
           <p class="note">Click a tile on the canvas to change what it shows, its caption, audio bars and overlays.</p>

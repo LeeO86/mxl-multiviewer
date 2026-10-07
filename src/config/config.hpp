@@ -33,6 +33,8 @@ struct HeadConfig
 {
     VideoFormat format;
     std::string layout = "2x2";
+    // True when MV_OUT<h>_LAYOUT names this head's layout (not just MV_ACTIVE_LAYOUT).
+    bool layoutSet = false;
     int audioFollow = 1;
     int audioChannels = 2;
 };

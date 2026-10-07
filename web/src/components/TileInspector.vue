@@ -6,6 +6,7 @@ import Field from "./Field.vue";
 
 const props = defineProps({
   tile: { type: Object, required: true },
+  layout: { type: Object, required: true },
   grid: { type: Number, required: true },
   maxInputs: { type: Number, required: true },
   layer: { type: String, default: "" },
@@ -94,6 +95,16 @@ const textHelp = computed(() => {
   if (props.tile.umd_source === "tsl") return "Shown until a tally controller sends a text for this input.";
   return "Shown when the NMOS registry has no name for the routed sender.";
 });
+
+const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "zone_green", "zone_amber"];
+const inputTiles = computed(() => props.layout.tiles.filter((t) => t.content === "input"));
+
+/** Gives every input tile of the layout this tile's audio bar settings. */
+function barsToAll() {
+  for (const t of inputTiles.value) {
+    if (t !== props.tile) for (const key of BAR_KEYS) t[key] = props.tile[key];
+  }
+}
 
 function toggleMarker(marker) {
   const list = props.tile.aspect_markers;
@@ -200,6 +211,9 @@ function toggleMarker(marker) {
         </Field>
       </div>
       <p class="note">Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this input.</p>
+      <div class="actions" style="margin-top: 0.4rem">
+        <button class="btn small secondary" :disabled="inputTiles.length < 2" @click="barsToAll">Apply to all {{ inputTiles.length }} input tiles</button>
+      </div>
     </div>
 
     <div class="panel">

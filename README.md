@@ -63,6 +63,7 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 | GET | `/api/v1/inputs` |
 | GET | `/api/v1/outputs` |
 | GET | `/api/v1/layouts` |
+| GET | `/api/v1/presets` |
 | PUT | `/api/v1/layouts/{name}` |
 | DELETE | `/api/v1/layouts/{name}` |
 | POST | `/api/v1/layouts/{name}/activate` |
@@ -161,7 +162,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.2.0
+  ghcr.io/leeo86/mxl-multiviewer:1.2.1
 ```
 
 `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
@@ -173,10 +174,12 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
 Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`), so a reload stays on the tab.
 
 - **Preview**: the output picture at `MV_PREVIEW_FPS`, a head selector with more than one head, the layout on air with Activate, and the output counters.
-- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour. Save, Save as, Discard, New, Delete (not the built-in presets), Activate, and Import / export of one layout or all of them. Unsaved edits survive tab switches and lost connections.
+- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
 - **Inputs**: video and audio state, source, format, live PPM levels, alarms, and the receiver ids to route to (IS-05 only).
 - **Alarms**: active alarms with severity and since when.
 - **Settings**: every setting with its origin (ENV, FILE, DEFAULT); environment values are read-only, saved values go into the configuration file and apply at the next start. Export as JSON or `KEY=value` (download or copy), import an exported document.
+
+A head starts on the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}`), else on `MV_OUT<h>_LAYOUT`, else on the active layout of `layouts.json`; `MV_ACTIVE_LAYOUT` only applies until that file exists. Built-in presets that a 1.1.x release saved unedited get the current preset defaults at the first start (the old file stays as `layouts.json.bak`).
 
 The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
 
