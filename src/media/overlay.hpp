@@ -77,6 +77,7 @@ struct OverlayTile
     bool umd = false;
     std::string umdText;
     UmdPosition umdPosition = UmdPosition::BottomInside;
+    UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     Rgba umdBg{0, 0, 0, 192};
     Rgba umdFg{255, 255, 255, 255};

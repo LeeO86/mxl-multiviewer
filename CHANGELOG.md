@@ -8,6 +8,7 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 
 - The left lamp of a caption shows the TSL LH tally and the right lamp the RH tally. Before, both lamps showed one combined colour. An off lamp is still not drawn.
 - The border keeps the combined colour: text tally, else RH, else LH.
+- New tile option `umd_align`: the caption text sits left (default, as before), centre, or right. Text wider than the bar is cut and ends with `…`.
 - New option `tally_text`: the text tally colours the caption background (the text turns black on it) while the text tally is not off. The layout sets the default (`tally_text`, false); a tile can set `true` or `false`, or `null` to follow the layout. A head gets it by showing a layout that has it.
 
 ### Behaviour
@@ -24,6 +25,7 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - Layout editor: "Text tally as caption background" per tile (as the layout, on, off) and per layout.
 - The layout editor draws local clocks in the multiviewer's time zone, not the browser's.
 - Layout editor: "Use as start layout" per output, with a note when the environment sets the start layout.
+- Layout editor: caption text alignment.
 
 ### API
 

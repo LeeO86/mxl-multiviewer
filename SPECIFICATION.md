@@ -261,6 +261,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `umd_source` | `is04`, `manual`, `tsl` | `is04` |
 | `umd_text` | string | empty |
 | `umd_position` | `top-inside`, `top-outside`, `bottom-inside`, `bottom-outside` | `bottom-inside` |
+| `umd_align` | `left`, `centre`, `right`: the text in the bar (between the lamps). Text wider than the bar is cut and ends with `…` | `left` |
 | `umd_font` | px at a 1080-tall canvas, scaled with the canvas | 28 |
 | `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
 | `tally_border`, `tally_lamp` | bool | true |

@@ -794,6 +794,56 @@ TEST_CASE("alarm border and badge colours follow the alarm level")
     CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
 }
 
+TEST_CASE("caption text aligns left, centre, or right; text that overflows is cut")
+{
+    // 540 canvas, a 480 × 270 tile: caption band from y=234, text room from x=8 to x=472.
+    auto const bounds = [](std::string const& text, UmdAlign align, int tileW) {
+        Overlay overlay;
+        overlay.resize(960, 540);
+        OverlayTile tile;
+        tile.rect = {0, 0, tileW, 270};
+        tile.umd = true;
+        tile.umdText = text;
+        tile.umdFont = 28;
+        tile.umdBg = {0, 0, 0, 0};
+        tile.umdAlign = align;
+        renderOverlay(overlay, {tile});
+        int left = 960;
+        int right = -1;
+        for (int y = 234; y < 270; ++y)
+        {
+            for (int x = 0; x < 960; ++x)
+            {
+                if (inked(pixel(overlay, x, y)))
+                {
+                    left = std::min(left, x);
+                    right = std::max(right, x);
+                }
+            }
+        }
+        return std::pair{left, right};
+    };
+    auto const [l1, r1] = bounds("CAM 1", UmdAlign::Left, 480);
+    CHECK(l1 >= 8);
+    CHECK(l1 <= 12);
+    CHECK(r1 < 240);
+    auto const [l2, r2] = bounds("CAM 1", UmdAlign::Right, 480);
+    CHECK(r2 <= 472);
+    CHECK(r2 >= 466);
+    CHECK(r2 - l2 == r1 - l1);
+    auto const [l3, r3] = bounds("CAM 1", UmdAlign::Centre, 480);
+    CHECK(std::abs((l3 + r3) / 2 - 240) <= 3);
+    // A name wider than the bar: cut with an ellipsis, inside the room, whatever the alignment.
+    std::string const longName = "Studio 2 main camera, wide shot from the gallery";
+    for (auto const align : {UmdAlign::Left, UmdAlign::Centre, UmdAlign::Right})
+    {
+        auto const [l, r] = bounds(longName, align, 240);
+        CHECK(l >= 8);
+        CHECK(r <= 232);
+        CHECK(r > 200);
+    }
+}
+
 TEST_CASE("tally lamps show LH and RH, the border the combined tally, tally_text the caption background")
 {
     // 540 canvas: border 4 px; caption band 36 px from y=234 (the bottom border under its last rows);

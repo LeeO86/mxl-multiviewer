@@ -40,6 +40,12 @@ enum class UmdPosition
     BottomInside,
     BottomOutside
 };
+enum class UmdAlign
+{
+    Left,
+    Centre,
+    Right
+};
 enum class BarsPosition
 {
     Left,
@@ -70,6 +76,7 @@ struct Tile
     UmdSource umdSource = UmdSource::Is04;
     std::string umdText;
     UmdPosition umdPosition = UmdPosition::BottomInside;
+    UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     std::string umdBg = "#000000c0";
     bool tallyBorder = true;

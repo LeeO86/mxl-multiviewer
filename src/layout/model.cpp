@@ -136,6 +136,28 @@ std::optional<UmdPosition> umdPosFromString(std::string const& text)
     return std::nullopt;
 }
 
+char const* umdAlignToString(UmdAlign align)
+{
+    return align == UmdAlign::Centre ? "centre" : align == UmdAlign::Right ? "right" : "left";
+}
+
+std::optional<UmdAlign> umdAlignFromString(std::string const& text)
+{
+    if (text == "left")
+    {
+        return UmdAlign::Left;
+    }
+    if (text == "centre")
+    {
+        return UmdAlign::Centre;
+    }
+    if (text == "right")
+    {
+        return UmdAlign::Right;
+    }
+    return std::nullopt;
+}
+
 char const* barsToString(BarsPosition pos)
 {
     switch (pos)
@@ -545,6 +567,12 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
             return "umd_position is invalid";
         }
         tile.umdPosition = *pos;
+        auto const align = umdAlignFromString(str(tileObj, "umd_align", "left"));
+        if (!align)
+        {
+            return "umd_align is invalid";
+        }
+        tile.umdAlign = *align;
         tile.umdFont = static_cast<int>(num(tileObj, "umd_font", 28));
         tile.umdBg = str(tileObj, "umd_bg", "#000000c0");
         tile.tallyBorder = flag(tileObj, "tally_border", true);
@@ -656,7 +684,7 @@ std::string layoutToJson(Layout const& layout)
             << ",\"rect\":{\"x\":" << tile.rect.x << ",\"y\":" << tile.rect.y << ",\"w\":" << tile.rect.w << ",\"h\":" << tile.rect.h << "}"
             << ",\"scale\":\"" << scaleToString(tile.scale) << "\",\"umd\":" << (tile.umd ? "true" : "false") << ",\"umd_source\":\""
             << umdSourceToString(tile.umdSource) << "\",\"umd_text\":" << quoted(tile.umdText) << ",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
-            << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
+            << "\",\"umd_align\":\"" << umdAlignToString(tile.umdAlign) << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
             << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"tally_text\":" << (!tile.tallyText ? "null" : *tile.tallyText ? "true" : "false")
             << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
             << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")

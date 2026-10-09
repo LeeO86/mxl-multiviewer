@@ -81,7 +81,9 @@ function hand(degrees, length) {
       <div v-if="tile.audio_bars" class="bars" :class="[tile.audio_bar_position, { off: !input?.audio?.enable }]">
         <span v-for="(ch, i) in channels" :key="i"><i :style="{ height: ch.pct + '%', background: ch.color }"></i></span>
       </div>
-      <div v-if="tile.umd" class="umd" :class="tile.umd_position" :style="{ background: rgba(tile.umd_bg) }">{{ caption }}</div>
+      <div v-if="tile.umd" class="umd" :class="tile.umd_position" :style="{ background: rgba(tile.umd_bg), textAlign: { centre: 'center', right: 'right' }[tile.umd_align] || 'left' }">
+        {{ caption }}
+      </div>
     </template>
     <div v-else-if="tile.content === 'clock'" class="centre">
       <svg v-if="tile.clock_style === 'analogue'" class="analogue" viewBox="0 0 100 100" aria-hidden="true">

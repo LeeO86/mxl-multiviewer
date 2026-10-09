@@ -29,6 +29,11 @@ const RATES = [
   { value: "60", label: "60 fps" },
 ];
 const MARKERS = ["16:9", "4:3", "1:1", "9:16"];
+const ALIGNS = [
+  { id: "left", label: "Left" },
+  { id: "centre", label: "Centre" },
+  { id: "right", label: "Right" },
+];
 const OVERLAYS = [
   { key: "tally_border", label: "Tally border" },
   { key: "tally_lamp", label: "Tally lamps" },
@@ -181,6 +186,13 @@ function toggleMarker(marker) {
           <input id="tile-umd-font" v-model.number="tile.umd_font" type="number" min="8" max="200" :disabled="!tile.umd" />
         </Field>
       </div>
+      <Field label="Text alignment" help="Text longer than the bar is cut and ends with …">
+        <span class="seg" role="group" aria-label="Caption text alignment">
+          <button v-for="a in ALIGNS" :key="a.id" type="button" :aria-pressed="(tile.umd_align || 'left') === a.id" :disabled="!tile.umd" @click="tile.umd_align = a.id">
+            {{ a.label }}
+          </button>
+        </span>
+      </Field>
       <Field label="Background colour and opacity">
         <div class="colorrow">
           <input v-model="umdColor" type="color" aria-label="Caption background colour" :disabled="!tile.umd" />

@@ -772,7 +772,10 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             int const lamp = std::max(6, band / 2);
             int const textX = r.x + (tile.tallyLamp ? lamp + 8 : 8);
             int const room = r.w - (textX - r.x) - (tile.tallyLamp ? lamp + 8 : 8);
-            overlay.text(textX, umdY + (band - tile.umdFont) / 2, fitText(overlay, tile.umdText, tile.umdFont, room), tile.umdFont,
+            // Text wider than the room is cut and ends with an ellipsis; the rest is aligned in the room.
+            auto const text = fitText(overlay, tile.umdText, tile.umdFont, room);
+            int const free = tile.umdAlign == UmdAlign::Left ? 0 : std::max(0, room - overlay.textWidth(text, tile.umdFont));
+            overlay.text(textX + (tile.umdAlign == UmdAlign::Centre ? free / 2 : free), umdY + (band - tile.umdFont) / 2, text, tile.umdFont,
                 textBg ? Rgba{0, 0, 0, 255} : tile.umdFg);
             if (tile.tallyLamp)
             {

@@ -20,6 +20,7 @@ Tile legacyTile()
     tile.umdSource = UmdSource::Is04;
     tile.umdText.clear();
     tile.umdPosition = UmdPosition::BottomInside;
+    tile.umdAlign = UmdAlign::Left;
     tile.umdFont = 28;
     tile.umdBg = "#000000c0";
     tile.tallyBorder = true;
@@ -194,7 +195,7 @@ bool sameLayout(Layout const& a, Layout const& b)
         auto const& y = b.tiles[i];
         bool const same = x.id == y.id && x.content == y.content && x.input == y.input && near(x.rect.x, y.rect.x) && near(x.rect.y, y.rect.y) &&
                           near(x.rect.w, y.rect.w) && near(x.rect.h, y.rect.h) && x.z == y.z && x.scale == y.scale && x.umd == y.umd &&
-                          x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdFont == y.umdFont &&
+                          x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdAlign == y.umdAlign && x.umdFont == y.umdFont &&
                           x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.tallyText == y.tallyText && x.audioBars == y.audioBars &&
                           x.audioBarRms == y.audioBarRms && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
                           x.audioBarPosition == y.audioBarPosition && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&

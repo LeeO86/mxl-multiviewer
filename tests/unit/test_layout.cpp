@@ -98,6 +98,28 @@ TEST_CASE("clock style accepts analog and rejects unknown values")
     CHECK(parseLayout(body("digital", "mars"), layout, 4).has_value());
 }
 
+TEST_CASE("umd_align is left, centre, or right; a saved tile without it stays left")
+{
+    auto const body = [](std::string const& align) {
+        return "{\"version\":1,\"name\":\"u\",\"tiles\":[{\"id\":\"a\",\"input\":1" + align + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Left);
+    REQUIRE_FALSE(parseLayout(body(",\"umd_align\":\"centre\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Centre);
+    CHECK(layoutToJson(layout).find("\"umd_align\":\"centre\"") != std::string::npos);
+    REQUIRE_FALSE(parseLayout(body(",\"umd_align\":\"right\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Right);
+    CHECK(parseLayout(body(",\"umd_align\":\"middle\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"umd_align\":\"center\""), layout, 4).has_value());
+    // A 1.1.x preset with another alignment counts as edited.
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].umdAlign = UmdAlign::Right;
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
 TEST_CASE("audio zones must rise towards full scale")
 {
     auto const body = [](int green, int amber) {

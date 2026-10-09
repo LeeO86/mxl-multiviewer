@@ -105,6 +105,7 @@ export function makeTile(content, id, rect, z) {
     umd_source: "is04",
     umd_text: "",
     umd_position: "bottom-inside",
+    umd_align: "left",
     umd_font: 28,
     umd_bg: "#000000c0",
     tally_border: input,

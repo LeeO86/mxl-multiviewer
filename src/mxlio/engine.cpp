@@ -1173,6 +1173,7 @@ struct Engine::Impl
                 item.umdText = !registered.empty() ? registered : !tile.umdText.empty() ? tile.umdText : !current->label.empty() ? current->label : inputName;
             }
             item.umdPosition = tile.umdPosition;
+            item.umdAlign = tile.umdAlign;
             item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
             item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
             item.tally = viewIn.tally;
