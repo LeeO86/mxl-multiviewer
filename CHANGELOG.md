@@ -25,7 +25,7 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - Layout editor: "Text tally as caption background" per tile (as the layout, on, off) and per layout.
 - The layout editor draws local clocks in the multiviewer's time zone, not the browser's.
 - Layout editor: "Use as start layout" per output, with a note when the environment sets the start layout.
-- Layout editor: caption text alignment.
+- Layout editor: caption text alignment. The caption positions are grouped and explained: "over the picture" (in the tile; the picture keeps its size) or outside the tile.
 
 ### API
 

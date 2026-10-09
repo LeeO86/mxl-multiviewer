@@ -176,16 +176,24 @@ function toggleMarker(marker) {
       <div class="two">
         <Field label="Position" id="tile-umd-pos">
           <select id="tile-umd-pos" v-model="tile.umd_position" :disabled="!tile.umd">
-            <option value="bottom-inside">Bottom, over picture</option>
-            <option value="bottom-outside">Below the tile</option>
-            <option value="top-inside">Top, over picture</option>
-            <option value="top-outside">Above the tile</option>
+            <optgroup label="In the tile, over the picture">
+              <option value="bottom-inside">Bottom, over the picture</option>
+              <option value="top-inside">Top, over the picture</option>
+            </optgroup>
+            <optgroup label="Outside the tile">
+              <option value="bottom-outside">Below the tile</option>
+              <option value="top-outside">Above the tile</option>
+            </optgroup>
           </select>
         </Field>
         <Field label="Font size (px at 1080p)" id="tile-umd-font">
           <input id="tile-umd-font" v-model.number="tile.umd_font" type="number" min="8" max="200" :disabled="!tile.umd" />
         </Field>
       </div>
+      <p class="note">
+        Over the picture: the bar covers the bottom or top of the picture, which keeps its full size. Below or above the tile: the bar is drawn on the
+        area next to the tile, so keep that area free in the layout.
+      </p>
       <Field label="Text alignment" help="Text longer than the bar is cut and ends with …">
         <span class="seg" role="group" aria-label="Caption text alignment">
           <button v-for="a in ALIGNS" :key="a.id" type="button" :aria-pressed="(tile.umd_align || 'left') === a.id" :disabled="!tile.umd" @click="tile.umd_align = a.id">
