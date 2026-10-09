@@ -60,6 +60,7 @@ LayoutBookStore::LayoutBookStore(int maxInputs, std::string const& active, std::
                 }
                 book_.layouts = std::move(parsed.layouts);
                 book_.heads = std::move(parsed.heads);
+                book_.startLayouts = std::move(parsed.startLayouts);
                 book_.presetRevision = parsed.presetRevision;
             }
         }
@@ -145,12 +146,49 @@ std::optional<std::string> LayoutBookStore::savedHead(int head) const
     return std::nullopt;
 }
 
-std::string LayoutBookStore::startLayout(int head, std::string const& configured, bool configuredForHead) const
+bool LayoutBookStore::setStartLayout(int head, std::optional<std::string> const& name)
 {
     std::lock_guard lock{mutex_};
-    if (auto const it = book_.heads.find(head); it != book_.heads.end() && hasUnlocked(it->second))
+    if (name && !hasUnlocked(*name))
+    {
+        return false;
+    }
+    if (name)
+    {
+        book_.startLayouts[head] = *name;
+    }
+    else
+    {
+        book_.startLayouts.erase(head);
+    }
+    persistUnlocked();
+    return true;
+}
+
+std::optional<std::string> LayoutBookStore::startLayoutOf(int head) const
+{
+    std::lock_guard lock{mutex_};
+    auto const it = book_.startLayouts.find(head);
+    if (it != book_.startLayouts.end() && hasUnlocked(it->second))
     {
         return it->second;
+    }
+    return std::nullopt;
+}
+
+std::string LayoutBookStore::startLayout(int head, std::string const& configured, bool configuredForHead, std::string const& pinned) const
+{
+    std::lock_guard lock{mutex_};
+    if (!pinned.empty() && hasUnlocked(pinned))
+    {
+        return pinned;
+    }
+    for (auto const* chosen : {&book_.startLayouts, &book_.heads})
+    {
+        if (auto const it = chosen->find(head); it != chosen->end() && hasUnlocked(it->second))
+        {
+            return it->second;
+        }
     }
     if (configuredForHead && hasUnlocked(configured))
     {
@@ -224,6 +262,7 @@ std::optional<std::string> LayoutBookStore::erase(std::string const& name)
             book_.layouts.erase(book_.layouts.begin() + static_cast<std::ptrdiff_t>(i));
             published_.erase(published_.begin() + static_cast<std::ptrdiff_t>(i));
             std::erase_if(book_.heads, [&](auto const& entry) { return entry.second == name; });
+            std::erase_if(book_.startLayouts, [&](auto const& entry) { return entry.second == name; });
             persistUnlocked();
             return std::nullopt;
         }

@@ -224,7 +224,11 @@ HttpResponse Api::handle(HttpRequest const& request)
             out << "{\"index\":" << output.index << ",\"format\":" << quote(output.format) << ",\"layout\":" << quote(output.layout)
                 << ",\"backend\":" << quote(output.backend) << ",\"video_flow_id\":" << quote(output.videoFlowId) << ",\"audio_flow_id\":" << quote(output.audioFlowId)
                 << ",\"domain_id\":" << quote(output.domainId) << ",\"frames\":" << output.frames << ",\"late\":" << output.late << ",\"missed\":" << output.missed
-                << ",\"compose_ms\":" << output.composeMs << ",\"audio_follow\":" << output.audioFollow << ",\"audio_channels\":" << output.audioChannels << "}";
+                << ",\"compose_ms\":" << output.composeMs << ",\"audio_follow\":" << output.audioFollow << ",\"audio_channels\":" << output.audioChannels;
+            // §6.1: the start layout chosen in the UI, and a layout the environment pins instead.
+            auto const start = layouts_.startLayoutOf(output.index);
+            auto const pinned = store_.pinnedLayout(output.index);
+            out << ",\"start_layout\":" << (start ? quote(*start) : "null") << ",\"start_layout_env\":" << (pinned ? quote(*pinned) : "null") << "}";
         }
         out << "]}";
         return jsonResponse(200, out.str());
@@ -314,6 +318,27 @@ HttpResponse Api::handle(HttpRequest const& request)
         {
             return jsonResponse(404, "{\"error\":\"layout not found\"}");
         }
+        // start_layout: a layout of the book, or null to clear it.
+        std::optional<std::optional<std::string>> start;
+        if (auto const it = obj.find("start_layout"); it != obj.end())
+        {
+            if (it->second.is<picojson::null>())
+            {
+                start.emplace();
+            }
+            else if (!it->second.is<std::string>())
+            {
+                return jsonResponse(400, "{\"error\":\"start_layout must be a layout name or null\"}");
+            }
+            else if (!layouts_.has(it->second.get<std::string>()))
+            {
+                return jsonResponse(404, "{\"error\":\"layout not found\"}");
+            }
+            else
+            {
+                start.emplace(it->second.get<std::string>());
+            }
+        }
         std::optional<int> follow;
         if (obj.count("audio_follow") != 0)
         {
@@ -333,6 +358,10 @@ HttpResponse Api::handle(HttpRequest const& request)
         if (follow)
         {
             runtime_.setHeadAudio(index, *follow, runtime_.headAudioChannels(index));
+        }
+        if (start)
+        {
+            layouts_.setStartLayout(index, *start);
         }
         if (auto const formatText = json::fieldString(root, "format"))
         {

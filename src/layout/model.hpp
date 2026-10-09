@@ -118,6 +118,8 @@ struct LayoutBook
     std::vector<Layout> layouts;
     // The layout last chosen for each output head (1-based), kept across restarts.
     std::map<int, std::string> heads;
+    // The layout a head starts on ("use as start layout"); beats `heads` at the next start.
+    std::map<int, std::string> startLayouts;
     int presetRevision = kPresetRevision;
 };
 

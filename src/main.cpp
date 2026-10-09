@@ -106,12 +106,12 @@ int main(int argc, char** argv)
         mv::RuntimeModel runtime(config);
         auto layoutsPath = config.layoutsFile.empty() ? config.stateDir + "/layouts.json" : config.layoutsFile;
         mv::LayoutBookStore layouts(config.maxInputs, config.activeLayout, layoutsPath);
-        // A head starts on its saved layout, else MV_OUT<h>_LAYOUT, else the book's active
-        // layout (SPECIFICATION.md §6.1).
+        // A head starts on a layout set in the environment, else its start layout, else its
+        // saved layout, else MV_OUT<h>_LAYOUT, else the book's active layout (SPECIFICATION.md §6.1).
         for (int head = 1; head <= config.outputs; ++head)
         {
             auto const& configured = config.heads[static_cast<std::size_t>(head - 1)];
-            auto const start = layouts.startLayout(head, configured.layout, configured.layoutSet);
+            auto const start = layouts.startLayout(head, configured.layout, configured.layoutSet, store.pinnedLayout(head).value_or(""));
             runtime.setHeadLayout(head, start);
             mv::logInfo("head_layout", {{"head", std::to_string(head)}, {"layout", start}});
         }

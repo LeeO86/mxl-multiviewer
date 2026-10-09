@@ -693,14 +693,17 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
     book.version = static_cast<int>(num(obj, "version", 1));
     book.active = str(obj, "active", "2x2");
     book.presetRevision = static_cast<int>(num(obj, "preset_revision", 1));
-    if (auto const heads = obj.find("heads"); heads != obj.end() && heads->second.is<picojson::object>())
+    for (auto const& [field, target] : {std::pair{"heads", &book.heads}, std::pair{"start_layouts", &book.startLayouts}})
     {
-        for (auto const& [key, value] : heads->second.get<picojson::object>())
+        if (auto const heads = obj.find(field); heads != obj.end() && heads->second.is<picojson::object>())
         {
-            int const head = std::atoi(key.c_str());
-            if (head >= 1 && head <= 3 && value.is<std::string>())
+            for (auto const& [key, value] : heads->second.get<picojson::object>())
             {
-                book.heads[head] = value.get<std::string>();
+                int const head = std::atoi(key.c_str());
+                if (head >= 1 && head <= 3 && value.is<std::string>())
+                {
+                    (*target)[head] = value.get<std::string>();
+                }
             }
         }
     }
@@ -730,14 +733,21 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
 std::string bookToJson(LayoutBook const& book)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"preset_revision\":" << book.presetRevision << ",\"heads\":{";
-    bool firstHead = true;
-    for (auto const& [head, name] : book.heads)
-    {
-        out << (firstHead ? "" : ",") << '"' << head << "\":" << quoted(name);
-        firstHead = false;
-    }
-    out << "},\"layouts\":[";
+    auto const heads = [&](std::map<int, std::string> const& names) {
+        out << '{';
+        bool first = true;
+        for (auto const& [head, name] : names)
+        {
+            out << (first ? "" : ",") << '"' << head << "\":" << quoted(name);
+            first = false;
+        }
+        out << '}';
+    };
+    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"preset_revision\":" << book.presetRevision << ",\"heads\":";
+    heads(book.heads);
+    out << ",\"start_layouts\":";
+    heads(book.startLayouts);
+    out << ",\"layouts\":[";
     for (std::size_t i = 0; i < book.layouts.size(); ++i)
     {
         if (i != 0)
