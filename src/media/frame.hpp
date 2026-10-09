@@ -41,6 +41,7 @@ void packV210Line(std::uint16_t const* y, std::uint16_t const* cb, std::uint16_t
 void unpackAlpha10(std::uint8_t const* src, int srcRowBytes, Frame422& dst);
 void packAlpha10(Frame422 const& src, std::uint8_t* dst, int dstRowBytes);
 
+// Freeze hash (§6.3): luma of every second line summed per block of a 32×18 grid, hashed.
 std::uint64_t lumaHash(Frame422 const& frame);
 
 // The same luma samples read straight from packed v210, for frames the CPU does not
@@ -48,6 +49,7 @@ std::uint64_t lumaHash(Frame422 const& frame);
 std::uint16_t v210Luma(std::uint8_t const* src, int rowBytes, int width, int index);
 // Cb and Cr of chroma sample `cx` (pixel pair) in row `row`.
 void v210Chroma(std::uint8_t const* src, int rowBytes, int cx, int row, std::uint16_t& cb, std::uint16_t& cr);
+// lumaHash() of a packed frame.
 std::uint64_t lumaHash(std::uint8_t const* v210, int rowBytes, int width, int height);
 // Sum (and count) of v210Luma() at index 0, step, 2·step, … < width·height, in one pass.
 std::uint64_t v210LumaSum(std::uint8_t const* src, int rowBytes, int width, int height, int step, int* count);

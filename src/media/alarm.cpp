@@ -20,4 +20,15 @@ bool Debounce::update(bool rawNow, std::int64_t nowMs, int assertMs, int clearMs
     }
     return active != before;
 }
+
+bool FreezeDetector::update(std::uint64_t hash, std::int64_t nowMs, int freezeMs)
+{
+    if (!have || hash != lastHash)
+    {
+        have = true;
+        lastHash = hash;
+        changedMs = nowMs;
+    }
+    return nowMs - changedMs >= freezeMs;
+}
 } // namespace mv

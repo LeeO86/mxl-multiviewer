@@ -354,6 +354,113 @@ TEST_CASE("alarm debounce")
     CHECK_FALSE(alarm.active);
 }
 
+TEST_CASE("freeze is MV_FREEZE_MS without a picture change; repeated grains are no freeze")
+{
+    int const freezeMs = 2000;
+    // The engine: raw freeze from the detector, raised at once, cleared after MV_ALARM_CLEAR_MS.
+    auto const step = [&](FreezeDetector& detector, Debounce& alarm, std::uint64_t hash, std::int64_t nowMs) {
+        alarm.update(detector.update(hash, nowMs, freezeMs), nowMs, 0, 500);
+        return alarm.active;
+    };
+    // 25p in 50p: every grain comes twice, so the hash changes every other grain.
+    FreezeDetector cadence;
+    Debounce cadenceAlarm;
+    bool raised = false;
+    for (int grain = 0; grain < 500; ++grain)
+    {
+        raised = step(cadence, cadenceAlarm, static_cast<std::uint64_t>(grain / 2), grain * 20) || raised;
+    }
+    CHECK_FALSE(raised);
+
+    // A still picture is frozen once MV_FREEZE_MS has passed since the last change.
+    FreezeDetector still;
+    Debounce stillAlarm;
+    CHECK_FALSE(step(still, stillAlarm, 7, 0));
+    CHECK_FALSE(step(still, stillAlarm, 7, 1980));
+    CHECK(step(still, stillAlarm, 7, 2000));
+    CHECK(step(still, stillAlarm, 7, 5000));
+    // It clears when the picture moves again, also with repeated grains: the raw value no
+    // longer flips every grain, so MV_ALARM_CLEAR_MS of motion is enough.
+    for (int grain = 0; grain < 25; ++grain)
+    {
+        step(still, stillAlarm, 100 + static_cast<std::uint64_t>(grain / 2), 5020 + grain * 20);
+    }
+    CHECK(stillAlarm.active);
+    for (int grain = 25; grain < 30; ++grain)
+    {
+        step(still, stillAlarm, 100 + static_cast<std::uint64_t>(grain / 2), 5020 + grain * 20);
+    }
+    CHECK_FALSE(stillAlarm.active);
+    // A new route starts over.
+    still.reset();
+    CHECK_FALSE(still.update(114, 9000, freezeMs));
+}
+
+TEST_CASE("the freeze hash sees small motion, the same in every scan path")
+{
+    // A still 1080p picture: a gradient, or flat grey.
+    Frame422 gradient;
+    gradient.allocate(1920, 1080, false);
+    for (int y = 0; y < gradient.height; ++y)
+    {
+        for (int x = 0; x < gradient.width; ++x)
+        {
+            gradient.y[static_cast<std::size_t>(y * gradient.width + x)] = static_cast<std::uint16_t>(64 + (x + y) % 800);
+        }
+    }
+    Frame422 flat;
+    flat.allocate(1920, 1080, false);
+    flat.fill(300, 512, 512);
+    auto const square = [](Frame422 frame, int x0, int y0, int size) {
+        for (int y = y0; y < y0 + size; ++y)
+        {
+            for (int x = x0; x < x0 + size; ++x)
+            {
+                frame.y[static_cast<std::size_t>(y * frame.width + x)] = 900;
+            }
+        }
+        return frame;
+    };
+    // Unpacked (alpha inputs), packed (CUDA), and the CPU backend's copy give the same hash.
+    auto const hash = [](Frame422 const& frame) {
+        int const rowBytes = static_cast<int>(v210RowBytes(frame.width));
+        std::vector<std::uint8_t> packed(static_cast<std::size_t>(rowBytes) * frame.height);
+        packV210(frame, packed.data(), rowBytes);
+        std::vector<std::uint8_t> copy(packed.size());
+        V210Scan scan;
+        copyV210Scan(packed.data(), copy.data(), rowBytes, frame.width, frame.height, 32, scan);
+        auto const unpacked = lumaHash(frame);
+        CHECK(lumaHash(packed.data(), rowBytes, frame.width, frame.height) == unpacked);
+        CHECK(scan.hash == unpacked);
+        return unpacked;
+    };
+    // A clock digit: one 6×8 area changes. The 4096 single samples of 1.3.0 missed it.
+    auto const still = hash(gradient);
+    CHECK(hash(square(gradient, 1203, 541, 8)) != still);
+    CHECK(hash(square(gradient, 1203, 541, 8)) == hash(square(gradient, 1203, 541, 8)));
+    // A small square that moves 2 px per frame, on the gradient and on flat grey (inside one
+    // grid block its plain luma sum would not change): never frozen.
+    for (auto const* background : {&gradient, &flat})
+    {
+        FreezeDetector detector;
+        std::uint64_t previous = 0;
+        bool frozen = false;
+        for (int frame = 0; frame < 150; ++frame)
+        {
+            auto const now = lumaHash(square(*background, 302 + 2 * frame, 700, 6));
+            CHECK(now != previous);
+            previous = now;
+            frozen = detector.update(now, frame * 20, 2000) || frozen;
+        }
+        CHECK_FALSE(frozen);
+    }
+    // Odd sizes keep the packed padding out of the hash.
+    Frame422 odd;
+    odd.allocate(100, 37, false);
+    odd.fill(500, 512, 512);
+    hash(odd);
+}
+
 TEST_CASE("overlay draws umd pixels")
 {
     Overlay overlay;

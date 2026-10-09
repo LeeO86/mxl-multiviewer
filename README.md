@@ -117,6 +117,7 @@ Precedence is environment, then `MV_CONFIG_FILE` (one flat JSON object of string
 | `MV_CLIP_LINEAR` | `0.999` | no |
 | `MV_ALARM_DEBOUNCE_MS` | `500` | no |
 | `MV_ALARM_CLEAR_MS` | `500` | no |
+| `MV_FREEZE_MS` | `2000` | no |
 | `MV_BACKGROUND_FILE` | empty | no |
 | `MV_CONFIG_FILE` | empty (`<MV_STATE_DIR>/config.json`) | yes |
 | `NMOS_ENABLE` | `true` | yes |
@@ -181,7 +182,7 @@ Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`)
 
 A head starts on the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}`), else on `MV_OUT<h>_LAYOUT`, else on the active layout of `layouts.json`; `MV_ACTIVE_LAYOUT` only applies until that file exists. Built-in presets that a 1.1.x release saved unedited get the current preset defaults at the first start (the old file stays as `layouts.json.bak`).
 
-The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
+The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. The freeze alarm rises when the picture has not changed for `MV_FREEZE_MS` (default 2 s); a source that repeats frames (25p in 50p, a browser source) is not frozen. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
 
 ### Tally (TSL)
 

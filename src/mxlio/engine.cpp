@@ -360,11 +360,16 @@ struct Engine::Impl
         return senderLabels[static_cast<std::size_t>(input - 1)].label;
     }
 
-    // Debounces one alarm of an input (§6.3) and keeps the wall-clock time it became active.
-    void bumpAlarm(int input, char const* name, Debounce& debounce, bool raw, bool& flag, std::int64_t& since)
+    static std::int64_t steadyMs()
     {
-        auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (debounce.update(raw, nowMs, config.alarmDebounceMs, config.alarmClearMs))
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Debounces one alarm of an input (§6.3) and keeps the wall-clock time it became active.
+    // Freeze passes `assertMs` 0: MV_FREEZE_MS is its debounce.
+    void bumpAlarm(int input, char const* name, Debounce& debounce, bool raw, bool& flag, std::int64_t& since, int assertMs)
+    {
+        if (debounce.update(raw, steadyMs(), assertMs, config.alarmClearMs))
         {
             if (debounce.active)
             {
@@ -437,7 +442,7 @@ struct Engine::Impl
         std::string prevState;
         std::uint64_t const holdNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull;
         auto const bump = [&](std::shared_ptr<Snap> const& snap, char const* name, AlarmIndex index, Debounce& debounce, bool raw, bool& flag) {
-            bumpAlarm(input, name, debounce, raw, flag, snap->alarmSince[index]);
+            bumpAlarm(input, name, debounce, raw, flag, snap->alarmSince[index], index == kAlarmFreeze ? 0 : config.alarmDebounceMs);
         };
         // Without a new grain only the no-signal alarm can rise; the picture alarms clear.
         auto const idleAlarms = [&](std::shared_ptr<Snap> const& snap, bool noSignal) {
@@ -530,7 +535,7 @@ struct Engine::Impl
                 next->grains.clear();
                 next->label.clear();
                 grainsKey.clear();
-                alarms.haveHash = false;
+                alarms.picture.reset();
                 if (video != nullptr)
                 {
                     releaseVideo();
@@ -562,7 +567,7 @@ struct Engine::Impl
                 // Another flow is routed now: never show the previous source under it.
                 next->grains.clear();
                 next->label.clear();
-                alarms.haveHash = false;
+                alarms.picture.reset();
             }
             if (instance == nullptr || openKey.substr(0, domain->path.size()) != domain->path)
             {
@@ -769,9 +774,7 @@ struct Engine::Impl
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
             auto const hash = scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
-            bool const freeze = alarms.haveHash && hash == alarms.lastHash;
-            alarms.lastHash = hash;
-            alarms.haveHash = true;
+            bool const freeze = alarms.picture.update(hash, steadyMs(), config.freezeMs);
             bool const formatBad = width > 3840 || height > 2160 || !allowedRate(meta.rateNum, meta.rateDen) ||
                                    (meta.mediaType != "video/v210" && meta.mediaType != "video/v210a" && !meta.mediaType.empty());
             bump(next, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, next->alarmNoSignal);
@@ -854,8 +857,8 @@ struct Engine::Impl
             lastEnd = 0;
         };
         auto const publishState = [&](std::shared_ptr<AudioSnap> const& sound, bool silence, bool clip) {
-            bumpAlarm(input, AlarmNames::silence, silenceAlarm, silence, sound->alarmSilence, sound->alarmSince[kAlarmSilence]);
-            bumpAlarm(input, AlarmNames::clip, clipAlarm, clip, sound->alarmClip, sound->alarmSince[kAlarmClip]);
+            bumpAlarm(input, AlarmNames::silence, silenceAlarm, silence, sound->alarmSilence, sound->alarmSince[kAlarmSilence], config.alarmDebounceMs);
+            bumpAlarm(input, AlarmNames::clip, clipAlarm, clip, sound->alarmClip, sound->alarmSince[kAlarmClip], config.alarmDebounceMs);
             auto const route = audioRoute(input);
             InputView view;
             view.index = input;

@@ -282,13 +282,13 @@ Tally colours: red, green, amber, off (TSL, §7). Border width is 8 px at 1080 a
 
 ### 6.3 Alarms
 
-Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear `MV_ALARM_CLEAR_MS` (default 500):
+Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear `MV_ALARM_CLEAR_MS` (default 500); `freeze` uses `MV_FREEZE_MS` instead of the debounce:
 
 | Alarm | Condition |
 | --- | --- |
 | `no_signal` | state `no_signal` or `waiting` while enabled |
 | `black` | mean Y of the tile's source ≤ `MV_BLACK_Y` (default 32, 10-bit) |
-| `freeze` | 64-bit hash of a luma downsample unchanged |
+| `freeze` | the 64-bit picture hash has not changed for `MV_FREEZE_MS` (default 2000, at least 1000), counted from its last change. The hash covers the luma of every second line, summed per block of a 32×18 grid with a weight for the place of each 6-pixel group in its block. A source that repeats grains (25p in 50p) is not frozen |
 | `silence` | peak of the metered channels < `MV_SILENCE_DBFS` (default −60) |
 | `clip` | clip latch on a metered channel |
 | `format_mismatch` | routed video is outside the receiver caps (rate or raster the node did not advertise, or not v210/v210a) |
@@ -392,6 +392,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_CLIP_LINEAR` | 0.999 | no | |
 | `MV_ALARM_DEBOUNCE_MS` | 500 | no | |
 | `MV_ALARM_CLEAR_MS` | 500 | no | |
+| `MV_FREEZE_MS` | 2000 | no | 1000–600000; freeze alarm after the picture has not changed for this long (§6.3) |
 | `MV_BACKGROUND_FILE` | empty | no | JPEG or PNG under the tiles |
 | `MV_CONFIG_FILE` | empty | yes | flat JSON |
 | `NMOS_ENABLE` | true | yes | |
@@ -508,7 +509,7 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 
 ## 14. Testing
 
-- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
+- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, freeze timing (a repeated-grain cadence and small motion are not frozen, a still picture is after `MV_FREEZE_MS`), TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
 - Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.

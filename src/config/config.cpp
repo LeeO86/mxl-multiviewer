@@ -309,6 +309,7 @@ std::vector<SettingDef> const& settingSchema()
         {"MV_CLIP_LINEAR", "0.999", false},
         {"MV_ALARM_DEBOUNCE_MS", "500", false},
         {"MV_ALARM_CLEAR_MS", "500", false},
+        {"MV_FREEZE_MS", "2000", false},
         {"MV_BACKGROUND_FILE", "", false},
         {"MV_CONFIG_FILE", "", true},
         {"NMOS_ENABLE", "true", true},
@@ -600,6 +601,7 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     }
     cfg.alarmDebounceMs = requireInt("MV_ALARM_DEBOUNCE_MS", raw("MV_ALARM_DEBOUNCE_MS"), 0, 60000);
     cfg.alarmClearMs = requireInt("MV_ALARM_CLEAR_MS", raw("MV_ALARM_CLEAR_MS"), 0, 60000);
+    cfg.freezeMs = requireInt("MV_FREEZE_MS", raw("MV_FREEZE_MS"), 1000, 600000);
     cfg.backgroundFile = raw("MV_BACKGROUND_FILE");
     cfg.configFile = raw("MV_CONFIG_FILE");
     cfg.nmosEnable = requireBool("NMOS_ENABLE", raw("NMOS_ENABLE"));

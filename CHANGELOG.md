@@ -2,7 +2,7 @@
 
 ## 1.3.0
 
-TSL 5.0 tally per field.
+TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 
 ### Overlay
 
@@ -14,6 +14,7 @@ TSL 5.0 tally per field.
 
 - UTF-16 TSL labels are decoded as UTF-16; non-ASCII characters (`ü`) were broken on the wall and in the API.
 - A TSL 3.1 tally sets both lamps and the text tally, so 3.1 looks as before.
+- Freeze: the alarm rises when the picture has not changed for `MV_FREEZE_MS` (new setting, default 2000, at least 1000) and clears after `MV_ALARM_CLEAR_MS` of motion. Before, it compared two grains in a row: a source that repeats grains (25p in 50p, the browser source) kept the alarm up for good once a still moment had raised it. The hash now sums the luma of every second line per block of a 32×18 grid, so a clock or a ticker counts as motion; it sampled about 4096 single pixels before.
 
 ### Web UI
 

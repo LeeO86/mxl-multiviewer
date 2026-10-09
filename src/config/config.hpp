@@ -67,6 +67,8 @@ struct Config
     double clipLinear = 0.999;
     int alarmDebounceMs = 500;
     int alarmClearMs = 500;
+    // A picture unchanged for this long is frozen (§6.3).
+    int freezeMs = 2000;
     std::string backgroundFile;
     std::string configFile;
     bool nmosEnable = true;
