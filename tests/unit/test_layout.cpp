@@ -247,6 +247,7 @@ TEST_CASE("tally_text defaults from the layout and a tile can override it")
     auto const json = layoutToJson(on);
     CHECK(json.find("\"background\":\"#101010\",\"tally_text\":true") != std::string::npos);
     CHECK(json.find("\"tally_lamp\":true,\"tally_text\":null") != std::string::npos);
+    off.name = "u";
     LayoutBook book;
     book.active = "t";
     book.layouts = {on, off};
