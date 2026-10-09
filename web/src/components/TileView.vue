@@ -2,7 +2,7 @@
 // A tile on the editor canvas, drawn the way the output shows it: input number and source,
 // caption (UMD), audio bars with live levels, the clock, or the label text.
 import { computed } from "vue";
-import { live, meterPct, stateText } from "../api.js";
+import { live, localClock, meterPct, stateText } from "../api.js";
 
 const props = defineProps({
   tile: { type: Object, required: true },
@@ -42,17 +42,17 @@ function rgba(hex) {
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a.toFixed(2)})`;
 }
 
-// Clock time in the tile's zone; TAI is UTC plus 37 s.
+// Clock time in the tile's zone; TAI is UTC plus 37 s, local is the multiviewer's zone.
 const clock = computed(() => {
   const t = props.tile;
   const at = new Date(props.now + (t.clock_zone === "tai" ? 37000 : 0));
-  const local = t.clock_zone === "local";
-  const h = local ? at.getHours() : at.getUTCHours();
-  const m = local ? at.getMinutes() : at.getUTCMinutes();
-  const s = local ? at.getSeconds() : at.getUTCSeconds();
+  const { h, m, s } = t.clock_zone === "local" ? localClock(props.now) : { h: at.getUTCHours(), m: at.getUTCMinutes(), s: at.getUTCSeconds() };
   const pad = (v) => String(v).padStart(2, "0");
   return { text: `${pad(h)}:${pad(m)}:${pad(s)}`, h, m, s };
 });
+
+// An image tile previews its picture: the web address, or the stored file from the API.
+const imageSrc = computed(() => props.tile.image_url || (props.tile.image_file ? `/api/v1/images/${encodeURIComponent(props.tile.image_file)}` : ""));
 
 function hand(degrees, length) {
   const rad = ((degrees - 90) * Math.PI) / 180;
@@ -84,7 +84,9 @@ function hand(degrees, length) {
       <div v-if="tile.audio_bars" class="bars" :class="[tile.audio_bar_position, { off: !input?.audio?.enable }]">
         <span v-for="(ch, i) in channels" :key="i"><i :style="{ height: ch.pct + '%', background: ch.color }"></i></span>
       </div>
-      <div v-if="tile.umd" class="umd" :class="tile.umd_position" :style="{ background: rgba(tile.umd_bg) }">{{ caption }}</div>
+      <div v-if="tile.umd" class="umd" :class="tile.umd_position" :style="{ background: rgba(tile.umd_bg), textAlign: { centre: 'center', right: 'right' }[tile.umd_align] || 'left' }">
+        {{ caption }}
+      </div>
     </template>
     <div v-else-if="tile.content === 'clock'" class="centre">
       <svg v-if="tile.clock_style === 'analogue'" class="analogue" viewBox="0 0 100 100" aria-hidden="true">
@@ -95,6 +97,10 @@ function hand(degrees, length) {
       </svg>
       <div v-else class="clockface">{{ clock.text }}</div>
       <div class="state">{{ tile.clock_zone.toUpperCase() }}{{ tile.timecode_rate ? ` · timecode ${tile.timecode_rate}` : "" }}</div>
+    </div>
+    <div v-else-if="tile.content === 'image'" class="centre">
+      <img v-if="imageSrc" class="picture" :src="imageSrc" :style="{ objectFit: tile.scale === 'fill' ? 'cover' : 'contain' }" alt="" draggable="false" />
+      <div v-else class="state">Image (no picture set)</div>
     </div>
     <div v-else-if="tile.content === 'label'" class="centre">
       <div class="labeltext">{{ tile.label_text || "(no text)" }}</div>

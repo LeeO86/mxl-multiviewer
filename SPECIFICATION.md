@@ -66,8 +66,9 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - CUDA backend: compiled when the CUDA toolkit is present. Each input thread uploads its grains on its own stream straight from page-locked MXL memory; frames stay packed v210 on the device and the scale kernel decodes the samples it needs. Kernels scale, blend the overlay and pack v210; the result goes by DMA into the MXL output grain.
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.
+- Image tiles: PNG, JPEG, and GIF through stb; WebP through the system `libwebp` (BSD-3-Clause); http(s) through the system `libcurl` (curl licence, MIT-style).
 - Web UI: Vue 3 built to one HTML file and embedded. No CDN.
-- Base image: Ubuntu 24.04. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
+- Base image: Ubuntu 24.04 with `tzdata`. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
 - Tests: doctest (vendored). Integration tests are shell scripts.
 - Where the pinned MXL or nmos-cpp API differs from this text, follow the API and record the deviation.
 
@@ -189,12 +190,12 @@ Per input channel, peak programme meter:
 
 - IEC 60268-10 type IIa attack: a step reaches `1 − exp(−t/τ)` with `τ = 10 ms`.
 - Decay: 24 dB in 2.8 s (linear-amplitude exponential), the type IIa return time.
-- Scale is dBFS. 0 dBFS is full scale. The overlay draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60 beside the bars, with dBFS labels when the bar is tall enough. Colour zones default to green below −18 dBFS, amber below −9, red at and above −9, by position on the bar. Zones are configurable per tile (`zone_green`, `zone_amber`).
+- Scale is dBFS. 0 dBFS is full scale. The overlay draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60 beside the bars, with dBFS labels when the bar is tall enough (`audio_bar_scale`, §6.2, hides them). Colour zones default to green below −18 dBFS, amber below −9, red at and above −9, by position on the bar. Zones are configurable per tile (`zone_green`, `zone_amber`).
 - Peak hold default 2 s, then the same decay. The overlay draws it as a line on the bar.
 - Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
 - EBU R 128 momentary loudness is not in this version.
 
-Bars: 1–16 channels within the first 16 channels of the input (the metered ones: first channel + count ≤ 16), first channel selectable, position left, right, or overlay, clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
+Bars: 1–16 channels within the first 16 channels of the input (the metered ones: first channel + count ≤ 16), first channel selectable, position left, right, or overlay (over the picture) or left-beside, right-beside (in a strip of the tile; the picture is placed in the rest), clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
 
 The audio leg is read from its own flow and domain, independent of the video leg (§4.2). Every new sample is metered from the flow's head index. A head that does not move for `MV_HOLD_MS` is `no_signal`.
 
@@ -224,11 +225,19 @@ A layout is JSON, `version: 1`:
 }
 ```
 
-`rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
+`rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, `image`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
 
 The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone, a `tally_text` that is not a boolean) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
 
-The book also keeps the layout last chosen for each head (`"heads": {"1": "3x3"}`) and the revision of the preset defaults it follows (`preset_revision`, 2 since 1.2). A head starts on its saved layout, else on `MV_OUT<h>_LAYOUT` when that is set, else on the book's `active` layout; `MV_ACTIVE_LAYOUT` is the active layout of a book that has no file yet. `POST /api/v1/layouts/{name}/activate` makes a layout active and the saved layout of every head; `PUT /api/v1/outputs/{h}` saves it for that head. A saved name that is no longer in the book is skipped.
+The book also keeps the layout last chosen for each head (`"heads": {"1": "3x3"}`), the start layout of each head (`"start_layouts": {"1": "2x2"}`, "use as start layout" in the editor), and the revision of the preset defaults it follows (`preset_revision`, 2 since 1.2). A head starts on the first of these that names a layout of the book:
+
+1. `MV_OUT<h>_LAYOUT`, else `MV_ACTIVE_LAYOUT`, when it is set in the environment (not in the config file);
+2. the head's start layout;
+3. the head's saved layout (the one it showed last);
+4. `MV_OUT<h>_LAYOUT` from the config file;
+5. the book's `active` layout (`MV_ACTIVE_LAYOUT` is the active layout of a book that has no file yet).
+
+`POST /api/v1/layouts/{name}/activate` makes a layout active and the saved layout of every head; `PUT /api/v1/outputs/{h}` saves it for that head (`layout`) and sets or, with `null`, clears its start layout (`start_layout`). Neither moves a start layout. Deleting a layout removes it from `heads` and `start_layouts`.
 
 A book below `preset_revision` 2 (written by 1.1.x, or by 1.2.0 from such a file) is migrated at start: every layout whose fields all equal the 1.1.x built-in preset of the same name (for any `MV_MAX_INPUTS`) becomes today's preset, with audio bars; edited layouts stay. Before the file is rewritten it is copied once to `<file>.bak` (an existing `.bak` is never replaced), and `layouts_migrated` names the layouts. The book is then at revision 2, so a later start changes nothing. An imported book is migrated the same way, without a `.bak`.
 
@@ -252,17 +261,22 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `umd` | on/off | on |
 | `umd_source` | `is04`, `manual`, `tsl` | `is04` |
 | `umd_text` | string | empty |
-| `umd_position` | `top-inside`, `top-outside`, `bottom-inside`, `bottom-outside` | `bottom-inside` |
+| `umd_position` | `top-inside`, `bottom-inside`: the bar lies over the top or bottom of the picture, which keeps its size; `top-outside`, `bottom-outside`: the bar is drawn on the area above or below the tile | `bottom-inside` |
+| `umd_align` | `left`, `centre`, `right`: the text in the bar (between the lamps). Text wider than the bar is cut and ends with `…` | `left` |
 | `umd_font` | px at a 1080-tall canvas, scaled with the canvas | 28 |
 | `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
 | `tally_border`, `tally_lamp` | bool | true |
 | `tally_text` | `true`, `false`, or `null` (follow the layout's `tally_text`) | `null`; the layout's `tally_text` is false |
 | `audio_bars` | bool | true in the built-in presets; false when the key is missing |
 | `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
+| `audio_bar_scale` | bool, the PPM scale beside the bars (ticks and dBFS labels, §5.7); the marks across the bars stay | true |
 | `audio_bar_channels` | 1–16 | 2 |
 | `audio_bar_first` | 0-based channel; `audio_bar_first` + `audio_bar_channels` ≤ 16 | 0 |
-| `audio_bar_position` | `left`, `right`, `overlay` | `right` |
+| `audio_bar_position` | `left`, `right`, `overlay` (centre): over the picture. `left-beside`, `right-beside`: in a strip at that side of the tile, and the picture is scaled into the rest of the tile; the strip is as wide as the bars, their scale, and margins (none when that is more than half the tile) and is limited-range black under the bar panel | `right` |
 | `zone_green`, `zone_amber` | dBFS where amber and where red start; −60 ≤ `zone_green` ≤ `zone_amber` ≤ 0 | −18 / −9 |
+| `alarm_border` | bool, the alarm border (§6.3) | true |
+| `alarm_labels` | bool, a label per active alarm (§6.3) | true |
+| `alarm_label_position` | `top-left`, `top`, `top-right`, `bottom-left`, `bottom`, `bottom-right`: where the labels stack from | `top` |
 | `format_label` | bool | true |
 | `latency` | bool, grain origin versus now | false |
 | `safe_area` | 90% and 80% rectangles | false |
@@ -270,9 +284,11 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `aspect_markers` | any of `16:9`, `4:3`, `1:1`, `9:16` | none |
 | `scale` | `fit`, `fill` | `fit` |
 
-Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local`, optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
+Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local` (the zone of `MV_TIMEZONE`, else of `TZ`, else UTC), optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
 
 Label tiles: `label_text`, centred and sized to the tile.
+
+Image tiles: a picture from `image_url` (`http://` or `https://`, at most 2048 characters) or `image_file` (a picture stored with `PUT /api/v1/images/{name}` under `<MV_STATE_DIR>/images/`), placed with `scale` (`fit` or `fill`). Setting both is rejected; setting neither shows `NO IMAGE`. Formats are PNG, JPEG, GIF, and WebP; animated GIFs (and WebPs) play by their frame times in a loop, a frame time under 20 ms plays as 100 ms. Limits: 8 MiB per file, 4096 × 4096 pixels, and 32 megapixels over all frames, decoded and again scaled to the tile. A picture is accepted only when the magic bytes say PNG, JPEG, GIF, or WebP and match the Content-Type (`image/png`, `image/jpeg`, `image/gif`, `image/webp`); the size limits are checked from the headers before the frames are decoded. A URL is fetched with libcurl: http and https only (redirects too, at most 3), 3 s to connect, 10 s in all, the proxy from the environment (`https_proxy`, `http_proxy`, `no_proxy`), TLS certificates checked against the image's CA store. Fetching, decoding, and scaling run on one worker thread; the overlay thread only takes finished pictures, so a slow or failing URL never delays a frame. While a picture loads the tile is empty; when it fails the tile shows `NO IMAGE` and the reason, and the picture is tried again after 30 s. A picture is fetched once and kept while a tile shows it; one that no tile asked for in 60 s is dropped. Image tiles are drawn in the overlay, so they lie over every video tile whatever their `z`.
 
 Background: `background` colour where no tile covers the canvas. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles. Letterbox and pillarbox areas of `fit` tiles stay limited-range black.
 
@@ -282,18 +298,18 @@ Tally colours: red, green, amber, off (TSL, §7). Border width is 8 px at 1080 a
 
 ### 6.3 Alarms
 
-Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear `MV_ALARM_CLEAR_MS` (default 500):
+Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear `MV_ALARM_CLEAR_MS` (default 500); `freeze` uses `MV_FREEZE_MS` instead of the debounce:
 
 | Alarm | Condition |
 | --- | --- |
 | `no_signal` | state `no_signal` or `waiting` while enabled |
 | `black` | mean Y of the tile's source ≤ `MV_BLACK_Y` (default 32, 10-bit) |
-| `freeze` | 64-bit hash of a luma downsample unchanged |
+| `freeze` | the 64-bit picture hash has not changed for `MV_FREEZE_MS` (default 2000, at least 1000), counted from its last change. The hash covers the luma of every second line, summed per block of a 32×18 grid with a weight for the place of each 6-pixel group in its block. A source that repeats grains (25p in 50p) is not frozen |
 | `silence` | peak of the metered channels < `MV_SILENCE_DBFS` (default −60) |
 | `clip` | clip latch on a metered channel |
 | `format_mismatch` | routed video is outside the receiver caps (rate or raster the node did not advertise, or not v210/v210a) |
 
-An alarm shows a badge and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally: the alarm border sits inside the tally border. A tile that shows a slate (§6.4) has no badge. Active alarms increment `mxl_multiviewer_alarms_total`. `silence` also rises when routed audio does not arrive.
+An alarm shows a label and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally: the alarm border sits inside the tally border. Each active alarm has its own label in its own colour, most severe first (no signal, black, freeze, clip, silence, format), stacked from `alarm_label_position` into the tile (downwards from a top position, upwards from a bottom one) as far as the tile has room; labels at a side keep clear of the audio bars on that side and, top left, of the format and latency captions. `alarm_border` and `alarm_labels` turn either off (both off: no alarm display on that tile). A tile that shows a slate (§6.4) has no label. Active alarms increment `mxl_multiviewer_alarms_total`. `silence` also rises when routed audio does not arrive.
 
 ### 6.4 Slate
 
@@ -336,8 +352,12 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | DELETE | `/api/v1/layouts/{name}` | delete a layout that is not active and not on an output head |
 | POST | `/api/v1/layouts/{name}/activate` | arm the layout for the next frame of every head; it becomes the book's active layout and the saved layout of every head |
 | GET | `/api/v1/presets` | today's built-in presets, as a book |
-| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50"}`; an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400; the layout is saved for the next start |
+| PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50", "start_layout": "name"}` (`start_layout` may be null); an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400, a `start_layout` that is not a name or null is 400; the layout is saved for the next start, `start_layout` is the head's start layout (§6.1) |
 | GET | `/api/v1/alarms` | active alarms: input, name, `severity` (`red`, `amber`), `since` (Unix ms) |
+| GET | `/api/v1/images` | stored pictures (`name`, `type`, `bytes`) and the limits (`max_bytes`, `max_side`, `max_pixels`) |
+| GET | `/api/v1/images/{name}` | one stored picture, with its Content-Type |
+| PUT | `/api/v1/images/{name}` | store a picture: the body is the file, `Content-Type` its type; 201 with `width`, `height`, `frames`; 400 when the name, type, magic bytes, size, or decoding fail. Names are 1–100 letters, digits, `.`, `_`, `-`, not starting with `.` |
+| DELETE | `/api/v1/images/{name}` | delete a stored picture; 409 while an image tile of a layout shows it |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
 | GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
@@ -347,7 +367,7 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
 
-`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, and `hold_ms`. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each), and its TSL state (§7): `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour: text, else RH, else LH), and `tsl_text` (the label). `/statusz` and the WebSocket carry the same input objects. Layout names in paths are percent-decoded.
+Each head in `GET /api/v1/outputs` (and the WebSocket) carries `start_layout` (its start layout or null) and `start_layout_env` (the layout the environment starts it on, or null). `GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, `hold_ms`, `timezone` (the IANA zone of `local` clocks: `MV_TIMEZONE`, else `TZ`, else the zone `/etc/localtime` names, else `UTC`; empty when unknown), and `utc_offset_s` (that zone's offset now). The web UI draws `local` clocks in that zone, not in the browser's. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each), and its TSL state (§7): `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour: text, else RH, else LH), and `tsl_text` (the label). `/statusz` and the WebSocket carry the same input objects. Layout names in paths are percent-decoded.
 
 ### 8.3 Ops
 
@@ -370,7 +390,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes | MXL root. Parent of domain directories, mirrors included |
 | `MV_OUTPUT_DOMAIN_DIR` | `/Volumes/mxl/multiviewer` | yes | output domain directory. Alias: `MXL_OUTPUT_DOMAIN_DIR` |
 | `MV_OUTPUT_DOMAIN_ID` | empty (UUIDv5) | yes | `domain_def.json` id when the file is created. Alias: `MXL_OUTPUT_DOMAIN_ID` |
-| `MV_STATE_DIR` | `/config` | yes | only directory this process writes for its own state: `config.json`, `layouts.json`, `routes.json` |
+| `MV_STATE_DIR` | `/config` | yes | only directory this process writes for its own state: `config.json`, `layouts.json`, `routes.json`, and the stored pictures in `images/` |
 | `MXL_CLEANUP_ON_EXIT` | false | yes | remove the output domain directory after SIGTERM |
 | `MV_BACKEND` | `auto` | yes | `auto`, `cuda`, `cpu` |
 | `MV_MAX_INPUTS` | 16 | yes | 1–32 |
@@ -380,7 +400,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_HOLD_MS` | 1000 | no | slate delay |
 | `MV_HISTORY_DURATION_NS` | 200000000 | yes | new domain only |
 | `MV_LAYOUTS_FILE` | empty | no | layout book path. Empty uses `<MV_STATE_DIR>/layouts.json` |
-| `MV_ACTIVE_LAYOUT` | `2x2` | no | active layout of a layout book that has no file yet; heads start on the book's saved choices (§6.1) |
+| `MV_ACTIVE_LAYOUT` | `2x2` | no | active layout of a layout book that has no file yet; heads start on the book's saved choices (§6.1). Set in the environment, it is the start layout of every head that has no `MV_OUT<h>_LAYOUT` in the environment |
 | `MV_AUDIO_CHANNELS` | 2 | no | `0`, `2`, or `16`; 0 disables audio flows |
 | `MV_AUDIO_FOLLOW` | 1 | no | input number whose audio is copied; 0 disables |
 | `MV_OVERLAY_HZ` | 25 | no | cap |
@@ -392,7 +412,9 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_CLIP_LINEAR` | 0.999 | no | |
 | `MV_ALARM_DEBOUNCE_MS` | 500 | no | |
 | `MV_ALARM_CLEAR_MS` | 500 | no | |
+| `MV_FREEZE_MS` | 2000 | no | 1000–600000; freeze alarm after the picture has not changed for this long (§6.3) |
 | `MV_BACKGROUND_FILE` | empty | no | JPEG or PNG under the tiles |
+| `MV_TIMEZONE` | empty | yes | IANA zone (`Europe/Zurich`) of clock tiles with `clock_zone: local`; overrides `TZ`. A name the zone database does not have is invalid |
 | `MV_CONFIG_FILE` | empty | yes | flat JSON |
 | `NMOS_ENABLE` | true | yes | |
 | `NMOS_REGISTRY_ADDRESS` | empty | yes | registration dial address. A DNS name is allowed here; it is not announced |
@@ -422,7 +444,7 @@ Per head `h` ≥ 2 (head 1 uses the unscoped keys):
 | Key | Meaning |
 | --- | --- |
 | `MV_OUT<h>_FORMAT` | defaults to `MV_OUTPUT_FORMAT` |
-| `MV_OUT<h>_LAYOUT` | layout of head `h` when none was saved for it (§6.1); otherwise the book's active layout |
+| `MV_OUT<h>_LAYOUT` | layout of head `h` when none was saved for it (§6.1); otherwise the book's active layout. Set in the environment, it is the start layout of head `h` |
 | `MV_OUT<h>_AUDIO_FOLLOW` | defaults to `MV_AUDIO_FOLLOW` |
 | `MV_OUT<h>_AUDIO_CHANNELS` | defaults to `MV_AUDIO_CHANNELS` |
 
@@ -508,8 +530,8 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 
 ## 14. Testing
 
-- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
-- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
+- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, freeze timing (a repeated-grain cadence and small motion are not frozen, a still picture is after `MV_FREEZE_MS`), TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, alarm labels and border, caption alignment, bars beside the picture, image tiles (type by magic bytes and Content-Type, limits before decoding, GIF frames, scaling, fetch with timeout and size cap, the worker that keeps fetching off the render path, the images API), start layouts, the time zone of local clocks, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; an uploaded PNG on an image tile and an input tile with bars beside the picture are on the output; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

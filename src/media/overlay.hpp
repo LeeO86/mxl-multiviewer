@@ -2,11 +2,13 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "layout/geometry.hpp"
 #include "layout/model.hpp"
+#include "media/image.hpp"
 
 namespace mv
 {
@@ -44,6 +46,8 @@ struct Overlay
     // Advance width of `value` as text() draws it at this size.
     [[nodiscard]] int textWidth(std::string const& value, int pixelSize) const;
     void line(int x0, int y0, int x1, int y1, Rgba color, double width = 1.6);
+    // A w × h picture of premultiplied BGRA pixels (ScaledImage) with its top-left at (x, y).
+    void image(int x, int y, int w, int h, std::uint32_t const* prgb);
 
     // Set by renderOverlay while a Blend2D context owns the frame. Null on the bitmap path.
     void* blContext = nullptr;
@@ -71,12 +75,20 @@ enum class AlarmLevel
     Amber
 };
 
+// One alarm label: the alarm's name in its colour.
+struct AlarmBadge
+{
+    std::string text;
+    AlarmLevel level = AlarmLevel::Red;
+};
+
 struct OverlayTile
 {
     PixelRect rect;
     bool umd = false;
     std::string umdText;
     UmdPosition umdPosition = UmdPosition::BottomInside;
+    UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     Rgba umdBg{0, 0, 0, 192};
     Rgba umdFg{255, 255, 255, 255};
@@ -95,6 +107,8 @@ struct OverlayTile
     // False when the input's audio leg is not routed: dim, empty bars with a strike.
     bool audioRouted = true;
     bool showRms = false;
+    // The PPM scale (ticks and dBFS labels) beside the bars.
+    bool barScale = true;
     int barChannels = 2;
     std::array<double, 16> ppmDbfs = silentMeters();
     std::array<double, 16> holdDbfs = silentMeters();
@@ -108,9 +122,10 @@ struct OverlayTile
     bool safeArea = false;
     bool centre = false;
     std::vector<std::string> aspectMarkers;
-    // Alarm badge text and the colour of badge and alarm border.
-    std::string badge;
+    // The alarm border's colour (None: no border), and the labels stacked at `badgePosition`.
     AlarmLevel alarm = AlarmLevel::None;
+    std::vector<AlarmBadge> badges;
+    AlarmLabelPosition badgePosition = AlarmLabelPosition::Top;
     // Text over the black tile after MV_HOLD_MS (§6.4): NO SIGNAL, NOT ROUTED or WAITING,
     // with the input label under it.
     std::string slate;
@@ -123,7 +138,27 @@ struct OverlayTile
     std::string clockText;
     std::string timecodeText;
     std::string labelText;
+    // Image tiles: the picture scaled to the tile, and the frame to show (animations).
+    std::shared_ptr<ScaledImage const> image;
+    std::size_t imageFrame = 0;
 };
+
+// The active alarms of an input (§6.3).
+struct ActiveAlarms
+{
+    bool noSignal = false;
+    bool black = false;
+    bool freeze = false;
+    bool clip = false;
+    bool silence = false;
+    bool format = false;
+};
+
+// The alarm border and labels of an input tile, as its options say (`alarm_border`,
+// `alarm_labels`, `alarm_label_position`): red for no signal, black, freeze, and clip, amber
+// for silence and format; one label per active alarm, most severe first. A tile with a
+// slate (set `item.slate` first) gets no labels: the slate says what is wrong.
+void showAlarms(OverlayTile& item, Tile const& tile, ActiveAlarms const& alarms);
 
 // PPM scale marks in dBFS (§5.7), and the meter range they cover.
 inline constexpr std::array<int, 8> kPpmMarks{0, -6, -12, -18, -24, -36, -48, -60};

@@ -8,7 +8,7 @@ The output is an NMOS sender. Route it to `mxl-decklink` for an SDI wall or to `
 
 ## Build
 
-Linux, CMake ≥ 3.24, GCC ≥ 12 or Clang ≥ 16, Node.js ≥ 20 (admin UI). MXL is `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`.
+Linux, CMake ≥ 3.24, GCC ≥ 12 or Clang ≥ 16, Node.js ≥ 20 (admin UI), libcurl and libwebp (`libcurl4-openssl-dev libwebp-dev` on Ubuntu) for image tiles. MXL is `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`.
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -69,6 +69,8 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 | POST | `/api/v1/layouts/{name}/activate` |
 | PUT | `/api/v1/outputs/{h}` |
 | GET | `/api/v1/alarms` |
+| GET | `/api/v1/images` |
+| GET, PUT, DELETE | `/api/v1/images/{name}` |
 | GET | `/api/v1/events` (WebSocket) |
 | GET | `/preview.jpg` (`?head=<h>` for heads 2 and 3) |
 | GET, PUT | `/api/v1/config` |
@@ -81,7 +83,7 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 
 `GET /api/v1/config/export` returns one JSON document (`version`, `secrets`, `settings`, `layouts`, `routes`). This process has no secrets, so `secrets` is false and nothing is left out. `POST /api/v1/config/import` restores that document. Settings set by the environment are skipped (listed in `skipped`). Routes in the file apply on the next start.
 
-`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket and `/statusz`) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`, and per input the TSL state: `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour), and `tsl_text` (the label). `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, and `hold_ms`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
+`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket and `/statusz`) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`, and per input the TSL state: `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour), and `tsl_text` (the label). Each output in `GET /api/v1/outputs` has `start_layout` and `start_layout_env` (a start layout the environment sets); `PUT /api/v1/outputs/{h}` takes `start_layout` (a layout name, or `null` to clear it). `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, `hold_ms`, `timezone`, and `utc_offset_s`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
 
 `/readyz` is 200 when the composer heartbeat is fresh and, if a registry address is set, the Query API currently lists the node. `/metrics` is Prometheus text with the prefix `mxl_multiviewer_`.
 
@@ -95,7 +97,7 @@ Precedence is environment, then `MV_CONFIG_FILE` (one flat JSON object of string
 | `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes |
 | `MV_OUTPUT_DOMAIN_DIR` (`MXL_OUTPUT_DOMAIN_DIR`) | `/Volumes/mxl/multiviewer` | yes |
 | `MV_OUTPUT_DOMAIN_ID` (`MXL_OUTPUT_DOMAIN_ID`) | empty, UUIDv5 from `NMOS_SEED` | yes |
-| `MV_STATE_DIR` | `/config` | yes |
+| `MV_STATE_DIR` | `/config` (also `images/`) | yes |
 | `MXL_CLEANUP_ON_EXIT` | `false` | yes |
 | `MV_BACKEND` | `auto` | yes |
 | `MV_MAX_INPUTS` | `16` | yes |
@@ -117,7 +119,9 @@ Precedence is environment, then `MV_CONFIG_FILE` (one flat JSON object of string
 | `MV_CLIP_LINEAR` | `0.999` | no |
 | `MV_ALARM_DEBOUNCE_MS` | `500` | no |
 | `MV_ALARM_CLEAR_MS` | `500` | no |
+| `MV_FREEZE_MS` | `2000` | no |
 | `MV_BACKGROUND_FILE` | empty | no |
+| `MV_TIMEZONE` | empty (`TZ`) | yes |
 | `MV_CONFIG_FILE` | empty (`<MV_STATE_DIR>/config.json`) | yes |
 | `NMOS_ENABLE` | `true` | yes |
 | `NMOS_REGISTRY_ADDRESS` | empty | yes |
@@ -174,14 +178,14 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
 Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`), so a reload stays on the tab.
 
 - **Preview**: the output picture at `MV_PREVIEW_FPS`, a head selector with more than one head, the layout on air with Activate, and the output counters.
-- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour and text tally default. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
+- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, image, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its alarm display (border, labels and where they stack), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL, aligned left, centre, or right; at the bottom or top over the picture, or below or above the tile), audio bars, tally, and overlays, and the layout's background colour and text tally default. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, Use as start layout (per output), and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
 - **Inputs**: video and audio state, source, format, live PPM levels, alarms, and the receiver ids to route to (IS-05 only).
 - **Alarms**: active alarms with severity and since when.
 - **Settings**: every setting with its origin (ENV, FILE, DEFAULT); environment values are read-only, saved values go into the configuration file and apply at the next start. Export as JSON or `KEY=value` (download or copy), import an exported document.
 
-A head starts on the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}`), else on `MV_OUT<h>_LAYOUT`, else on the active layout of `layouts.json`; `MV_ACTIVE_LAYOUT` only applies until that file exists. Built-in presets that a 1.1.x release saved unedited get the current preset defaults at the first start (the old file stays as `layouts.json.bak`).
+A head starts on (first match wins): `MV_OUT<h>_LAYOUT` or `MV_ACTIVE_LAYOUT` set in the environment; its start layout ("Use as start layout" in the layout editor, `PUT /api/v1/outputs/{h}` with `start_layout`, kept in `layouts.json`); the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}` with `layout`); `MV_OUT<h>_LAYOUT` from the config file; the active layout of `layouts.json`. Otherwise `MV_ACTIVE_LAYOUT` only applies until that file exists. The platform sets neither, so the start layout chosen in the editor is what a restarted container shows. Built-in presets that a 1.1.x release saved unedited get the current preset defaults at the first start (the old file stays as `layouts.json.bak`).
 
-The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
+The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS (`audio_bar_scale: false` hides it), over the picture at its left or right edge or in the centre, or beside it (`left-beside`, `right-beside`: the picture gets narrower and the bars have their own strip of the tile), a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. The freeze alarm rises when the picture has not changed for `MV_FREEZE_MS` (default 2 s); a source that repeats frames (25p in 50p, a browser source) is not frozen. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
 
 ### Tally (TSL)
 
@@ -216,6 +220,10 @@ On the platform the tally calculator sends TSL 5.0 to the Service on 8910/udp: s
 
 ### Platform
 
+Image tiles show a picture from an http(s) URL or one uploaded in the layout editor (`PUT /api/v1/images/{name}`, kept in `<MV_STATE_DIR>/images/`): PNG, JPEG, GIF (animated GIFs play), or WebP, at most 8 MiB, 4096 × 4096 pixels, and 32 megapixels over all frames. The multiviewer fetches a URL itself (3 s to connect, 10 s in all, through `https_proxy`/`http_proxy` from its environment, certificates checked) on a worker thread, so a slow URL never holds up the output; a failed picture shows `NO IMAGE` with the reason and is tried again after 30 s. Image tiles are drawn over the video tiles.
+
+Clock tiles with local time use `MV_TIMEZONE` (an IANA name such as `Europe/Zurich`), else the container's `TZ`, else UTC; the image has the zone database (`tzdata`). The platform sets `TZ=Europe/Zurich`. `GET /api/v1/info` reports the zone (`timezone`, `utc_offset_s`), and the layout editor draws local clocks in it.
+
 `deploy/mxl-multiviewer.yaml` is the pod-network Deployment: MXL root hostPath `/Volumes/mxl`, writable `/config`, `NMOS_HOST_ADDRESS` from `status.podIP`, probes on `/livez` and `/readyz`, and `terminationGracePeriodSeconds` above `SHUTDOWN_TIMEOUT_S`. Set `MXL_CLEANUP_ON_EXIT=true` so production-down sees the output domain disappear. Replace the example emptyDir with a persistent volume when `/config` must survive a reschedule. The GPU file adds `runtimeClassName: nvidia` and one GPU; the process still starts on CPU when the device is missing and `MV_BACKEND=auto`.
 
 ## Tests
@@ -235,4 +243,4 @@ Hardware targets are in `docs/performance.md`. They have not been measured on an
 
 ## License
 
-Apache-2.0. Vendored `third_party/doctest`, `picojson`, `stb`, and `font8x8_basic.h` keep their own notices. DejaVu Sans in `third_party/dejavu/` is under its own license. Blend2D 0.21.2 and the asmjit it ships are fetched at configure time and linked statically.
+Apache-2.0. Vendored `third_party/doctest`, `picojson`, `stb`, and `font8x8_basic.h` keep their own notices. DejaVu Sans in `third_party/dejavu/` is under its own license. Blend2D 0.21.2 and the asmjit it ships are fetched at configure time and linked statically. Image tiles link the system libraries libcurl (curl licence, MIT-style) and libwebp with libwebpdemux (BSD-3-Clause).

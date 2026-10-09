@@ -98,6 +98,100 @@ TEST_CASE("clock style accepts analog and rejects unknown values")
     CHECK(parseLayout(body("digital", "mars"), layout, 4).has_value());
 }
 
+TEST_CASE("umd_align is left, centre, or right; a saved tile without it stays left")
+{
+    auto const body = [](std::string const& align) {
+        return "{\"version\":1,\"name\":\"u\",\"tiles\":[{\"id\":\"a\",\"input\":1" + align + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Left);
+    REQUIRE_FALSE(parseLayout(body(",\"umd_align\":\"centre\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Centre);
+    CHECK(layoutToJson(layout).find("\"umd_align\":\"centre\"") != std::string::npos);
+    REQUIRE_FALSE(parseLayout(body(",\"umd_align\":\"right\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].umdAlign == UmdAlign::Right);
+    CHECK(parseLayout(body(",\"umd_align\":\"middle\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"umd_align\":\"center\""), layout, 4).has_value());
+    // A 1.1.x preset with another alignment counts as edited.
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].umdAlign = UmdAlign::Right;
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
+TEST_CASE("alarm display options: border and labels on by default, label positions checked")
+{
+    auto const body = [](std::string const& options) {
+        return "{\"version\":1,\"name\":\"a\",\"tiles\":[{\"id\":\"a\",\"input\":1" + options + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(layout.tiles[0].alarmBorder);
+    CHECK(layout.tiles[0].alarmLabels);
+    CHECK(layout.tiles[0].alarmLabelPosition == AlarmLabelPosition::Top);
+    REQUIRE_FALSE(parseLayout(body(",\"alarm_border\":false,\"alarm_labels\":true,\"alarm_label_position\":\"bottom-right\""), layout, 4).has_value());
+    CHECK_FALSE(layout.tiles[0].alarmBorder);
+    CHECK(layout.tiles[0].alarmLabelPosition == AlarmLabelPosition::BottomRight);
+    auto const json = layoutToJson(layout);
+    CHECK(json.find("\"alarm_border\":false,\"alarm_labels\":true,\"alarm_label_position\":\"bottom-right\"") != std::string::npos);
+    Layout back;
+    REQUIRE_FALSE(parseLayout(json, back, 4).has_value());
+    CHECK(back.tiles[0].alarmLabelPosition == AlarmLabelPosition::BottomRight);
+    for (auto const* position : {"top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"})
+    {
+        CHECK_FALSE(parseLayout(body(std::string(",\"alarm_label_position\":\"") + position + "\""), layout, 4).has_value());
+    }
+    CHECK(parseLayout(body(",\"alarm_label_position\":\"middle\""), layout, 4).has_value());
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].alarmLabels = false;
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
+TEST_CASE("audio_bar_scale is on unless a tile turns it off")
+{
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(R"({"version":1,"name":"s","tiles":[{"id":"a","input":1,"rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+    CHECK(layout.tiles[0].audioBarScale);
+    REQUIRE_FALSE(
+        parseLayout(R"({"version":1,"name":"s","tiles":[{"id":"a","input":1,"audio_bar_scale":false,"rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+    CHECK_FALSE(layout.tiles[0].audioBarScale);
+    CHECK(layoutToJson(layout).find("\"audio_bar_scale\":false") != std::string::npos);
+    for (auto const& preset : builtinPresets(16))
+    {
+        CHECK(preset.tiles[0].audioBarScale);
+    }
+}
+
+TEST_CASE("image tiles show an http(s) URL or a stored picture")
+{
+    auto const body = [](std::string const& fields) {
+        return "{\"version\":1,\"name\":\"i\",\"tiles\":[{\"id\":\"a\",\"content\":\"image\"" + fields + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(",\"image_url\":\"https://example.org/logo.png\",\"scale\":\"fill\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].content == TileContent::Image);
+    CHECK(layout.tiles[0].imageUrl == "https://example.org/logo.png");
+    CHECK(layout.tiles[0].scale == ScaleMode::Fill);
+    auto const json = layoutToJson(layout);
+    CHECK(json.find("\"content\":\"image\"") != std::string::npos);
+    CHECK(json.find("\"image_url\":\"https://example.org/logo.png\",\"image_file\":\"\"") != std::string::npos);
+    REQUIRE_FALSE(parseLayout(body(",\"image_file\":\"bug.gif\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].imageFile == "bug.gif");
+    // Not set yet: allowed, the tile says so on the wall.
+    CHECK_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"file:///etc/passwd\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"ftp://example.org/a.png\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_file\":\"../config.json\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"https://example.org/a.png\",\"image_file\":\"a.png\""), layout, 4).has_value());
+    // Layouts without image tiles look as before; a 1.1.x preset with a URL counts as edited.
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].imageUrl = "https://example.org/a.png";
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
 TEST_CASE("audio zones must rise towards full scale")
 {
     auto const body = [](int green, int amber) {
@@ -298,6 +392,61 @@ TEST_CASE("layout json round trip and rejection")
     CHECK(parseLayout("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"content\":\"input\",\"input\":99,\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}", bad, 4)
               .has_value());
     CHECK(parseLayout("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"w\":1.2,\"h\":1}}]}", bad, 4).has_value());
+}
+
+TEST_CASE("audio bars beside the picture take a strip of the tile; over the picture they do not")
+{
+    // 1080 canvas, 960 px tile, 2 channels: margins 6 + 6, bars 2 × 14 + 2, gap 2, tick 4, labels 28.
+    CHECK(barsStripWidth(960, 2, true, 1080) == 76);
+    CHECK(barsStripWidth(960, 2, false, 1080) == 44);
+    for (int channels = 1; channels <= 16; ++channels)
+    {
+        for (int const height : {540, 720, 1080, 2160})
+        {
+            CHECK(barsStripWidth(960, channels, true, height) % 2 == 0);
+        }
+    }
+    Tile tile;
+    tile.audioBars = true;
+    tile.audioBarPosition = BarsPosition::RightBeside;
+    PixelRect const px{960, 0, 960, 540};
+    auto const right = pictureRect(px, tile, 1080);
+    CHECK(right.x == 960);
+    CHECK(right.w == 884);
+    CHECK(right.h == 540);
+    tile.audioBarPosition = BarsPosition::LeftBeside;
+    auto const left = pictureRect(px, tile, 1080);
+    CHECK(left.x == 1036);
+    CHECK(left.w == 884);
+    // A 16:9 source fits into the rest, letterboxed; the strip stays free.
+    auto const placed = placeTile(left, 1920, 1080, ScaleMode::Fit);
+    CHECK(placed.dst.x >= 1036);
+    CHECK(placed.dst.x % 2 == 0);
+    CHECK(placed.dst.w == 884);
+    CHECK(placed.dst.h == 497);
+    // Over the picture, bars off, other content, or a tile too narrow for the strip: the whole tile.
+    for (auto const position : {BarsPosition::Left, BarsPosition::Right, BarsPosition::Overlay})
+    {
+        tile.audioBarPosition = position;
+        CHECK(pictureRect(px, tile, 1080).w == 960);
+    }
+    tile.audioBarPosition = BarsPosition::RightBeside;
+    tile.audioBars = false;
+    CHECK(pictureRect(px, tile, 1080).w == 960);
+    tile.audioBars = true;
+    tile.content = TileContent::Clock;
+    CHECK(pictureRect(px, tile, 1080).w == 960);
+    tile.content = TileContent::Input;
+    CHECK(barsStripWidth(100, 2, true, 1080) == 0);
+    CHECK(pictureRect(PixelRect{0, 0, 100, 56}, tile, 1080).w == 100);
+
+    // The positions parse and round-trip; older layouts keep left, right, and overlay.
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"left-beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4)
+                      .has_value());
+    CHECK(layout.tiles[0].audioBarPosition == BarsPosition::LeftBeside);
+    CHECK(layoutToJson(layout).find("\"audio_bar_position\":\"left-beside\"") != std::string::npos);
+    CHECK(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
 }
 
 TEST_CASE("tile geometry snaps to even pixels and letterboxes")

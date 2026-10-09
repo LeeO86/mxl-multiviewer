@@ -25,10 +25,15 @@ public:
     void saveHead(int head, std::string const& name);
     // The saved layout of a head, when it is still in the book.
     [[nodiscard]] std::optional<std::string> savedHead(int head) const;
-    // The layout a head starts on (SPECIFICATION.md §6.1): its saved layout, else the layout
-    // configured for that head (MV_OUT<h>_LAYOUT, when `configuredForHead`), else the book's
-    // active layout (MV_ACTIVE_LAYOUT until a layout file exists).
-    [[nodiscard]] std::string startLayout(int head, std::string const& configured, bool configuredForHead) const;
+    // "Use as start layout" of a head; nullopt clears it. False when the layout is not in the book.
+    bool setStartLayout(int head, std::optional<std::string> const& name);
+    // The start layout of a head, when it is still in the book.
+    [[nodiscard]] std::optional<std::string> startLayoutOf(int head) const;
+    // The layout a head starts on (SPECIFICATION.md §6.1): `pinned` (a layout set in the
+    // environment), else its start layout, else its saved layout, else the layout configured
+    // for that head (MV_OUT<h>_LAYOUT, when `configuredForHead`), else the book's active
+    // layout (MV_ACTIVE_LAYOUT until a layout file exists). Names not in the book are skipped.
+    [[nodiscard]] std::string startLayout(int head, std::string const& configured, bool configuredForHead, std::string const& pinned = {}) const;
     std::optional<std::string> upsert(Layout layout);
     std::optional<std::string> erase(std::string const& name);
     std::optional<std::string> replaceJson(std::string const& body);

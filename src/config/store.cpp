@@ -180,6 +180,19 @@ std::optional<std::string> ConfigStore::effectiveValue(std::string const& key) c
     return std::nullopt;
 }
 
+std::optional<std::string> ConfigStore::pinnedLayout(int head) const
+{
+    for (auto const& key : {"MV_OUT" + std::to_string(head) + "_LAYOUT", std::string("MV_ACTIVE_LAYOUT")})
+    {
+        auto const value = effectiveValue(key).value_or("");
+        if (!value.empty() && sourceOf(key) == SettingSource::Env)
+        {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 bool ConfigStore::hasFileLayer() const
 {
     return filePath_.has_value();

@@ -1,5 +1,7 @@
 #include "layout/model.hpp"
 
+#include "media/image.hpp"
+#include "util/fetch.hpp"
 #include "util/jsonutil.hpp"
 #include "util/logging.hpp"
 
@@ -8,6 +10,7 @@
 #include <cstdlib>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace mv
 {
@@ -23,6 +26,8 @@ char const* contentToString(TileContent content)
         return "label";
     case TileContent::Empty:
         return "empty";
+    case TileContent::Image:
+        return "image";
     case TileContent::Input:
         return "input";
     }
@@ -46,6 +51,10 @@ std::optional<TileContent> contentFromString(std::string const& text)
     if (text == "empty")
     {
         return TileContent::Empty;
+    }
+    if (text == "image")
+    {
+        return TileContent::Image;
     }
     return std::nullopt;
 }
@@ -136,6 +145,56 @@ std::optional<UmdPosition> umdPosFromString(std::string const& text)
     return std::nullopt;
 }
 
+char const* umdAlignToString(UmdAlign align)
+{
+    return align == UmdAlign::Centre ? "centre" : align == UmdAlign::Right ? "right" : "left";
+}
+
+std::optional<UmdAlign> umdAlignFromString(std::string const& text)
+{
+    if (text == "left")
+    {
+        return UmdAlign::Left;
+    }
+    if (text == "centre")
+    {
+        return UmdAlign::Centre;
+    }
+    if (text == "right")
+    {
+        return UmdAlign::Right;
+    }
+    return std::nullopt;
+}
+
+constexpr std::pair<AlarmLabelPosition, char const*> kAlarmLabelPositions[] = {{AlarmLabelPosition::TopLeft, "top-left"}, {AlarmLabelPosition::Top, "top"},
+    {AlarmLabelPosition::TopRight, "top-right"}, {AlarmLabelPosition::BottomLeft, "bottom-left"}, {AlarmLabelPosition::Bottom, "bottom"},
+    {AlarmLabelPosition::BottomRight, "bottom-right"}};
+
+char const* alarmLabelPositionToString(AlarmLabelPosition pos)
+{
+    for (auto const& [value, name] : kAlarmLabelPositions)
+    {
+        if (value == pos)
+        {
+            return name;
+        }
+    }
+    return "top";
+}
+
+std::optional<AlarmLabelPosition> alarmLabelPositionFromString(std::string const& text)
+{
+    for (auto const& [value, name] : kAlarmLabelPositions)
+    {
+        if (text == name)
+        {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 char const* barsToString(BarsPosition pos)
 {
     switch (pos)
@@ -144,6 +203,10 @@ char const* barsToString(BarsPosition pos)
         return "left";
     case BarsPosition::Overlay:
         return "overlay";
+    case BarsPosition::LeftBeside:
+        return "left-beside";
+    case BarsPosition::RightBeside:
+        return "right-beside";
     case BarsPosition::Right:
         return "right";
     }
@@ -163,6 +226,14 @@ std::optional<BarsPosition> barsFromString(std::string const& text)
     if (text == "overlay")
     {
         return BarsPosition::Overlay;
+    }
+    if (text == "left-beside")
+    {
+        return BarsPosition::LeftBeside;
+    }
+    if (text == "right-beside")
+    {
+        return BarsPosition::RightBeside;
     }
     return std::nullopt;
 }
@@ -470,6 +541,18 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
                 return "tile " + tile.id + " has an unknown aspect marker";
             }
         }
+        if (!tile.imageUrl.empty() && !httpUrl(tile.imageUrl))
+        {
+            return "tile " + tile.id + " image_url must be an http or https URL";
+        }
+        if (!tile.imageFile.empty() && !imageName(tile.imageFile))
+        {
+            return "tile " + tile.id + " image_file is not a stored picture name";
+        }
+        if (tile.content == TileContent::Image && !tile.imageUrl.empty() && !tile.imageFile.empty())
+        {
+            return "tile " + tile.id + " sets image_url and image_file; an image tile shows one of them";
+        }
     }
     return std::nullopt;
 }
@@ -545,6 +628,12 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
             return "umd_position is invalid";
         }
         tile.umdPosition = *pos;
+        auto const align = umdAlignFromString(str(tileObj, "umd_align", "left"));
+        if (!align)
+        {
+            return "umd_align is invalid";
+        }
+        tile.umdAlign = *align;
         tile.umdFont = static_cast<int>(num(tileObj, "umd_font", 28));
         tile.umdBg = str(tileObj, "umd_bg", "#000000c0");
         tile.tallyBorder = flag(tileObj, "tally_border", true);
@@ -564,6 +653,7 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         }
         tile.audioBars = flag(tileObj, "audio_bars", false);
         tile.audioBarRms = flag(tileObj, "audio_bar_rms", false);
+        tile.audioBarScale = flag(tileObj, "audio_bar_scale", true);
         tile.audioBarChannels = static_cast<int>(num(tileObj, "audio_bar_channels", 2));
         tile.audioBarFirst = static_cast<int>(num(tileObj, "audio_bar_first", 0));
         auto const bars = barsFromString(str(tileObj, "audio_bar_position", "right"));
@@ -594,6 +684,14 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
                                    std::to_string(tile.audioBarFirst + tile.audioBarChannels));
             }
         }
+        tile.alarmBorder = flag(tileObj, "alarm_border", true);
+        tile.alarmLabels = flag(tileObj, "alarm_labels", true);
+        auto const labels = alarmLabelPositionFromString(str(tileObj, "alarm_label_position", "top"));
+        if (!labels)
+        {
+            return "alarm_label_position is invalid";
+        }
+        tile.alarmLabelPosition = *labels;
         tile.formatLabel = flag(tileObj, "format_label", true);
         tile.latency = flag(tileObj, "latency", false);
         tile.safeArea = flag(tileObj, "safe_area", false);
@@ -630,6 +728,8 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.clockZone = zone.value_or(ClockZone::Utc);
         tile.timecodeRate = str(tileObj, "timecode_rate");
         tile.labelText = str(tileObj, "label_text");
+        tile.imageUrl = str(tileObj, "image_url");
+        tile.imageFile = str(tileObj, "image_file");
         layout.tiles.push_back(std::move(tile));
     }
     if (auto const problem = validateLayout(layout, maxInputs))
@@ -656,12 +756,14 @@ std::string layoutToJson(Layout const& layout)
             << ",\"rect\":{\"x\":" << tile.rect.x << ",\"y\":" << tile.rect.y << ",\"w\":" << tile.rect.w << ",\"h\":" << tile.rect.h << "}"
             << ",\"scale\":\"" << scaleToString(tile.scale) << "\",\"umd\":" << (tile.umd ? "true" : "false") << ",\"umd_source\":\""
             << umdSourceToString(tile.umdSource) << "\",\"umd_text\":" << quoted(tile.umdText) << ",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
-            << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
+            << "\",\"umd_align\":\"" << umdAlignToString(tile.umdAlign) << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
             << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"tally_text\":" << (!tile.tallyText ? "null" : *tile.tallyText ? "true" : "false")
             << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
-            << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")
+            << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false") << ",\"audio_bar_scale\":" << (tile.audioBarScale ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
             << barsToString(tile.audioBarPosition) << "\",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber
+            << ",\"alarm_border\":" << (tile.alarmBorder ? "true" : "false") << ",\"alarm_labels\":" << (tile.alarmLabels ? "true" : "false")
+            << ",\"alarm_label_position\":\"" << alarmLabelPositionToString(tile.alarmLabelPosition) << '"'
             << ",\"format_label\":" << (tile.formatLabel ? "true" : "false") << ",\"latency\":" << (tile.latency ? "true" : "false")
             << ",\"safe_area\":" << (tile.safeArea ? "true" : "false") << ",\"centre\":" << (tile.centre ? "true" : "false") << ",\"aspect_markers\":[";
         for (std::size_t m = 0; m < tile.aspectMarkers.size(); ++m)
@@ -674,7 +776,8 @@ std::string layoutToJson(Layout const& layout)
         }
         out << "],\"clock_style\":\"" << (tile.clockStyle == ClockStyle::Analogue ? "analogue" : "digital") << "\",\"clock_zone\":\""
             << (tile.clockZone == ClockZone::Tai ? "tai" : tile.clockZone == ClockZone::Local ? "local" : "utc") << "\",\"timecode_rate\":"
-            << quoted(tile.timecodeRate) << ",\"label_text\":" << quoted(tile.labelText) << "}";
+            << quoted(tile.timecodeRate) << ",\"label_text\":" << quoted(tile.labelText) << ",\"image_url\":" << quoted(tile.imageUrl)
+            << ",\"image_file\":" << quoted(tile.imageFile) << "}";
     }
     out << "]}";
     return out.str();
@@ -693,14 +796,17 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
     book.version = static_cast<int>(num(obj, "version", 1));
     book.active = str(obj, "active", "2x2");
     book.presetRevision = static_cast<int>(num(obj, "preset_revision", 1));
-    if (auto const heads = obj.find("heads"); heads != obj.end() && heads->second.is<picojson::object>())
+    for (auto const& [field, target] : {std::pair{"heads", &book.heads}, std::pair{"start_layouts", &book.startLayouts}})
     {
-        for (auto const& [key, value] : heads->second.get<picojson::object>())
+        if (auto const heads = obj.find(field); heads != obj.end() && heads->second.is<picojson::object>())
         {
-            int const head = std::atoi(key.c_str());
-            if (head >= 1 && head <= 3 && value.is<std::string>())
+            for (auto const& [key, value] : heads->second.get<picojson::object>())
             {
-                book.heads[head] = value.get<std::string>();
+                int const head = std::atoi(key.c_str());
+                if (head >= 1 && head <= 3 && value.is<std::string>())
+                {
+                    (*target)[head] = value.get<std::string>();
+                }
             }
         }
     }
@@ -730,14 +836,21 @@ std::optional<std::string> parseBook(std::string const& body, LayoutBook& out, i
 std::string bookToJson(LayoutBook const& book)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"preset_revision\":" << book.presetRevision << ",\"heads\":{";
-    bool firstHead = true;
-    for (auto const& [head, name] : book.heads)
-    {
-        out << (firstHead ? "" : ",") << '"' << head << "\":" << quoted(name);
-        firstHead = false;
-    }
-    out << "},\"layouts\":[";
+    auto const heads = [&](std::map<int, std::string> const& names) {
+        out << '{';
+        bool first = true;
+        for (auto const& [head, name] : names)
+        {
+            out << (first ? "" : ",") << '"' << head << "\":" << quoted(name);
+            first = false;
+        }
+        out << '}';
+    };
+    out << "{\"version\":1,\"active\":" << quoted(book.active) << ",\"preset_revision\":" << book.presetRevision << ",\"heads\":";
+    heads(book.heads);
+    out << ",\"start_layouts\":";
+    heads(book.startLayouts);
+    out << ",\"layouts\":[";
     for (std::size_t i = 0; i < book.layouts.size(); ++i)
     {
         if (i != 0)

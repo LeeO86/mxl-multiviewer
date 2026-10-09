@@ -29,6 +29,10 @@ endif()
 set(NMOS_CPP_DIR "" CACHE PATH "Path to sony/nmos-cpp Development/")
 
 find_package(Threads REQUIRED)
+# Image tiles: http(s) fetch and WebP decoding (system libraries; licences in README).
+find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(WEBP REQUIRED IMPORTED_TARGET libwebpdemux libwebp)
 
 add_library(mv-core STATIC
     src/util/sha1.cpp
@@ -56,10 +60,13 @@ add_library(mv-core STATIC
     src/media/jpeg.cpp
     src/layout/book.cpp
     src/util/httpclient.cpp
+    src/util/fetch.cpp
+    src/media/image.cpp
+    src/media/imagestore.cpp
     src/app/runtime.cpp
 )
 target_include_directories(mv-core PUBLIC src third_party)
-target_link_libraries(mv-core PUBLIC Threads::Threads)
+target_link_libraries(mv-core PUBLIC Threads::Threads CURL::libcurl PkgConfig::WEBP)
 target_compile_options(mv-core PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 if(MV_WITH_BLEND2D)
     set(DEJAVU_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/media/dejavu_sans.hpp)
@@ -89,6 +96,7 @@ if(MV_BUILD_TESTS)
         tests/unit/test_layout.cpp
         tests/unit/test_media.cpp
         tests/unit/test_control.cpp
+        tests/unit/test_image.cpp
     )
     target_include_directories(unit-tests PRIVATE src third_party)
     target_link_libraries(unit-tests PRIVATE mv-core)

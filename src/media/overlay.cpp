@@ -234,10 +234,17 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
 {
     double const s = std::max(0.5, overlay.height / 1080.0);
     int const channels = std::clamp(tile.barChannels, 1, 16);
-    int const margin = std::max(3, scaled(6, s));
-    int const gap = std::max(1, scaled(2, s));
-    int const barW = std::clamp(tile.rect.w / (channels * 4), std::max(3, scaled(3, s)), std::max(4, scaled(14, s)));
-    int const barsW = channels * barW + (channels - 1) * gap;
+    auto const m = barMetrics(tile.rect.w, channels, overlay.height);
+    int const margin = m.margin;
+    int const gap = m.gap;
+    int const barW = m.barW;
+    int const barsW = m.barsW;
+    // Beside the picture the bars stay in the strip the composer left for them.
+    bool const beside = tile.barsPosition == BarsPosition::LeftBeside || tile.barsPosition == BarsPosition::RightBeside;
+    if (beside && barsStripWidth(tile.rect.w, channels, tile.barScale, overlay.height) == 0)
+    {
+        return {};
+    }
     top += margin;
     bottom -= margin;
     int const clipH = std::max(2, barW / 2);
@@ -249,20 +256,21 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     }
     // Labels of the PPM marks when the 6 dB steps leave room for them.
     int const labelSize = std::min(meterH / 10 * 85 / 100, scaled(15, s));
-    int const tickW = std::max(2, scaled(4, s));
+    int const tickW = m.tickW;
     int labelW = 0;
-    if (tile.audioRouted && labelSize >= 9)
+    if (tile.audioRouted && tile.barScale && labelSize >= 9)
     {
         labelW = overlay.textWidth("-48", labelSize) + gap;
     }
-    if (barsW + tickW + labelW + 2 * gap + 2 * margin > tile.rect.w)
+    if (barsW + tickW + labelW + 2 * gap + 2 * margin > tile.rect.w || (beside && labelW > m.labelReserve))
     {
         labelW = 0;
     }
-    int const scaleW = tile.audioRouted ? tickW + labelW : 0;
+    int const scaleW = tile.audioRouted && tile.barScale ? tickW + labelW : 0;
     int const panelW = barsW + scaleW + 2 * gap;
     int barsX = tile.rect.x + tile.rect.w - margin - barsW;
-    if (tile.barsPosition == BarsPosition::Left)
+    bool const left = tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside;
+    if (left)
     {
         barsX = tile.rect.x + margin;
     }
@@ -271,7 +279,7 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
         barsX = tile.rect.x + (tile.rect.w - barsW) / 2;
     }
     // The scale sits on the inner side of the bars: left of them, or right of left bars.
-    bool const scaleRight = tile.barsPosition == BarsPosition::Left;
+    bool const scaleRight = left;
     int const panelX = scaleRight ? barsX - gap : barsX - gap - scaleW;
     PixelRect const panel{panelX, top - gap, panelW, bottom - top + 2 * gap};
     overlay.fillRect(panel.x, panel.y, panel.w, panel.h, {0, 0, 0, static_cast<std::uint8_t>(tile.audioRouted ? 130 : 70)});
@@ -338,9 +346,13 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     int const tickX = scaleRight ? barsX + barsW + gap : barsX - gap - tickW;
     for (int mark : kPpmMarks)
     {
+        // The marks across the bars stay without the scale beside them.
         int const y = std::min(yOf(mark), meterBottom - lineH);
-        overlay.fillRect(tickX, y, tickW, lineH, {210, 210, 210, 220});
         overlay.fillRect(barsX, y, barsW, lineH, {0, 0, 0, 110});
+        if (scaleW > 0)
+        {
+            overlay.fillRect(tickX, y, tickW, lineH, {210, 210, 210, 220});
+        }
         if (labelW > 0)
         {
             std::string const text = std::to_string(mark);
@@ -582,6 +594,35 @@ void Overlay::line(int x0, int y0, int x1, int y1, Rgba color, double width)
     }
 }
 
+void Overlay::image(int x, int y, int w, int h, std::uint32_t const* prgb)
+{
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        BLImage picture;
+        if (w > 0 && h > 0 &&
+            picture.create_from_data(w, h, BL_FORMAT_PRGB32, const_cast<std::uint32_t*>(prgb), static_cast<intptr_t>(w) * 4, BL_DATA_ACCESS_READ) == BL_SUCCESS)
+        {
+            ctx->blit_image(BLPointI(x, y), picture);
+        }
+        return;
+    }
+#endif
+    for (int row = 0; row < h; ++row)
+    {
+        for (int col = 0; col < w; ++col)
+        {
+            auto const px = prgb[static_cast<std::size_t>(row) * static_cast<std::size_t>(w) + static_cast<std::size_t>(col)];
+            auto const a = px >> 24;
+            if (a != 0)
+            {
+                auto const straight = [a](std::uint32_t v) { return static_cast<std::uint8_t>(std::min(255u, (v * 255u + a / 2u) / a)); };
+                plot(*this, x + col, y + row, Rgba{straight((px >> 16) & 255u), straight((px >> 8) & 255u), straight(px & 255u), static_cast<std::uint8_t>(a)});
+            }
+        }
+    }
+}
+
 namespace
 {
 // Analogue face or digital time, sized to the tile, with the optional timecode under it.
@@ -669,6 +710,11 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
     for (auto const& tile : tiles)
     {
         PixelRect const& r = tile.rect;
+        if (tile.image != nullptr && tile.imageFrame < tile.image->frames.size())
+        {
+            auto const& picture = *tile.image;
+            overlay.image(r.x + picture.x, r.y + picture.y, picture.width, picture.height, picture.frames[tile.imageFrame].data());
+        }
         if (tile.tallyBorder)
         {
             auto const color = tallyColor(tile.tally);
@@ -772,7 +818,10 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             int const lamp = std::max(6, band / 2);
             int const textX = r.x + (tile.tallyLamp ? lamp + 8 : 8);
             int const room = r.w - (textX - r.x) - (tile.tallyLamp ? lamp + 8 : 8);
-            overlay.text(textX, umdY + (band - tile.umdFont) / 2, fitText(overlay, tile.umdText, tile.umdFont, room), tile.umdFont,
+            // Text wider than the room is cut and ends with an ellipsis; the rest is aligned in the room.
+            auto const text = fitText(overlay, tile.umdText, tile.umdFont, room);
+            int const free = tile.umdAlign == UmdAlign::Left ? 0 : std::max(0, room - overlay.textWidth(text, tile.umdFont));
+            overlay.text(textX + (tile.umdAlign == UmdAlign::Centre ? free / 2 : free), umdY + (band - tile.umdFont) / 2, text, tile.umdFont,
                 textBg ? Rgba{0, 0, 0, 255} : tile.umdFg);
             if (tile.tallyLamp)
             {
@@ -791,7 +840,7 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             }
         }
         int const caption = std::max(8, overlay.height * 16 / 1080);
-        int const captionX = tile.barsPosition == BarsPosition::Left && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
+        int const captionX = (tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside) && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
         if (!tile.formatText.empty())
         {
             overlay.text(captionX, contentTop + 4, tile.formatText, caption, {255, 255, 255, 220});
@@ -800,17 +849,51 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         {
             overlay.text(captionX, contentTop + caption + 6, tile.latencyText, caption, {180, 220, 255, 220});
         }
-        if (!tile.badge.empty())
+        if (!tile.badges.empty())
         {
             int const size = std::max(10, scaled(16, s));
             int const padX = std::max(4, scaled(6, s));
             int const height = size + std::max(4, scaled(6, s));
-            int const width = std::min(r.w - 2 * thickness, overlay.textWidth(tile.badge, size) + 2 * padX);
-            int const x = r.x + (r.w - width) / 2;
-            int const y = contentTop + thickness * 2;
-            bool const amber = tile.alarm == AlarmLevel::Amber;
-            overlay.fillRect(x, y, width, height, amber ? Rgba{240, 170, 30, 235} : Rgba{200, 30, 30, 235});
-            centredText(overlay, x + width / 2, y + height / 2, tile.badge, size, amber ? Rgba{24, 18, 6, 255} : Rgba{255, 255, 255, 255});
+            int const gap = std::max(2, scaled(3, s));
+            auto const pos = tile.badgePosition;
+            bool const bottom = pos == AlarmLabelPosition::BottomLeft || pos == AlarmLabelPosition::Bottom || pos == AlarmLabelPosition::BottomRight;
+            bool const left = pos == AlarmLabelPosition::TopLeft || pos == AlarmLabelPosition::BottomLeft;
+            bool const right = pos == AlarmLabelPosition::TopRight || pos == AlarmLabelPosition::BottomRight;
+            // Centred labels span the tile inside the tally border (as before 1.3.0); labels at
+            // a side keep clear of the borders, the audio bars on that side, and the format caption.
+            int areaLeft = r.x + (left ? 2 * thickness : thickness);
+            int areaRight = r.x + r.w - (right ? 2 * thickness : thickness);
+            if (left && bars.w > 0 && bars.x + bars.w < r.x + r.w / 2)
+            {
+                areaLeft = std::max(areaLeft, bars.x + bars.w + gap);
+            }
+            if (right && bars.w > 0 && bars.x > r.x + r.w / 2)
+            {
+                areaRight = std::min(areaRight, bars.x - gap);
+            }
+            int y = bottom ? contentBottom - thickness * 2 - height : contentTop + thickness * 2;
+            if (pos == AlarmLabelPosition::TopLeft && !tile.latencyText.empty())
+            {
+                y = std::max(y, contentTop + 2 * caption + 6 + gap);
+            }
+            else if (pos == AlarmLabelPosition::TopLeft && !tile.formatText.empty())
+            {
+                y = std::max(y, contentTop + caption + 4 + gap);
+            }
+            // Stacked from the edge into the tile, in alarm order, as many as fit.
+            for (auto const& badge : tile.badges)
+            {
+                if (y < contentTop || y + height > contentBottom || areaRight - areaLeft < 2 * padX)
+                {
+                    break;
+                }
+                int const width = std::min(areaRight - areaLeft, overlay.textWidth(badge.text, size) + 2 * padX);
+                int const x = left ? areaLeft : right ? areaRight - width : areaLeft + (areaRight - areaLeft - width) / 2;
+                bool const amber = badge.level == AlarmLevel::Amber;
+                overlay.fillRect(x, y, width, height, amber ? Rgba{240, 170, 30, 235} : Rgba{200, 30, 30, 235});
+                centredText(overlay, x + width / 2, y + height / 2, badge.text, size, amber ? Rgba{24, 18, 6, 255} : Rgba{255, 255, 255, 255});
+                y += bottom ? -(height + gap) : height + gap;
+            }
         }
     }
 #ifdef MV_WITH_BLEND2D
@@ -821,6 +904,29 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         copyPremultipliedBgra(image, overlay);
     }
 #endif
+}
+
+void showAlarms(OverlayTile& item, Tile const& tile, ActiveAlarms const& alarms)
+{
+    bool const red = alarms.noSignal || alarms.black || alarms.freeze || alarms.clip;
+    bool const amber = alarms.silence || alarms.format;
+    item.alarm = !tile.alarmBorder ? AlarmLevel::None : red ? AlarmLevel::Red : amber ? AlarmLevel::Amber : AlarmLevel::None;
+    item.badges.clear();
+    item.badgePosition = tile.alarmLabelPosition;
+    if (!item.slate.empty() || !tile.alarmLabels)
+    {
+        return;
+    }
+    std::pair<bool, AlarmBadge> const labels[] = {{alarms.noSignal, {"NO SIGNAL", AlarmLevel::Red}}, {alarms.black, {"BLACK", AlarmLevel::Red}},
+        {alarms.freeze, {"FREEZE", AlarmLevel::Red}}, {alarms.clip, {"CLIP", AlarmLevel::Red}}, {alarms.silence, {"SILENCE", AlarmLevel::Amber}},
+        {alarms.format, {"FORMAT", AlarmLevel::Amber}}};
+    for (auto const& [active, label] : labels)
+    {
+        if (active)
+        {
+            item.badges.push_back(label);
+        }
+    }
 }
 
 bool overlayUsesBlend2d()

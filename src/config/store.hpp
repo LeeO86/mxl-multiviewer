@@ -33,6 +33,9 @@ public:
     // Used when MV_CONFIG_FILE is unset. The path is the file layer, not an environment override.
     void ensureFile(std::string path);
     [[nodiscard]] std::string renderEnvBlock() const;
+    // The layout the environment pins head `head` to at start (§6.1): MV_OUT<h>_LAYOUT, else
+    // MV_ACTIVE_LAYOUT, when set in the environment (not the file).
+    [[nodiscard]] std::optional<std::string> pinnedLayout(int head) const;
 
     struct UpdateResult
     {

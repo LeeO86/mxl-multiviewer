@@ -1,13 +1,13 @@
 // REST client and the live state from /api/v1/events (SPECIFICATION.md §8).
 import { reactive } from "vue";
 
-async function request(path, { method = "GET", body, text = false } = {}) {
+async function request(path, { method = "GET", body, text = false, type = "" } = {}) {
   const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined) headers["Content-Type"] = type || "application/json";
   const resp = await fetch(path, {
     method,
     headers,
-    body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+    body: body === undefined ? undefined : typeof body === "string" || body instanceof Blob ? body : JSON.stringify(body),
     cache: "no-store",
   });
   const raw = await resp.text();
@@ -32,6 +32,8 @@ export const api = {
   put: (path, body) => request(path, { method: "PUT", body }),
   post: (path, body) => request(path, { method: "POST", body: body ?? {} }),
   del: (path) => request(path, { method: "DELETE" }),
+  /** PUT of a file as it is, with its own Content-Type (picture uploads). */
+  upload: (path, file) => request(path, { method: "PUT", body: file, type: file.type }),
 };
 
 /** Live state shared by every tab. `inputs`, `outputs` and `alarms` follow the WebSocket. */
@@ -138,6 +140,25 @@ export const shortId = (id) => (id ? String(id).slice(0, 8) : "–");
 export function inputLabel(n) {
   const input = live.inputs.find((i) => i.index === n);
   return input?.video?.label || `MV In ${n}`;
+}
+
+/**
+ * Hours, minutes and seconds of `ms` in the multiviewer's local time zone (MV_TIMEZONE, else
+ * TZ; /api/v1/info), which clock tiles with "local" draw; not the browser's zone.
+ */
+export function localClock(ms) {
+  const zone = live.info?.timezone;
+  if (zone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hourCycle: "h23", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(ms);
+      const part = (type) => Number(parts.find((p) => p.type === type)?.value);
+      return { h: part("hour"), m: part("minute"), s: part("second") };
+    } catch {
+      /* not a zone name the browser knows (a POSIX TZ string): use the offset */
+    }
+  }
+  const at = new Date(ms + (live.info?.utc_offset_s || 0) * 1000);
+  return { h: at.getUTCHours(), m: at.getUTCMinutes(), s: at.getUTCSeconds() };
 }
 
 /** Percentage of a PPM bar for a dBFS value (-60..0). */

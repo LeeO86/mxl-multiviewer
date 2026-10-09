@@ -105,6 +105,7 @@ export function makeTile(content, id, rect, z) {
     umd_source: "is04",
     umd_text: "",
     umd_position: "bottom-inside",
+    umd_align: "left",
     umd_font: 28,
     umd_bg: "#000000c0",
     tally_border: input,
@@ -112,11 +113,15 @@ export function makeTile(content, id, rect, z) {
     tally_text: null,
     audio_bars: input,
     audio_bar_rms: false,
+    audio_bar_scale: true,
     audio_bar_channels: 2,
     audio_bar_first: 0,
     audio_bar_position: "right",
     zone_green: -18,
     zone_amber: -9,
+    alarm_border: true,
+    alarm_labels: true,
+    alarm_label_position: "top",
     format_label: input,
     latency: false,
     safe_area: false,
@@ -126,6 +131,8 @@ export function makeTile(content, id, rect, z) {
     clock_zone: "utc",
     timecode_rate: "",
     label_text: content === "label" ? "Label" : "",
+    image_url: "",
+    image_file: "",
   };
 }
 

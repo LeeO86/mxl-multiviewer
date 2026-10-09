@@ -14,6 +14,7 @@
 #include "util/uuid.hpp"
 
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 
 using namespace mv;
@@ -81,6 +82,62 @@ TEST_CASE("config precedence and validation")
     CHECK(queryOverride.nmosLabel == "wall");
     CHECK(queryOverride.outputDomainId == "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     CHECK(queryOverride.cleanupOnExit);
+}
+
+TEST_CASE("MV_TIMEZONE takes an IANA zone of the zone database; info reports the zone of the clocks")
+{
+    CHECK(knownTimeZone("Europe/Zurich"));
+    CHECK(knownTimeZone("UTC"));
+    CHECK(knownTimeZone("America/Argentina/Buenos_Aires"));
+    CHECK_FALSE(knownTimeZone("Mars/Olympus_Mons"));
+    CHECK_FALSE(knownTimeZone("../../etc/passwd"));
+    CHECK_FALSE(knownTimeZone("/usr/share/zoneinfo/UTC"));
+    CHECK_FALSE(knownTimeZone("Europe/Zurich "));
+    CHECK_FALSE(knownTimeZone("leapseconds")); // a text file of the database, not a zone
+    CHECK(loadConfig({{"NMOS_ENABLE", "false"}, {"MV_TIMEZONE", "Europe/Zurich"}}, {}).timezone == "Europe/Zurich");
+    CHECK(loadConfig({{"NMOS_ENABLE", "false"}}, {}).timezone.empty());
+    CHECK_THROWS_AS(loadConfig({{"NMOS_ENABLE", "false"}, {"MV_TIMEZONE", "CET-1CEST"}}, {}), ConfigError);
+
+    // main() sets TZ from MV_TIMEZONE; local time then follows the zone database.
+    char const* before = std::getenv("TZ");
+    std::string const saved = before != nullptr ? before : "";
+    setenv("TZ", "Europe/Zurich", 1);
+    tzset();
+    CHECK(localZoneName() == "Europe/Zurich");
+    std::time_t const winter = 1768478400; // 2026-01-15 12:00:00 UTC
+    std::time_t const summer = 1784116800; // 2026-07-15 12:00:00 UTC
+    std::tm tm{};
+    localtime_r(&winter, &tm);
+    CHECK(tm.tm_hour == 13);
+    localtime_r(&summer, &tm);
+    CHECK(tm.tm_hour == 14);
+    auto const offset = utcOffsetSeconds();
+    CHECK((offset == 3600 || offset == 7200));
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, "");
+    RuntimeModel runtime(cfg);
+    Metrics metrics;
+    Api api(cfg, store, layouts, runtime, metrics);
+    std::string error;
+    auto const info = json::parse(api.handle(HttpRequest{"GET", "/api/v1/info", {}, {}, {}}).body, error);
+    REQUIRE(error.empty());
+    CHECK(info.get("timezone").get<std::string>() == "Europe/Zurich");
+    CHECK(info.get("utc_offset_s").get<double>() == doctest::Approx(offset));
+    setenv("TZ", ":UTC", 1);
+    tzset();
+    CHECK(localZoneName() == "UTC");
+    CHECK(utcOffsetSeconds() == 0);
+    if (before != nullptr)
+    {
+        setenv("TZ", saved.c_str(), 1);
+    }
+    else
+    {
+        unsetenv("TZ");
+    }
+    tzset();
 }
 
 TEST_CASE("config file layer")
@@ -283,7 +340,7 @@ TEST_CASE("a 1.1.x layout file: presets migrate once, active and head choices su
     old.layouts = legacyPresets(16);
     old.layouts[5].tiles[0].umdText = "EDITED"; // 2+8
     auto body = bookToJson(old);
-    auto const marker = std::string("\"preset_revision\":2,\"heads\":{},");
+    auto const marker = std::string("\"preset_revision\":2,\"heads\":{},\"start_layouts\":{},");
     REQUIRE(body.find(marker) != std::string::npos);
     body.erase(body.find(marker), marker.size());
     {
@@ -333,6 +390,70 @@ TEST_CASE("a 1.1.x layout file: presets migrate once, active and head choices su
     auto const presets = api.handle(HttpRequest{"GET", "/api/v1/presets", {}, {}, {}});
     CHECK(presets.status == 200);
     CHECK(presets.body.find("\"audio_bars\":true") != std::string::npos);
+}
+
+TEST_CASE("use as start layout: a head comes back to it after a restart, the environment still wins")
+{
+    auto const dir = std::string("/tmp/mv-start-test");
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    auto const path = dir + "/layouts.json";
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}, {"MV_OUTPUTS", "2"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    {
+        LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, path);
+        RuntimeModel runtime(cfg);
+        Metrics metrics;
+        Api api(cfg, store, layouts, runtime, metrics);
+        auto const put = [&](int head, std::string const& body) {
+            return api.handle(HttpRequest{"PUT", "/api/v1/outputs/" + std::to_string(head), {}, body, {}}).status;
+        };
+        CHECK(put(1, R"({"start_layout":"nope"})") == 404);
+        CHECK(put(1, R"({"start_layout":3})") == 400);
+        CHECK(put(1, R"({"start_layout":"3x3"})") == 200);
+        CHECK(put(2, R"({"start_layout":"1+7"})") == 200);
+        // The wall shows another layout afterwards; that does not move the start layouts.
+        CHECK(api.handle(HttpRequest{"POST", "/api/v1/layouts/4x4/activate", {}, {}, {}}).status == 200);
+        std::string error;
+        auto const outputs = json::parse(api.handle(HttpRequest{"GET", "/api/v1/outputs", {}, {}, {}}).body, error);
+        REQUIRE(error.empty());
+        CHECK(outputs.get("outputs").get(0).get("layout").get<std::string>() == "4x4");
+        CHECK(outputs.get("outputs").get(0).get("start_layout").get<std::string>() == "3x3");
+        CHECK(outputs.get("outputs").get(0).get("start_layout_env").is<picojson::null>());
+        CHECK(outputs.get("outputs").get(1).get("start_layout").get<std::string>() == "1+7");
+        CHECK(put(2, R"({"start_layout":null})") == 200);
+        CHECK(api.eventsJson().find(R"("start_layout":null,"start_layout_env":null)") != std::string::npos);
+        CHECK(layouts.json().find(R"("start_layouts":{"1":"3x3"})") != std::string::npos);
+    }
+    // A restart: head 1 starts on its start layout, head 2 (cleared) on the layout it showed last.
+    LayoutBookStore again(cfg.maxInputs, cfg.activeLayout, path);
+    CHECK(again.startLayout(1, cfg.activeLayout, false) == "3x3");
+    CHECK(again.startLayout(2, cfg.activeLayout, false) == "4x4");
+
+    // MV_OUT<h>_LAYOUT, else MV_ACTIVE_LAYOUT, set in the environment pins the start; the file does not.
+    ConfigStore pinned({{"NMOS_ENABLE", "false"}, {"MV_OUTPUTS", "2"}, {"MV_ACTIVE_LAYOUT", "2+8"}, {"MV_OUT2_LAYOUT", "1+5"}}, std::nullopt);
+    CHECK(pinned.pinnedLayout(1) == "2+8");
+    CHECK(pinned.pinnedLayout(2) == "1+5");
+    CHECK(again.startLayout(1, "2+8", false, *pinned.pinnedLayout(1)) == "2+8");
+    CHECK(again.startLayout(2, "1+5", true, *pinned.pinnedLayout(2)) == "1+5");
+    CHECK(again.startLayout(1, "2x2", false, "not-in-book") == "3x3");
+    {
+        std::ofstream out(dir + "/mv.json");
+        out << R"({"MV_ACTIVE_LAYOUT":"2+8"})";
+    }
+    ConfigStore fromFile({{"NMOS_ENABLE", "false"}}, dir + "/mv.json");
+    CHECK_FALSE(fromFile.pinnedLayout(1).has_value());
+    CHECK_FALSE(store.pinnedLayout(1).has_value());
+
+    // Deleting a start layout clears it.
+    Layout mine;
+    mine.name = "mine";
+    REQUIRE_FALSE(again.upsert(mine).has_value());
+    CHECK(again.setStartLayout(2, std::string("mine")));
+    CHECK_FALSE(again.setStartLayout(2, std::string("nope")));
+    CHECK(again.startLayoutOf(2) == "mine");
+    REQUIRE_FALSE(again.erase("mine").has_value());
+    CHECK_FALSE(again.startLayoutOf(2).has_value());
 }
 
 TEST_CASE("an activation is not lost to the composer's status report")

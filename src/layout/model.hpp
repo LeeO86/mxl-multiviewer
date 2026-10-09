@@ -20,7 +20,8 @@ enum class TileContent
     Input,
     Clock,
     Label,
-    Empty
+    Empty,
+    Image
 };
 enum class ScaleMode
 {
@@ -40,11 +41,31 @@ enum class UmdPosition
     BottomInside,
     BottomOutside
 };
+enum class UmdAlign
+{
+    Left,
+    Centre,
+    Right
+};
+// Where a tile's alarm labels stack (§6.3): from that corner or edge into the tile.
+enum class AlarmLabelPosition
+{
+    TopLeft,
+    Top,
+    TopRight,
+    BottomLeft,
+    Bottom,
+    BottomRight
+};
+// Left, Right, and Overlay (centre) lie over the picture; LeftBeside and RightBeside take a
+// strip of the tile and the picture is placed in the rest (§6.2).
 enum class BarsPosition
 {
     Left,
     Right,
-    Overlay
+    Overlay,
+    LeftBeside,
+    RightBeside
 };
 enum class ClockStyle
 {
@@ -70,6 +91,7 @@ struct Tile
     UmdSource umdSource = UmdSource::Is04;
     std::string umdText;
     UmdPosition umdPosition = UmdPosition::BottomInside;
+    UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     std::string umdBg = "#000000c0";
     bool tallyBorder = true;
@@ -78,11 +100,17 @@ struct Tile
     std::optional<bool> tallyText;
     bool audioBars = false;
     bool audioBarRms = false;
+    // The PPM scale (ticks and dBFS labels) beside the bars.
+    bool audioBarScale = true;
     int audioBarChannels = 2;
     int audioBarFirst = 0;
     BarsPosition audioBarPosition = BarsPosition::Right;
     double zoneGreen = -18;
     double zoneAmber = -9;
+    // Alarm display (§6.3): the alarm border, and a label per active alarm.
+    bool alarmBorder = true;
+    bool alarmLabels = true;
+    AlarmLabelPosition alarmLabelPosition = AlarmLabelPosition::Top;
     bool formatLabel = true;
     bool latency = false;
     bool safeArea = false;
@@ -92,6 +120,9 @@ struct Tile
     ClockZone clockZone = ClockZone::Utc;
     std::string timecodeRate;
     std::string labelText;
+    // Image tiles: a picture from an http(s) URL, or one stored with the API (§6.2).
+    std::string imageUrl;
+    std::string imageFile;
 };
 
 struct Layout
@@ -118,6 +149,8 @@ struct LayoutBook
     std::vector<Layout> layouts;
     // The layout last chosen for each output head (1-based), kept across restarts.
     std::map<int, std::string> heads;
+    // The layout a head starts on ("use as start layout"); beats `heads` at the next start.
+    std::map<int, std::string> startLayouts;
     int presetRevision = kPresetRevision;
 };
 

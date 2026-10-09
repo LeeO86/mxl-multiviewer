@@ -123,6 +123,11 @@ void Api::setFlowCallback(std::function<void(OutputFlowNote const&)> callback)
     onFlow_ = std::move(callback);
 }
 
+void Api::setImages(ImageStore& images)
+{
+    images_ = &images;
+}
+
 HttpResponse Api::handle(HttpRequest const& request)
 {
     auto const& path = request.path;
@@ -162,7 +167,8 @@ HttpResponse Api::handle(HttpRequest const& request)
             << quote(config_.nmosLabel.empty() ? config_.hostId : config_.nmosLabel) << ",\"backend\":\"" << config_.backend
             << "\",\"cuda_compiled\":" << (runtime_.cudaCompiled() ? "true" : "false") << ",\"cuda_devices\":" << runtime_.cudaDevices()
             << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"grid\":" << config_.grid << ",\"preview_fps\":"
-            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
+            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"timezone\":" << quote(localZoneName()) << ",\"utc_offset_s\":" << utcOffsetSeconds()
+            << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
             << ids.device << "\",\"domain_id\":\"" << (config_.outputDomainId.empty() ? ids.domain : config_.outputDomainId) << "\",\"overlay_blend2d\":"
             << (overlayUsesBlend2d() ? "true" : "false") << ",\"receivers\":[";
         for (int i = 1; i <= config_.maxInputs; ++i)
@@ -223,7 +229,11 @@ HttpResponse Api::handle(HttpRequest const& request)
             out << "{\"index\":" << output.index << ",\"format\":" << quote(output.format) << ",\"layout\":" << quote(output.layout)
                 << ",\"backend\":" << quote(output.backend) << ",\"video_flow_id\":" << quote(output.videoFlowId) << ",\"audio_flow_id\":" << quote(output.audioFlowId)
                 << ",\"domain_id\":" << quote(output.domainId) << ",\"frames\":" << output.frames << ",\"late\":" << output.late << ",\"missed\":" << output.missed
-                << ",\"compose_ms\":" << output.composeMs << ",\"audio_follow\":" << output.audioFollow << ",\"audio_channels\":" << output.audioChannels << "}";
+                << ",\"compose_ms\":" << output.composeMs << ",\"audio_follow\":" << output.audioFollow << ",\"audio_channels\":" << output.audioChannels;
+            // §6.1: the start layout chosen in the UI, and a layout the environment pins instead.
+            auto const start = layouts_.startLayoutOf(output.index);
+            auto const pinned = store_.pinnedLayout(output.index);
+            out << ",\"start_layout\":" << (start ? quote(*start) : "null") << ",\"start_layout_env\":" << (pinned ? quote(*pinned) : "null") << "}";
         }
         out << "]}";
         return jsonResponse(200, out.str());
@@ -313,6 +323,27 @@ HttpResponse Api::handle(HttpRequest const& request)
         {
             return jsonResponse(404, "{\"error\":\"layout not found\"}");
         }
+        // start_layout: a layout of the book, or null to clear it.
+        std::optional<std::optional<std::string>> start;
+        if (auto const it = obj.find("start_layout"); it != obj.end())
+        {
+            if (it->second.is<picojson::null>())
+            {
+                start.emplace();
+            }
+            else if (!it->second.is<std::string>())
+            {
+                return jsonResponse(400, "{\"error\":\"start_layout must be a layout name or null\"}");
+            }
+            else if (!layouts_.has(it->second.get<std::string>()))
+            {
+                return jsonResponse(404, "{\"error\":\"layout not found\"}");
+            }
+            else
+            {
+                start.emplace(it->second.get<std::string>());
+            }
+        }
         std::optional<int> follow;
         if (obj.count("audio_follow") != 0)
         {
@@ -332,6 +363,10 @@ HttpResponse Api::handle(HttpRequest const& request)
         if (follow)
         {
             runtime_.setHeadAudio(index, *follow, runtime_.headAudioChannels(index));
+        }
+        if (start)
+        {
+            layouts_.setStartLayout(index, *start);
         }
         if (auto const formatText = json::fieldString(root, "format"))
         {
@@ -353,6 +388,69 @@ HttpResponse Api::handle(HttpRequest const& request)
             }
         }
         return jsonResponse(200, "{\"ok\":true}");
+    }
+    if (path == "/api/v1/images" && request.method == "GET" && images_ != nullptr)
+    {
+        std::ostringstream out;
+        out << "{\"max_bytes\":" << kImageMaxBytes << ",\"max_side\":" << kImageMaxSide << ",\"max_pixels\":" << kImageMaxPixels << ",\"images\":[";
+        bool first = true;
+        for (auto const& image : images_->list())
+        {
+            out << (first ? "" : ",") << "{\"name\":" << quote(image.name) << ",\"type\":" << quote(image.type) << ",\"bytes\":" << image.bytes << "}";
+            first = false;
+        }
+        out << "]}";
+        return jsonResponse(200, out.str());
+    }
+    if (path.rfind("/api/v1/images/", 0) == 0 && images_ != nullptr)
+    {
+        auto const name = urlDecode(path.substr(std::string("/api/v1/images/").size()));
+        if (request.method == "GET")
+        {
+            auto const file = images_->read(name);
+            if (!file)
+            {
+                return jsonResponse(404, "{\"error\":\"picture not found\"}");
+            }
+            HttpResponse response;
+            response.contentType = file->second;
+            response.body = file->first;
+            return response;
+        }
+        if (request.method == "PUT")
+        {
+            auto const type = request.headers.find("content-type");
+            auto const saved = images_->save(name, type == request.headers.end() ? std::string{} : type->second, request.body);
+            if (auto const* problem = std::get_if<std::string>(&saved))
+            {
+                return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
+            }
+            auto const& image = std::get<ImageStore::Info>(saved);
+            std::ostringstream out;
+            out << "{\"name\":" << quote(image.name) << ",\"type\":" << quote(image.type) << ",\"bytes\":" << image.bytes << ",\"width\":" << image.width
+                << ",\"height\":" << image.height << ",\"frames\":" << image.frames << "}";
+            return jsonResponse(201, out.str());
+        }
+        if (request.method == "DELETE")
+        {
+            // A picture a layout shows stays, as a layout on an output does.
+            for (auto const& layoutName : layouts_.names())
+            {
+                auto const layout = layouts_.layout(layoutName);
+                for (auto const& tile : layout ? layout->tiles : std::vector<Tile>{})
+                {
+                    if (tile.content == TileContent::Image && tile.imageUrl.empty() && tile.imageFile == name)
+                    {
+                        return jsonResponse(409, "{\"error\":" + quote("the picture is in layout " + layoutName) + "}");
+                    }
+                }
+            }
+            if (!images_->remove(name))
+            {
+                return jsonResponse(404, "{\"error\":\"picture not found\"}");
+            }
+            return jsonResponse(200, "{\"deleted\":" + quote(name) + "}");
+        }
     }
     if (path == "/api/v1/alarms" && request.method == "GET")
     {

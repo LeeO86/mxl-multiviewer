@@ -1,6 +1,7 @@
 #include "app/runtime.hpp"
 #include "config/store.hpp"
 #include "layout/book.hpp"
+#include "media/timebase.hpp"
 #include "mxlio/engine.hpp"
 #include "nmos/node.hpp"
 #include "ops/api.hpp"
@@ -17,7 +18,9 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -79,6 +82,13 @@ int main(int argc, char** argv)
         auto config = store.effectiveConfig();
         mv::setLogLevel(mv::parseLogLevel(config.logLevel));
         mv::setLogFormatJson(config.logFormat != "text");
+        // Local time of the clock tiles (§6.2): MV_TIMEZONE beats TZ. Set before any thread starts.
+        if (!config.timezone.empty())
+        {
+            setenv("TZ", config.timezone.c_str(), 1);
+        }
+        tzset();
+        mv::logInfo("time_zone", {{"zone", mv::localZoneName()}, {"utc_offset_s", std::to_string(mv::utcOffsetSeconds())}});
 #if !defined(MV_WITH_NMOS)
         if (config.nmosEnable)
         {
@@ -96,17 +106,19 @@ int main(int argc, char** argv)
         mv::RuntimeModel runtime(config);
         auto layoutsPath = config.layoutsFile.empty() ? config.stateDir + "/layouts.json" : config.layoutsFile;
         mv::LayoutBookStore layouts(config.maxInputs, config.activeLayout, layoutsPath);
-        // A head starts on its saved layout, else MV_OUT<h>_LAYOUT, else the book's active
-        // layout (SPECIFICATION.md §6.1).
+        // A head starts on a layout set in the environment, else its start layout, else its
+        // saved layout, else MV_OUT<h>_LAYOUT, else the book's active layout (SPECIFICATION.md §6.1).
         for (int head = 1; head <= config.outputs; ++head)
         {
             auto const& configured = config.heads[static_cast<std::size_t>(head - 1)];
-            auto const start = layouts.startLayout(head, configured.layout, configured.layoutSet);
+            auto const start = layouts.startLayout(head, configured.layout, configured.layoutSet, store.pinnedLayout(head).value_or(""));
             runtime.setHeadLayout(head, start);
             mv::logInfo("head_layout", {{"head", std::to_string(head)}, {"layout", start}});
         }
         mv::Metrics metrics;
-        mv::Engine engine(config, runtime, layouts, metrics);
+        // Pictures of image tiles: stored under the state folder, URLs fetched off the render path.
+        mv::ImageStore images(config.stateDir + "/images");
+        mv::Engine engine(config, runtime, layouts, metrics, images);
         mv::NmosNode node(config, [&](int input, bool video, bool enable, std::string domain, std::string flow, std::string sender) {
             engine.setRoute(input, video, enable, std::move(domain), std::move(flow), std::move(sender));
         });
@@ -114,6 +126,7 @@ int main(int argc, char** argv)
             node.updateOutputFlow(head, videoFlow, audioFlow, format);
         });
         mv::Api api(config, store, layouts, runtime, metrics);
+        api.setImages(images);
         mv::HttpServer http;
         try
         {

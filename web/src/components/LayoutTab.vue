@@ -124,6 +124,22 @@ function activate() {
   }, `${name} is on air on every output.`);
 }
 
+/** "Use as start layout" of one output: it comes back to this layout after a restart (§6.1). */
+function setStart(head, on) {
+  const name = editor.current;
+  run(
+    () => api.put(`/api/v1/outputs/${head}`, { start_layout: on ? name : null }),
+    on ? `Output ${head} starts on ${name} after a restart.` : `Output ${head} has no start layout now.`,
+  );
+}
+
+/** What output `o` starts on, when that is not this layout. */
+function startNote(o) {
+  if (o.start_layout_env) return `The environment sets ${o.start_layout_env} (MV_OUT${o.index}_LAYOUT or MV_ACTIVE_LAYOUT); it wins.`;
+  if (!o.start_layout) return "No start layout: it starts on the layout it showed last.";
+  return o.start_layout === editor.current ? "" : `Starts on ${o.start_layout}.`;
+}
+
 function confirmDelete() {
   const name = editor.current;
   run(async () => {
@@ -197,7 +213,7 @@ function submitImport() {
 
 // ---- tiles --------------------------------------------------------------------
 
-const SIZES = { input: [1 / 4, 1 / 4], clock: [1 / 6, 1 / 6], label: [1 / 3, 1 / 12], empty: [1 / 4, 1 / 4] };
+const SIZES = { input: [1 / 4, 1 / 4], clock: [1 / 6, 1 / 6], label: [1 / 3, 1 / 12], empty: [1 / 4, 1 / 4], image: [1 / 6, 1 / 6] };
 
 function snap(v) {
   return Math.round(v * grid.value) / grid.value;
@@ -410,6 +426,7 @@ onUnmounted(() => clearInterval(clockTimer));
               <button class="btn small secondary" @click="addTile('input')">+ Input</button>
               <button class="btn small secondary" @click="addTile('clock')">+ Clock</button>
               <button class="btn small secondary" @click="addTile('label')">+ Label</button>
+              <button class="btn small secondary" @click="addTile('image')">+ Image</button>
               <button class="btn small secondary" @click="addTile('empty')">+ Empty</button>
             </div>
             <span class="sep"></span>
@@ -464,6 +481,21 @@ onUnmounted(() => clearInterval(clockTimer));
           </Field>
           <Field label="Text tally" help="Default of every tile that does not set its own. To use it on one output only, give that output its own layout.">
             <label class="check"><input v-model="layout.tally_text" type="checkbox" /> Text tally as caption background</label>
+          </Field>
+          <Field label="Start layout" help="Kept in the configuration volume: after a restart the output shows this layout, whatever was on air before.">
+            <div v-for="o in live.outputs" :key="o.index">
+              <label class="check">
+                <input
+                  type="checkbox"
+                  :checked="o.start_layout === editor.current"
+                  :disabled="isNew || !!o.start_layout_env"
+                  :title="isNew ? 'Save the layout first' : ''"
+                  @change="setStart(o.index, $event.target.checked)"
+                />
+                Use as start layout{{ live.outputs.length > 1 ? ` of output ${o.index}` : "" }}
+              </label>
+              <div v-if="startNote(o)" class="note">{{ startNote(o) }}</div>
+            </div>
           </Field>
         </div>
       </div>

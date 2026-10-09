@@ -247,6 +247,38 @@ fi
 INPUTS="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/inputs")"
 python3 -c 'import json,sys; i=json.loads(sys.argv[1])["inputs"][0]; assert (i["tsl_lh"], i["tsl_rh"], i["tsl_text_tally"], i["tally"]) == (1, 2, 3, 3), i; assert i["tsl_text"] == "Kamera Zürich", i["tsl_text"]' "$INPUTS"
 
+# Image tile and audio bars beside the picture. Left tile: input 1 (Y 200) with bars right-beside,
+# so its 16:9 picture is 58 px wide (x 0..57, y 37..69) and x 58..95 is the black bar strip.
+# Right tile: an uploaded white PNG, fill (Y 940).
+python3 - "$WORK/white.png" <<'PY'
+import struct, sys, zlib
+w = h = 16
+raw = b"".join(b"\x00" + b"\xff\xff\xff" * w for _ in range(h))
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY
+curl -sf -X PUT -H 'Content-Type: image/png' --data-binary @"$WORK/white.png" "http://127.0.0.1:${WEB_PORT}/api/v1/images/white.png" >/dev/null
+curl -sf -X PUT -H 'Content-Type: application/json' \
+  -d '{"version":1,"name":"pic","tiles":[{"id":"v","input":1,"umd":false,"format_label":false,"audio_bars":true,"audio_bar_position":"right-beside","rect":{"x":0,"y":0,"w":0.5,"h":1}},{"id":"i","content":"image","image_file":"white.png","scale":"fill","rect":{"x":0.5,"y":0,"w":0.5,"h":1}}]}' \
+  "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/pic" >/dev/null
+curl -sf -X POST "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/pic/activate" >/dev/null
+picture_ok=0
+for _ in $(seq 1 25); do
+  sleep 0.2
+  PICTURE="$(sample 28 50)"; STRIP="$(sample 66 50)"; IMAGE="$(sample 144 50)"
+  if near "$PICTURE" 200 && (( STRIP < 80 )) && near "$IMAGE" 940; then
+    picture_ok=1
+    break
+  fi
+done
+echo "picture=$PICTURE strip=$STRIP image=$IMAGE"
+if [[ "$picture_ok" != 1 ]]; then
+  echo "image tile or bars beside the picture are not on the output" >&2
+  exit 1
+fi
+
 curl -sf "http://127.0.0.1:${WEB_PORT}/metrics" | grep -q "mxl_multiviewer_output_frames_total"
 NODE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["node_id"])' "$INFO")"
 EXPORT="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/config/export")"

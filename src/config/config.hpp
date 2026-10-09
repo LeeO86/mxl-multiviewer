@@ -67,6 +67,10 @@ struct Config
     double clipLinear = 0.999;
     int alarmDebounceMs = 500;
     int alarmClearMs = 500;
+    // A picture unchanged for this long is frozen (§6.3).
+    int freezeMs = 2000;
+    // IANA zone of clock tiles with clock_zone local; empty keeps TZ (§6.2).
+    std::string timezone;
     std::string backgroundFile;
     std::string configFile;
     bool nmosEnable = true;
@@ -114,4 +118,8 @@ std::string formatLabel(int width, int height, int rateNum, int rateDen, bool in
 Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::string, std::string> const& file);
 
 std::string hostnameString();
+
+// True when `name` is an IANA zone (Europe/Zurich, UTC) in the zone database (TZDIR, else
+// /usr/share/zoneinfo).
+bool knownTimeZone(std::string const& name);
 } // namespace mv

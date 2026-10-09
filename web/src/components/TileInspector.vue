@@ -1,7 +1,7 @@
 <script setup>
 // Settings of the selected tile (§6.2), grouped by what they change on the wall.
-import { computed } from "vue";
-import { inputLabel } from "../api.js";
+import { computed, onMounted, ref, watch } from "vue";
+import { api, inputLabel, live } from "../api.js";
 import Field from "./Field.vue";
 
 const props = defineProps({
@@ -16,6 +16,7 @@ const CONTENTS = [
   { id: "input", label: "Input" },
   { id: "clock", label: "Clock" },
   { id: "label", label: "Label" },
+  { id: "image", label: "Image" },
   { id: "empty", label: "Empty" },
 ];
 const RATES = [
@@ -29,6 +30,19 @@ const RATES = [
   { value: "60", label: "60 fps" },
 ];
 const MARKERS = ["16:9", "4:3", "1:1", "9:16"];
+const ALARM_SPOTS = [
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top centre" },
+  { value: "top-right", label: "Top right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom centre" },
+  { value: "bottom-right", label: "Bottom right" },
+];
+const ALIGNS = [
+  { id: "left", label: "Left" },
+  { id: "centre", label: "Centre" },
+  { id: "right", label: "Right" },
+];
 const OVERLAYS = [
   { key: "tally_border", label: "Tally border" },
   { key: "tally_lamp", label: "Tally lamps" },
@@ -102,7 +116,7 @@ const textHelp = computed(() => {
   return "Shown when the NMOS registry has no name for the routed sender.";
 });
 
-const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "zone_green", "zone_amber"];
+const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "audio_bar_scale", "zone_green", "zone_amber"];
 const inputTiles = computed(() => props.layout.tiles.filter((t) => t.content === "input"));
 
 /** Gives every input tile of the layout this tile's audio bar settings. */
@@ -111,6 +125,69 @@ function barsToAll() {
     if (t !== props.tile) for (const key of BAR_KEYS) t[key] = props.tile[key];
   }
 }
+
+// ---- image tiles: a web address or a picture stored on the multiviewer ----
+const pictures = ref([]);
+const pictureMsg = ref({ kind: "", text: "" });
+const imageMode = ref("");
+const imageSource = computed(() => imageMode.value || (props.tile.image_file && !props.tile.image_url ? "file" : "url"));
+watch(
+  () => props.tile,
+  () => (imageMode.value = ""),
+);
+
+/** Picks the web address or a stored picture; the other one is cleared (a tile shows one). */
+function useSource(kind) {
+  imageMode.value = kind;
+  if (kind === "url") props.tile.image_file = "";
+  else props.tile.image_url = "";
+}
+
+async function loadPictures() {
+  try {
+    pictures.value = (await api.get("/api/v1/images")).images || [];
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+async function upload(ev) {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  const name = file.name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 100) || "picture";
+  try {
+    const info = await api.upload(`/api/v1/images/${encodeURIComponent(name)}`, file);
+    props.tile.image_file = name;
+    props.tile.image_url = "";
+    pictureMsg.value = { kind: "ok", text: `Stored ${name}: ${info.width} × ${info.height}${info.frames > 1 ? `, ${info.frames} frames` : ""}.` };
+    await loadPictures();
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+async function removePicture() {
+  const name = props.tile.image_file;
+  try {
+    await api.del(`/api/v1/images/${encodeURIComponent(name)}`);
+    props.tile.image_file = "";
+    pictureMsg.value = { kind: "ok", text: `Deleted ${name}.` };
+    await loadPictures();
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+const kib = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+
+onMounted(() => {
+  if (props.tile.content === "image") loadPictures();
+});
+watch(
+  () => props.tile.content,
+  (content) => content === "image" && loadPictures(),
+);
 
 function toggleMarker(marker) {
   const list = props.tile.aspect_markers;
@@ -171,16 +248,31 @@ function toggleMarker(marker) {
       <div class="two">
         <Field label="Position" id="tile-umd-pos">
           <select id="tile-umd-pos" v-model="tile.umd_position" :disabled="!tile.umd">
-            <option value="bottom-inside">Bottom, over picture</option>
-            <option value="bottom-outside">Below the tile</option>
-            <option value="top-inside">Top, over picture</option>
-            <option value="top-outside">Above the tile</option>
+            <optgroup label="In the tile, over the picture">
+              <option value="bottom-inside">Bottom, over the picture</option>
+              <option value="top-inside">Top, over the picture</option>
+            </optgroup>
+            <optgroup label="Outside the tile">
+              <option value="bottom-outside">Below the tile</option>
+              <option value="top-outside">Above the tile</option>
+            </optgroup>
           </select>
         </Field>
         <Field label="Font size (px at 1080p)" id="tile-umd-font">
           <input id="tile-umd-font" v-model.number="tile.umd_font" type="number" min="8" max="200" :disabled="!tile.umd" />
         </Field>
       </div>
+      <p class="note">
+        Over the picture: the bar covers the bottom or top of the picture, which keeps its full size. Below or above the tile: the bar is drawn on the
+        area next to the tile, so keep that area free in the layout.
+      </p>
+      <Field label="Text alignment" help="Text longer than the bar is cut and ends with …">
+        <span class="seg" role="group" aria-label="Caption text alignment">
+          <button v-for="a in ALIGNS" :key="a.id" type="button" :aria-pressed="(tile.umd_align || 'left') === a.id" :disabled="!tile.umd" @click="tile.umd_align = a.id">
+            {{ a.label }}
+          </button>
+        </span>
+      </Field>
       <Field label="Background colour and opacity">
         <div class="colorrow">
           <input v-model="umdColor" type="color" aria-label="Caption background colour" :disabled="!tile.umd" />
@@ -201,13 +293,20 @@ function toggleMarker(marker) {
         </Field>
         <Field label="Position" id="tile-bars-pos">
           <select id="tile-bars-pos" v-model="tile.audio_bar_position" :disabled="!tile.audio_bars">
-            <option value="right">Right edge</option>
-            <option value="left">Left edge</option>
-            <option value="overlay">Centre, over picture</option>
+            <optgroup label="Over the picture">
+              <option value="right">Right edge</option>
+              <option value="left">Left edge</option>
+              <option value="overlay">Centre</option>
+            </optgroup>
+            <optgroup label="Beside the picture (it gets narrower)">
+              <option value="right-beside">Right of the picture</option>
+              <option value="left-beside">Left of the picture</option>
+            </optgroup>
           </select>
         </Field>
-        <Field label="RMS">
-          <label class="check"><input v-model="tile.audio_bar_rms" type="checkbox" :disabled="!tile.audio_bars" /> Show RMS tick</label>
+        <Field label="Show">
+          <label class="check"><input v-model="tile.audio_bar_rms" type="checkbox" :disabled="!tile.audio_bars" /> RMS tick</label>
+          <label class="check"><input v-model="tile.audio_bar_scale" type="checkbox" :disabled="!tile.audio_bars" /> Level scale (0 −6 −12 …)</label>
         </Field>
         <Field label="Amber from (dBFS)" id="tile-zone-a">
           <input id="tile-zone-a" v-model.number="tile.zone_green" type="number" min="-60" max="0" :disabled="!tile.audio_bars" />
@@ -216,10 +315,30 @@ function toggleMarker(marker) {
           <input id="tile-zone-r" v-model.number="tile.zone_amber" type="number" min="-60" max="0" :disabled="!tile.audio_bars" />
         </Field>
       </div>
-      <p class="note">Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this input.</p>
+      <p class="note">
+        Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this
+        input. Beside the picture, the bars get a strip of the tile and the picture is scaled into the rest.
+      </p>
       <div class="actions" style="margin-top: 0.4rem">
         <button class="btn small secondary" :disabled="inputTiles.length < 2" @click="barsToAll">Apply to all {{ inputTiles.length }} input tiles</button>
       </div>
+    </div>
+
+    <div class="panel">
+      <h3>Alarms</h3>
+      <div class="checks">
+        <label class="check"><input v-model="tile.alarm_border" type="checkbox" /> Alarm border</label>
+        <label class="check"><input v-model="tile.alarm_labels" type="checkbox" /> Alarm labels</label>
+      </div>
+      <Field label="Labels at" id="tile-alarm-pos">
+        <select id="tile-alarm-pos" v-model="tile.alarm_label_position" :disabled="!tile.alarm_labels">
+          <option v-for="p in ALARM_SPOTS" :key="p.value" :value="p.value">{{ p.label }}</option>
+        </select>
+      </Field>
+      <p class="note">
+        One label per active alarm (no signal, black, freeze, clip, silence, format), stacked from that edge into the tile. The border is red or amber,
+        inside the tally border. Turn both off to show no alarms on this tile; the Alarms tab still lists them.
+      </p>
     </div>
 
     <div class="panel">
@@ -270,7 +389,10 @@ function toggleMarker(marker) {
         </select>
       </Field>
     </div>
-    <p class="note">Local time is the time zone of the multiviewer host (TZ). Timecode is HH:MM:SS:FF counted from TAI at the chosen rate.</p>
+    <p class="note">
+      Local time is the multiviewer's time zone ({{ live.info?.timezone || "unknown" }}: MV_TIMEZONE, else TZ). Timecode is HH:MM:SS:FF counted from TAI at the
+      chosen rate.
+    </p>
   </div>
 
   <div v-else-if="tile.content === 'label'" class="panel">
@@ -279,6 +401,43 @@ function toggleMarker(marker) {
       <input id="tile-label" v-model="tile.label_text" maxlength="200" />
     </Field>
     <p class="note">The text is centred and sized to fit the tile.</p>
+  </div>
+
+  <div v-else-if="tile.content === 'image'" class="panel">
+    <h3>Image</h3>
+    <Field label="Picture from">
+      <span class="seg" role="group" aria-label="Picture source">
+        <button type="button" :aria-pressed="imageSource === 'url'" @click="useSource('url')">Web address</button>
+        <button type="button" :aria-pressed="imageSource === 'file'" @click="useSource('file')">Stored picture</button>
+      </span>
+    </Field>
+    <Field v-if="imageSource === 'url'" label="Address (http or https)" id="tile-image-url">
+      <input id="tile-image-url" v-model.trim="tile.image_url" type="url" maxlength="2048" placeholder="https://example.org/logo.png" />
+    </Field>
+    <template v-else>
+      <Field label="Stored picture" id="tile-image-file">
+        <select id="tile-image-file" v-model="tile.image_file">
+          <option value="">(none)</option>
+          <option v-for="p in pictures" :key="p.name" :value="p.name">{{ p.name }} · {{ kib(p.bytes) }}</option>
+        </select>
+      </Field>
+      <div class="row tight">
+        <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Upload a picture" @change="upload" />
+        <button class="btn small danger" :disabled="!tile.image_file" @click="removePicture">Delete picture</button>
+      </div>
+    </template>
+    <Field label="Scale" id="tile-image-scale">
+      <select id="tile-image-scale" v-model="tile.scale">
+        <option value="fit">Fit (whole picture)</option>
+        <option value="fill">Fill (crop to tile)</option>
+      </select>
+    </Field>
+    <div v-if="pictureMsg.text" class="msg" :class="pictureMsg.kind">{{ pictureMsg.text }}</div>
+    <p class="note">
+      PNG, JPEG, GIF (animated GIFs play), or WebP; at most 8 MiB and 4096 × 4096 pixels. The multiviewer fetches a web address itself, through
+      its proxy, within 10 s; while it loads the tile is empty, and when it fails the tile shows NO IMAGE with the reason (retried after 30 s).
+      Uploaded pictures are kept in the configuration volume. Image tiles are drawn over the video tiles.
+    </p>
   </div>
 
   <div v-else class="panel">

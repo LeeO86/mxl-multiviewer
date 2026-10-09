@@ -44,6 +44,46 @@ PixelRect rectToPixels(NormRect const& rect, int canvasWidth, int canvasHeight)
     return out;
 }
 
+BarMetrics barMetrics(int tileWidth, int channels, int canvasHeight)
+{
+    double const s = std::max(0.5, canvasHeight / 1080.0);
+    auto const scaled = [s](double value) { return static_cast<int>(std::lround(value * s)); };
+    channels = std::clamp(channels, 1, 16);
+    BarMetrics m;
+    m.margin = std::max(3, scaled(6));
+    m.gap = std::max(1, scaled(2));
+    m.barW = std::clamp(tileWidth / (channels * 4), std::max(3, scaled(3)), std::max(4, scaled(14)));
+    m.barsW = channels * m.barW + (channels - 1) * m.gap;
+    m.tickW = std::max(2, scaled(4));
+    m.labelReserve = scaled(28);
+    return m;
+}
+
+int barsStripWidth(int tileWidth, int channels, bool scale, int canvasHeight)
+{
+    auto const m = barMetrics(tileWidth, channels, canvasHeight);
+    int const width = 2 * m.margin + m.barsW + m.gap + (scale ? m.tickW + m.labelReserve : 0);
+    int const even = (width + 1) & ~1;
+    return even * 2 <= tileWidth ? even : 0;
+}
+
+PixelRect pictureRect(PixelRect const& tile, Tile const& options, int canvasHeight)
+{
+    bool const left = options.audioBarPosition == BarsPosition::LeftBeside;
+    if (options.content != TileContent::Input || !options.audioBars || (!left && options.audioBarPosition != BarsPosition::RightBeside))
+    {
+        return tile;
+    }
+    int const strip = barsStripWidth(tile.w, options.audioBarChannels, options.audioBarScale, canvasHeight);
+    PixelRect picture = tile;
+    picture.w -= strip;
+    if (left)
+    {
+        picture.x += strip;
+    }
+    return picture;
+}
+
 Placement placeTile(PixelRect const& tile, int srcWidth, int srcHeight, ScaleMode mode)
 {
     Placement place;

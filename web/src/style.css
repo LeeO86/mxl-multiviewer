@@ -144,6 +144,8 @@ a { color: var(--accent); }
 .tile.clock { background: #172231; }
 .tile.label { background: #1a1f26; }
 .tile.empty { background: rgba(0, 0, 0, .25); border-style: dashed; }
+.tile.image { background: #141a22; }
+.tile .picture { position: absolute; inset: 0; width: 100%; height: 100%; }
 .tile.selected { border: 2px solid var(--accent); z-index: 1000 !important; box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); }
 .tile .tag { position: absolute; top: .25em; left: .35em; font-size: .85em; font-weight: 700; background: rgba(0, 0, 0, .45); padding: 0 .35em; border-radius: 3px; }
 .tile .centre { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 .6em; gap: .15em; pointer-events: none; }
@@ -159,6 +161,9 @@ a { color: var(--accent); }
 .tile .bars.right { right: .4em; }
 .tile .bars.left { left: .4em; }
 .tile .bars.overlay { left: 50%; transform: translateX(-50%); }
+.tile .bars.right-beside, .tile .bars.left-beside { top: 0; bottom: 0; padding: 4% .4em 14%; background: #000; }
+.tile .bars.right-beside { right: 0; }
+.tile .bars.left-beside { left: 0; }
 .tile .bars.off { opacity: .35; }
 .tile .bars span { width: .45em; max-width: 8px; min-width: 3px; background: rgba(0, 0, 0, .5); position: relative; }
 .tile .bars span i { position: absolute; left: 0; right: 0; bottom: 0; }

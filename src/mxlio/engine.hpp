@@ -7,6 +7,7 @@
 #include "app/runtime.hpp"
 #include "config/config.hpp"
 #include "layout/book.hpp"
+#include "media/imagestore.hpp"
 #include "ops/metrics.hpp"
 
 namespace mv
@@ -25,7 +26,7 @@ struct RouteState
 class Engine
 {
 public:
-    Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics);
+    Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics, ImageStore& images);
     ~Engine();
 
     void start();

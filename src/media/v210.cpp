@@ -1,6 +1,7 @@
 #include "media/frame.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 namespace mv
@@ -20,6 +21,74 @@ void writeGroup(std::uint32_t* dst, std::uint16_t cb0, std::uint16_t y0, std::ui
     dst[2] = (cr1 & 0x3ffu) | (static_cast<std::uint32_t>(y3 & 0x3ffu) << 10) | (static_cast<std::uint32_t>(cb2 & 0x3ffu) << 20);
     dst[3] = (y4 & 0x3ffu) | (static_cast<std::uint32_t>(cr2 & 0x3ffu) << 10) | (static_cast<std::uint32_t>(y5 & 0x3ffu) << 20);
 }
+
+// Freeze hash (§6.3): the luma of every second line, summed per block of a coarse grid,
+// then FNV-1a over the block sums. Small motion (a clock, a ticker) changes the sum of its
+// block; the single pixels sampled before missed it. Each 6-pixel group is weighted by its
+// place in the block, so an object that moves inside a block on a flat background changes
+// the sum too. A group counts for the block of its first pixel, so the packed and the
+// unpacked paths give the same hash.
+constexpr int kGridX = 32;
+constexpr int kGridY = 18;
+constexpr int kHashRowStep = 2;
+
+class GridHash
+{
+public:
+    GridHash(int width, int height)
+        : width_(std::max(1, width))
+        , height_(std::max(1, height))
+    {
+    }
+
+    static bool wants(int row)
+    {
+        return row % kHashRowStep == 0;
+    }
+
+    // `sum` is the luma of 6-pixel group `group` of line `row`.
+    void add(int row, int group, std::uint32_t sum)
+    {
+        int const bx = std::min(kGridX - 1, group * 6 * kGridX / width_);
+        int const by = std::min(kGridY - 1, row * kGridY / height_);
+        auto const weight = 1u + static_cast<std::uint32_t>(group & 7) + 8u * static_cast<std::uint32_t>((row / kHashRowStep) & 7);
+        sums_[static_cast<std::size_t>(by * kGridX + bx)] += sum * weight;
+    }
+
+    // One packed line: every group's luma, the padding after `width` left out.
+    void addPackedLine(std::uint8_t const* line, int row)
+    {
+        for (int group = 0; group * 6 < width_; ++group)
+        {
+            std::uint32_t w[4];
+            std::memcpy(w, line + static_cast<std::size_t>(group) * 16u, sizeof(w));
+            std::uint16_t const luma[6] = {sample10(w[0], 10), sample10(w[1], 0), sample10(w[1], 20), sample10(w[2], 10), sample10(w[3], 0), sample10(w[3], 20)};
+            int const count = std::min(6, width_ - group * 6);
+            std::uint32_t sum = 0;
+            for (int i = 0; i < count; ++i)
+            {
+                sum += luma[i];
+            }
+            add(row, group, sum);
+        }
+    }
+
+    [[nodiscard]] std::uint64_t hash() const
+    {
+        std::uint64_t hash = 14695981039346656037ull;
+        for (auto const sum : sums_)
+        {
+            hash ^= sum;
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    }
+
+private:
+    int width_;
+    int height_;
+    std::array<std::uint32_t, kGridX * kGridY> sums_{};
+};
 } // namespace
 
 void Frame422::allocate(int w, int h, bool alpha)
@@ -227,14 +296,25 @@ void packAlpha10(Frame422 const& src, std::uint8_t* dst, int dstRowBytes)
 
 std::uint64_t lumaHash(Frame422 const& frame)
 {
-    std::uint64_t hash = 14695981039346656037ull;
-    int const step = std::max(1, (frame.width * frame.height) / 4096);
-    for (int i = 0; i < frame.width * frame.height; i += step)
+    GridHash grid(frame.width, frame.height);
+    for (int row = 0; row < frame.height; ++row)
     {
-        hash ^= frame.y[static_cast<std::size_t>(i)];
-        hash *= 1099511628211ull;
+        if (!GridHash::wants(row))
+        {
+            continue;
+        }
+        auto const* y = frame.y.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(frame.width);
+        for (int group = 0; group * 6 < frame.width; ++group)
+        {
+            std::uint32_t sum = 0;
+            for (int x = group * 6; x < std::min(frame.width, group * 6 + 6); ++x)
+            {
+                sum += y[x];
+            }
+            grid.add(row, group, sum);
+        }
     }
-    return hash;
+    return grid.hash();
 }
 
 std::uint16_t v210Luma(std::uint8_t const* src, int rowBytes, int width, int index)
@@ -285,11 +365,8 @@ void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int 
 {
     scan.sum = 0;
     scan.count = 0;
-    scan.hash = 14695981039346656037ull;
-    long long const total = static_cast<long long>(width) * height;
-    long long const hashStep = std::max(1LL, total / 4096);
+    GridHash grid(width, height);
     long long nextSum = 0;
-    long long nextHash = 0;
     auto const luma = [](std::uint8_t const* line, int x) {
         static constexpr int kWord[6] = {0, 1, 1, 2, 3, 3};
         static constexpr int kShift[6] = {10, 0, 20, 10, 0, 20};
@@ -308,12 +385,12 @@ void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int 
             scan.sum += luma(line, static_cast<int>(nextSum - first));
             ++scan.count;
         }
-        for (; nextHash < end; nextHash += hashStep)
+        if (GridHash::wants(row))
         {
-            scan.hash ^= luma(line, static_cast<int>(nextHash - first));
-            scan.hash *= 1099511628211ull;
+            grid.addPackedLine(line, row);
         }
     }
+    scan.hash = grid.hash();
 }
 
 std::uint64_t v210LumaSum(std::uint8_t const* src, int rowBytes, int width, int height, int step, int* count)
@@ -347,13 +424,11 @@ std::uint64_t v210LumaSum(std::uint8_t const* src, int rowBytes, int width, int 
 
 std::uint64_t lumaHash(std::uint8_t const* v210, int rowBytes, int width, int height)
 {
-    std::uint64_t hash = 14695981039346656037ull;
-    int const step = std::max(1, (width * height) / 4096);
-    for (int i = 0; i < width * height; i += step)
+    GridHash grid(width, height);
+    for (int row = 0; row < height; row += kHashRowStep)
     {
-        hash ^= v210Luma(v210, rowBytes, width, i);
-        hash *= 1099511628211ull;
+        grid.addPackedLine(v210 + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes), row);
     }
-    return hash;
+    return grid.hash();
 }
 } // namespace mv

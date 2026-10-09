@@ -59,7 +59,7 @@ onUnmounted(() => clearInterval(timer));
       <dt>Black</dt>
       <dd>The picture is black (average luma at or below MV_BLACK_Y).</dd>
       <dt>Freeze</dt>
-      <dd>The picture does not change from frame to frame.</dd>
+      <dd>The picture has not changed for MV_FREEZE_MS (default 2 s). Repeated frames (25p in 50p) do not count as a freeze.</dd>
       <dt>Silence</dt>
       <dd>Every audio channel is below MV_SILENCE_DBFS, or routed audio does not arrive.</dd>
       <dt>Clip</dt>
@@ -68,8 +68,8 @@ onUnmounted(() => clearInterval(timer));
       <dd>The routed video has a raster, rate or format the receivers do not support.</dd>
     </dl>
     <p class="note">
-      Critical alarms draw a red border on the tile, warnings an amber one. An alarm is raised after MV_ALARM_DEBOUNCE_MS and cleared after
-      MV_ALARM_CLEAR_MS.
+      Critical alarms draw a red border on the tile, warnings an amber one. An alarm is raised after MV_ALARM_DEBOUNCE_MS (freeze after
+      MV_FREEZE_MS) and cleared after MV_ALARM_CLEAR_MS.
     </p>
   </div>
 </template>

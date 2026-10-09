@@ -250,6 +250,7 @@ struct Engine::Impl
     RuntimeModel& runtime;
     LayoutBookStore& layouts;
     Metrics& metrics;
+    ImageStore& images;
     std::atomic<bool> run{false};
     std::string domainId;
     std::mutex routeMu;
@@ -292,11 +293,12 @@ struct Engine::Impl
     std::vector<std::shared_ptr<OverlayFrame const>> overlays;
     std::mutex overlayMu;
 
-    explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn)
+    explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn, ImageStore& imagesIn)
         : config(std::move(cfg))
         , runtime(runtimeIn)
         , layouts(layoutsIn)
         , metrics(metricsIn)
+        , images(imagesIn)
     {
         videoRoutes.resize(static_cast<std::size_t>(config.maxInputs));
         audioRoutes.resize(static_cast<std::size_t>(config.maxInputs));
@@ -360,11 +362,16 @@ struct Engine::Impl
         return senderLabels[static_cast<std::size_t>(input - 1)].label;
     }
 
-    // Debounces one alarm of an input (§6.3) and keeps the wall-clock time it became active.
-    void bumpAlarm(int input, char const* name, Debounce& debounce, bool raw, bool& flag, std::int64_t& since)
+    static std::int64_t steadyMs()
     {
-        auto const nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (debounce.update(raw, nowMs, config.alarmDebounceMs, config.alarmClearMs))
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Debounces one alarm of an input (§6.3) and keeps the wall-clock time it became active.
+    // Freeze passes `assertMs` 0: MV_FREEZE_MS is its debounce.
+    void bumpAlarm(int input, char const* name, Debounce& debounce, bool raw, bool& flag, std::int64_t& since, int assertMs)
+    {
+        if (debounce.update(raw, steadyMs(), assertMs, config.alarmClearMs))
         {
             if (debounce.active)
             {
@@ -437,7 +444,7 @@ struct Engine::Impl
         std::string prevState;
         std::uint64_t const holdNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull;
         auto const bump = [&](std::shared_ptr<Snap> const& snap, char const* name, AlarmIndex index, Debounce& debounce, bool raw, bool& flag) {
-            bumpAlarm(input, name, debounce, raw, flag, snap->alarmSince[index]);
+            bumpAlarm(input, name, debounce, raw, flag, snap->alarmSince[index], index == kAlarmFreeze ? 0 : config.alarmDebounceMs);
         };
         // Without a new grain only the no-signal alarm can rise; the picture alarms clear.
         auto const idleAlarms = [&](std::shared_ptr<Snap> const& snap, bool noSignal) {
@@ -530,7 +537,7 @@ struct Engine::Impl
                 next->grains.clear();
                 next->label.clear();
                 grainsKey.clear();
-                alarms.haveHash = false;
+                alarms.picture.reset();
                 if (video != nullptr)
                 {
                     releaseVideo();
@@ -562,7 +569,7 @@ struct Engine::Impl
                 // Another flow is routed now: never show the previous source under it.
                 next->grains.clear();
                 next->label.clear();
-                alarms.haveHash = false;
+                alarms.picture.reset();
             }
             if (instance == nullptr || openKey.substr(0, domain->path.size()) != domain->path)
             {
@@ -769,9 +776,7 @@ struct Engine::Impl
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
             auto const hash = scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
-            bool const freeze = alarms.haveHash && hash == alarms.lastHash;
-            alarms.lastHash = hash;
-            alarms.haveHash = true;
+            bool const freeze = alarms.picture.update(hash, steadyMs(), config.freezeMs);
             bool const formatBad = width > 3840 || height > 2160 || !allowedRate(meta.rateNum, meta.rateDen) ||
                                    (meta.mediaType != "video/v210" && meta.mediaType != "video/v210a" && !meta.mediaType.empty());
             bump(next, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, next->alarmNoSignal);
@@ -854,8 +859,8 @@ struct Engine::Impl
             lastEnd = 0;
         };
         auto const publishState = [&](std::shared_ptr<AudioSnap> const& sound, bool silence, bool clip) {
-            bumpAlarm(input, AlarmNames::silence, silenceAlarm, silence, sound->alarmSilence, sound->alarmSince[kAlarmSilence]);
-            bumpAlarm(input, AlarmNames::clip, clipAlarm, clip, sound->alarmClip, sound->alarmSince[kAlarmClip]);
+            bumpAlarm(input, AlarmNames::silence, silenceAlarm, silence, sound->alarmSilence, sound->alarmSince[kAlarmSilence], config.alarmDebounceMs);
+            bumpAlarm(input, AlarmNames::clip, clipAlarm, clip, sound->alarmClip, sound->alarmSince[kAlarmClip], config.alarmDebounceMs);
             auto const route = audioRoute(input);
             InputView view;
             view.index = input;
@@ -1170,6 +1175,7 @@ struct Engine::Impl
                 item.umdText = !registered.empty() ? registered : !tile.umdText.empty() ? tile.umdText : !current->label.empty() ? current->label : inputName;
             }
             item.umdPosition = tile.umdPosition;
+            item.umdAlign = tile.umdAlign;
             item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
             item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
             item.tally = viewIn.tally;
@@ -1183,6 +1189,7 @@ struct Engine::Impl
             // Bars only on input tiles; the flag is ignored on clock, label, and empty tiles.
             item.bars = tile.audioBars && isInput;
             item.showRms = tile.audioBarRms;
+            item.barScale = tile.audioBarScale;
             item.barChannels = tile.audioBarChannels;
             item.barsPosition = tile.audioBarPosition;
             item.zoneGreen = tile.zoneGreen;
@@ -1234,40 +1241,9 @@ struct Engine::Impl
                     item.formatText.clear();
                     item.latencyText.clear();
                 }
-                // §6.3: red for no signal, black, freeze, and clip; amber for silence and format.
                 bool const clip = sound != nullptr && sound->alarmClip;
                 bool const silence = sound != nullptr && sound->alarmSilence;
-                bool const red = current->alarmNoSignal || current->alarmBlack || current->alarmFreeze || clip;
-                bool const amber = silence || current->alarmFormat;
-                item.alarm = red ? AlarmLevel::Red : amber ? AlarmLevel::Amber : AlarmLevel::None;
-                // A slate already says what is wrong; the badge names the first other alarm.
-                if (item.slate.empty())
-                {
-                    if (current->alarmNoSignal)
-                    {
-                        item.badge = "NO SIGNAL";
-                    }
-                    else if (current->alarmBlack)
-                    {
-                        item.badge = "BLACK";
-                    }
-                    else if (current->alarmFreeze)
-                    {
-                        item.badge = "FREEZE";
-                    }
-                    else if (clip)
-                    {
-                        item.badge = "CLIP";
-                    }
-                    else if (silence)
-                    {
-                        item.badge = "SILENCE";
-                    }
-                    else if (current->alarmFormat)
-                    {
-                        item.badge = "FORMAT";
-                    }
-                }
+                showAlarms(item, tile, ActiveAlarms{current->alarmNoSignal, current->alarmBlack, current->alarmFreeze, clip, silence, current->alarmFormat});
             }
             item.safeArea = tile.safeArea;
             item.centre = tile.centre;
@@ -1275,6 +1251,21 @@ struct Engine::Impl
             if (tile.content == TileContent::Label)
             {
                 item.labelText = tile.labelText;
+            }
+            if (tile.content == TileContent::Image)
+            {
+                // Fetched, decoded, and scaled on the image store's thread; until then the tile is empty.
+                auto const picture = images.get(tile.imageUrl, tile.imageFile, item.rect.w, item.rect.h, tile.scale);
+                item.image = picture.image;
+                if (picture.image != nullptr)
+                {
+                    item.imageFrame = imageFrameAt(picture.image->delaysMs, steadyMs());
+                }
+                else if (!picture.error.empty())
+                {
+                    item.slate = "NO IMAGE";
+                    item.slateLabel = picture.error;
+                }
             }
             if (tile.content == TileContent::Clock)
             {
@@ -1533,7 +1524,8 @@ struct Engine::Impl
                 auto const px = rectToPixels(tile.rect, format.width, format.height);
                 Source source;
                 source.rect = px;
-                source.place = best != nullptr ? placeTile(px, best->width, best->height, tile.scale) : Placement{};
+                // Audio bars beside the picture take a strip of the tile (§6.2); both backends use this placement.
+                source.place = best != nullptr ? placeTile(pictureRect(px, tile, format.height), best->width, best->height, tile.scale) : Placement{};
                 if (best == nullptr)
                 {
                     source.place.dst = px;
@@ -2105,8 +2097,8 @@ struct Engine::Impl
     }
 };
 
-Engine::Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics)
-    : impl_(new Impl(std::move(config), runtime, layouts, metrics))
+Engine::Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics, ImageStore& images)
+    : impl_(new Impl(std::move(config), runtime, layouts, metrics, images))
 {
 }
 

@@ -354,6 +354,113 @@ TEST_CASE("alarm debounce")
     CHECK_FALSE(alarm.active);
 }
 
+TEST_CASE("freeze is MV_FREEZE_MS without a picture change; repeated grains are no freeze")
+{
+    int const freezeMs = 2000;
+    // The engine: raw freeze from the detector, raised at once, cleared after MV_ALARM_CLEAR_MS.
+    auto const step = [&](FreezeDetector& detector, Debounce& alarm, std::uint64_t hash, std::int64_t nowMs) {
+        alarm.update(detector.update(hash, nowMs, freezeMs), nowMs, 0, 500);
+        return alarm.active;
+    };
+    // 25p in 50p: every grain comes twice, so the hash changes every other grain.
+    FreezeDetector cadence;
+    Debounce cadenceAlarm;
+    bool raised = false;
+    for (int grain = 0; grain < 500; ++grain)
+    {
+        raised = step(cadence, cadenceAlarm, static_cast<std::uint64_t>(grain / 2), grain * 20) || raised;
+    }
+    CHECK_FALSE(raised);
+
+    // A still picture is frozen once MV_FREEZE_MS has passed since the last change.
+    FreezeDetector still;
+    Debounce stillAlarm;
+    CHECK_FALSE(step(still, stillAlarm, 7, 0));
+    CHECK_FALSE(step(still, stillAlarm, 7, 1980));
+    CHECK(step(still, stillAlarm, 7, 2000));
+    CHECK(step(still, stillAlarm, 7, 5000));
+    // It clears when the picture moves again, also with repeated grains: the raw value no
+    // longer flips every grain, so MV_ALARM_CLEAR_MS of motion is enough.
+    for (int grain = 0; grain < 25; ++grain)
+    {
+        step(still, stillAlarm, 100 + static_cast<std::uint64_t>(grain / 2), 5020 + grain * 20);
+    }
+    CHECK(stillAlarm.active);
+    for (int grain = 25; grain < 30; ++grain)
+    {
+        step(still, stillAlarm, 100 + static_cast<std::uint64_t>(grain / 2), 5020 + grain * 20);
+    }
+    CHECK_FALSE(stillAlarm.active);
+    // A new route starts over.
+    still.reset();
+    CHECK_FALSE(still.update(114, 9000, freezeMs));
+}
+
+TEST_CASE("the freeze hash sees small motion, the same in every scan path")
+{
+    // A still 1080p picture: a gradient, or flat grey.
+    Frame422 gradient;
+    gradient.allocate(1920, 1080, false);
+    for (int y = 0; y < gradient.height; ++y)
+    {
+        for (int x = 0; x < gradient.width; ++x)
+        {
+            gradient.y[static_cast<std::size_t>(y * gradient.width + x)] = static_cast<std::uint16_t>(64 + (x + y) % 800);
+        }
+    }
+    Frame422 flat;
+    flat.allocate(1920, 1080, false);
+    flat.fill(300, 512, 512);
+    auto const square = [](Frame422 frame, int x0, int y0, int size) {
+        for (int y = y0; y < y0 + size; ++y)
+        {
+            for (int x = x0; x < x0 + size; ++x)
+            {
+                frame.y[static_cast<std::size_t>(y * frame.width + x)] = 900;
+            }
+        }
+        return frame;
+    };
+    // Unpacked (alpha inputs), packed (CUDA), and the CPU backend's copy give the same hash.
+    auto const hash = [](Frame422 const& frame) {
+        int const rowBytes = static_cast<int>(v210RowBytes(frame.width));
+        std::vector<std::uint8_t> packed(static_cast<std::size_t>(rowBytes) * frame.height);
+        packV210(frame, packed.data(), rowBytes);
+        std::vector<std::uint8_t> copy(packed.size());
+        V210Scan scan;
+        copyV210Scan(packed.data(), copy.data(), rowBytes, frame.width, frame.height, 32, scan);
+        auto const unpacked = lumaHash(frame);
+        CHECK(lumaHash(packed.data(), rowBytes, frame.width, frame.height) == unpacked);
+        CHECK(scan.hash == unpacked);
+        return unpacked;
+    };
+    // A clock digit: one 6×8 area changes. The 4096 single samples of 1.3.0 missed it.
+    auto const still = hash(gradient);
+    CHECK(hash(square(gradient, 1203, 541, 8)) != still);
+    CHECK(hash(square(gradient, 1203, 541, 8)) == hash(square(gradient, 1203, 541, 8)));
+    // A small square that moves 2 px per frame, on the gradient and on flat grey (inside one
+    // grid block its plain luma sum would not change): never frozen.
+    for (auto const* background : {&gradient, &flat})
+    {
+        FreezeDetector detector;
+        std::uint64_t previous = 0;
+        bool frozen = false;
+        for (int frame = 0; frame < 150; ++frame)
+        {
+            auto const now = lumaHash(square(*background, 302 + 2 * frame, 700, 6));
+            CHECK(now != previous);
+            previous = now;
+            frozen = detector.update(now, frame * 20, 2000) || frozen;
+        }
+        CHECK_FALSE(frozen);
+    }
+    // Odd sizes keep the packed padding out of the hash.
+    Frame422 odd;
+    odd.allocate(100, 37, false);
+    odd.fill(500, 512, 512);
+    hash(odd);
+}
+
 TEST_CASE("overlay draws umd pixels")
 {
     Overlay overlay;
@@ -365,7 +472,7 @@ TEST_CASE("overlay draws umd pixels")
     tile.umdFont = 16;
     tile.tally = 1;
     tile.tallyBorder = true;
-    tile.badge = "NOSIG";
+    tile.badges = {{"NOSIG", AlarmLevel::Red}};
     renderOverlay(overlay, {tile});
     int ink = 0;
     for (std::size_t i = 3; i < overlay.rgba.size(); i += 4)
@@ -617,6 +724,35 @@ TEST_CASE("audio bars draw zones, PPM scale, peak hold, and clip")
     CHECK(countPixels(unrouted, 870, 10, 917, 540, [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; }) == 0);
     CHECK(pixel(unrouted, 930, 450)[3] < 200);
     CHECK(pixel(unrouted, 939, 274)[0] > 150);
+
+    // audio_bar_scale off: the same bars without ticks and labels; the panel ends 2 px left of them.
+    Overlay plain;
+    plain.resize(1920, 1080);
+    tile.audioRouted = true;
+    tile.barScale = false;
+    renderOverlay(plain, {tile});
+    CHECK(red(pixel(plain, 930, 80)));
+    CHECK(green(pixel(plain, 946, 400)));
+    CHECK(countPixels(plain, 860, 0, 922, 540, inked) == 0);
+    CHECK(countPixels(plain, 922, 10, 924, 540, inked) > 500);
+
+    // Beside the picture: the same bars, the scale inside the 76 px strip the picture leaves.
+    auto const label = [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; };
+    tile.barScale = true;
+    tile.barsPosition = BarsPosition::RightBeside;
+    Overlay right;
+    right.resize(1920, 1080);
+    renderOverlay(right, {tile});
+    CHECK(red(pixel(right, 930, 80)));
+    CHECK(countPixels(right, 884, 10, 917, 540, label) > 40);
+    CHECK(countPixels(right, 0, 0, 884, 540, inked) == 0);
+    tile.barsPosition = BarsPosition::LeftBeside;
+    Overlay left;
+    left.resize(1920, 1080);
+    renderOverlay(left, {tile});
+    CHECK(red(pixel(left, 12, 80)));
+    CHECK(countPixels(left, 42, 10, 76, 540, label) > 40);
+    CHECK(countPixels(left, 76, 0, 960, 540, inked) == 0);
 }
 
 TEST_CASE("digital clock and label text scale with the tile")
@@ -661,16 +797,18 @@ TEST_CASE("slate shows the state and the input in the middle of the tile")
 
 TEST_CASE("alarm border and badge colours follow the alarm level")
 {
-    // 540 canvas: tally border 4 px, alarm border 2 px inside it.
+    // 540 canvas: tally border 4 px, alarm border 2 px inside it. Default tile options: as before 1.3.0.
     Overlay overlay;
     overlay.resize(960, 540);
     OverlayTile silence;
     silence.rect = {0, 0, 480, 270};
-    silence.alarm = AlarmLevel::Amber;
+    showAlarms(silence, Tile{}, ActiveAlarms{.silence = true});
+    CHECK(silence.alarm == AlarmLevel::Amber);
     OverlayTile black;
     black.rect = {480, 0, 480, 270};
-    black.alarm = AlarmLevel::Red;
-    black.badge = "BLACK";
+    showAlarms(black, Tile{}, ActiveAlarms{.black = true});
+    REQUIRE(black.badges.size() == 1);
+    CHECK(black.badges[0].text == "BLACK");
     renderOverlay(overlay, {silence, black});
     auto const* amberEdge = pixel(overlay, 5, 135);
     CHECK(amberEdge[3] > 200);
@@ -685,6 +823,112 @@ TEST_CASE("alarm border and badge colours follow the alarm level")
     // Nothing in the middle of either tile.
     CHECK(countPixels(overlay, 100, 100, 380, 200, inked) == 0);
     CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
+}
+
+TEST_CASE("alarm display: labels stack at their position, border and labels can be off")
+{
+    // 540 canvas, 480 × 270 tile: border 4 px, labels 14 px high with 2 px between them.
+    auto const redLabel = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 180 && px[1] < 60; };
+    auto const amberLabel = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 220 && px[1] > 150 && px[2] < 60; };
+    ActiveAlarms const alarms{.black = true, .silence = true};
+    auto const draw = [&](Tile const& options, std::string const& format = {}) {
+        OverlayTile item;
+        item.rect = {0, 0, 480, 270};
+        item.formatText = format;
+        showAlarms(item, options, alarms);
+        Overlay overlay;
+        overlay.resize(960, 540);
+        renderOverlay(overlay, {item});
+        return overlay;
+    };
+    // Default: the alarm border, and every active alarm as a label, most severe first, from the top centre down.
+    Tile options;
+    auto const top = draw(options);
+    CHECK(countPixels(top, 200, 8, 280, 22, redLabel) > 100);
+    CHECK(countPixels(top, 200, 24, 280, 38, amberLabel) > 100);
+    CHECK(countPixels(top, 0, 100, 4, 140, inked) == 0);
+    CHECK(countPixels(top, 4, 100, 6, 140, redLabel) == 2 * 40);
+    // Bottom right: from the bottom edge up, right-aligned inside the border.
+    options.alarmLabelPosition = AlarmLabelPosition::BottomRight;
+    auto const corner = draw(options);
+    CHECK(countPixels(corner, 420, 248, 472, 262, redLabel) > 100);
+    CHECK(countPixels(corner, 420, 232, 472, 246, amberLabel) > 100);
+    CHECK(countPixels(corner, 472, 232, 474, 262, redLabel) == 0); // the alarm border is at x 474..475
+    CHECK(countPixels(corner, 8, 8, 470, 40, [&](std::uint8_t const* px) { return redLabel(px) || amberLabel(px); }) == 0);
+    // Top left keeps clear of the format caption.
+    options.alarmLabelPosition = AlarmLabelPosition::TopLeft;
+    auto const left = draw(options, "1080p50");
+    CHECK(countPixels(left, 8, 14, 60, 28, redLabel) > 100);
+    CHECK(countPixels(left, 8, 8, 60, 13, redLabel) == 0);
+    // Labels only, border only, none.
+    options.alarmLabelPosition = AlarmLabelPosition::Top;
+    options.alarmBorder = false;
+    auto const labelsOnly = draw(options);
+    CHECK(countPixels(labelsOnly, 4, 100, 6, 140, inked) == 0);
+    CHECK(countPixels(labelsOnly, 200, 8, 280, 22, redLabel) > 100);
+    options.alarmBorder = true;
+    options.alarmLabels = false;
+    auto const borderOnly = draw(options);
+    CHECK(countPixels(borderOnly, 4, 100, 6, 140, redLabel) == 2 * 40);
+    CHECK(countPixels(borderOnly, 200, 8, 280, 40, [&](std::uint8_t const* px) { return redLabel(px) || amberLabel(px); }) == 0);
+    options.alarmBorder = false;
+    CHECK(countPixels(draw(options), 0, 0, 480, 270, inked) == 0);
+    // A slate says what is wrong: no labels.
+    OverlayTile slate;
+    slate.slate = "NO SIGNAL";
+    showAlarms(slate, Tile{}, ActiveAlarms{.noSignal = true});
+    CHECK(slate.badges.empty());
+    CHECK(slate.alarm == AlarmLevel::Red);
+}
+
+TEST_CASE("caption text aligns left, centre, or right; text that overflows is cut")
+{
+    // 540 canvas, a 480 × 270 tile: caption band from y=234, text room from x=8 to x=472.
+    auto const bounds = [](std::string const& text, UmdAlign align, int tileW) {
+        Overlay overlay;
+        overlay.resize(960, 540);
+        OverlayTile tile;
+        tile.rect = {0, 0, tileW, 270};
+        tile.umd = true;
+        tile.umdText = text;
+        tile.umdFont = 28;
+        tile.umdBg = {0, 0, 0, 0};
+        tile.umdAlign = align;
+        renderOverlay(overlay, {tile});
+        int left = 960;
+        int right = -1;
+        for (int y = 234; y < 270; ++y)
+        {
+            for (int x = 0; x < 960; ++x)
+            {
+                if (inked(pixel(overlay, x, y)))
+                {
+                    left = std::min(left, x);
+                    right = std::max(right, x);
+                }
+            }
+        }
+        return std::pair{left, right};
+    };
+    auto const [l1, r1] = bounds("CAM 1", UmdAlign::Left, 480);
+    CHECK(l1 >= 8);
+    CHECK(l1 <= 12);
+    CHECK(r1 < 240);
+    auto const [l2, r2] = bounds("CAM 1", UmdAlign::Right, 480);
+    CHECK(r2 <= 472);
+    CHECK(r2 >= 466);
+    CHECK(r2 - l2 == r1 - l1);
+    auto const [l3, r3] = bounds("CAM 1", UmdAlign::Centre, 480);
+    CHECK(std::abs((l3 + r3) / 2 - 240) <= 3);
+    // A name wider than the bar: cut with an ellipsis, inside the room, whatever the alignment.
+    std::string const longName = "Studio 2 main camera, wide shot from the gallery";
+    for (auto const align : {UmdAlign::Left, UmdAlign::Centre, UmdAlign::Right})
+    {
+        auto const [l, r] = bounds(longName, align, 240);
+        CHECK(l >= 8);
+        CHECK(r <= 232);
+        CHECK(r > 200);
+    }
 }
 
 TEST_CASE("tally lamps show LH and RH, the border the combined tally, tally_text the caption background")

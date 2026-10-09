@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <set>
 #include <sstream>
 #include <unistd.h>
@@ -309,6 +310,8 @@ std::vector<SettingDef> const& settingSchema()
         {"MV_CLIP_LINEAR", "0.999", false},
         {"MV_ALARM_DEBOUNCE_MS", "500", false},
         {"MV_ALARM_CLEAR_MS", "500", false},
+        {"MV_FREEZE_MS", "2000", false},
+        {"MV_TIMEZONE", "", true},
         {"MV_BACKGROUND_FILE", "", false},
         {"MV_CONFIG_FILE", "", true},
         {"NMOS_ENABLE", "true", true},
@@ -481,6 +484,25 @@ std::map<std::string, std::vector<std::string>> parseNmosTags(std::string const&
     return tags;
 }
 
+bool knownTimeZone(std::string const& name)
+{
+    if (name.empty() || name.front() == '/' || name.find("..") != std::string::npos)
+    {
+        return false;
+    }
+    for (char const c : name)
+    {
+        if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '/' && c != '_' && c != '-' && c != '+')
+        {
+            return false;
+        }
+    }
+    char const* dir = std::getenv("TZDIR");
+    std::ifstream in(std::string(dir != nullptr && *dir != '\0' ? dir : "/usr/share/zoneinfo") + "/" + name, std::ios::binary);
+    char magic[4] = {};
+    return in.read(magic, sizeof(magic)) && std::string(magic, sizeof(magic)) == "TZif";
+}
+
 std::string hostnameString()
 {
     char buffer[256] = {};
@@ -600,6 +622,12 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     }
     cfg.alarmDebounceMs = requireInt("MV_ALARM_DEBOUNCE_MS", raw("MV_ALARM_DEBOUNCE_MS"), 0, 60000);
     cfg.alarmClearMs = requireInt("MV_ALARM_CLEAR_MS", raw("MV_ALARM_CLEAR_MS"), 0, 60000);
+    cfg.freezeMs = requireInt("MV_FREEZE_MS", raw("MV_FREEZE_MS"), 1000, 600000);
+    cfg.timezone = raw("MV_TIMEZONE");
+    if (!cfg.timezone.empty() && !knownTimeZone(cfg.timezone))
+    {
+        throw ConfigError("MV_TIMEZONE must be an IANA time zone such as Europe/Zurich");
+    }
     cfg.backgroundFile = raw("MV_BACKGROUND_FILE");
     cfg.configFile = raw("MV_CONFIG_FILE");
     cfg.nmosEnable = requireBool("NMOS_ENABLE", raw("NMOS_ENABLE"));
