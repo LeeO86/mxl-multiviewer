@@ -9,10 +9,15 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - The left lamp of a caption shows the TSL LH tally and the right lamp the RH tally. Before, both lamps showed one combined colour. An off lamp is still not drawn.
 - The border keeps the combined colour: text tally, else RH, else LH.
 - Alarm display per tile: `alarm_border` and `alarm_labels` (both on by default) and `alarm_label_position` (`top-left`, `top`, `top-right`, `bottom-left`, `bottom`, `bottom-right`; default `top`). Every active alarm now has its own label in its own colour, stacked from that position; before, a tile showed only the most severe one. With one alarm the default looks as before.
+- Image tiles (`content: image`): a picture from an http(s) URL (`image_url`) or one stored in the configuration volume (`image_file`), PNG, JPEG, GIF, or WebP, fit or fill. Animated GIFs play. At most 8 MiB, 4096 × 4096 pixels, 32 megapixels over all frames; type, magic bytes, and size are checked. URLs are fetched on a worker thread (3 s to connect, 10 s in all, through the environment's proxy), never on the render path; a failure shows `NO IMAGE` with the reason and is retried after 30 s. Image tiles are drawn over the video tiles.
 - Audio bars beside the picture: `audio_bar_position` `left-beside` and `right-beside` give the bars a strip of the tile and scale the picture into the rest (CPU and CUDA alike). `left`, `right`, and `overlay` stay over the picture.
 - New tile option `audio_bar_scale` (default on): off hides the level scale (ticks and dBFS labels) beside the audio bars.
 - New tile option `umd_align`: the caption text sits left (default, as before), centre, or right. Text wider than the bar is cut and ends with `…`.
 - New option `tally_text`: the text tally colours the caption background (the text turns black on it) while the text tally is not off. The layout sets the default (`tally_text`, false); a tile can set `true` or `false`, or `null` to follow the layout. A head gets it by showing a layout that has it.
+
+### Build
+
+- The image installs `tzdata`, `libcurl4t64`, `libwebp7`, and `libwebpdemux2`; building needs `libcurl4-openssl-dev` and `libwebp-dev`.
 
 ### Behaviour
 
@@ -28,6 +33,7 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - Layout editor: "Text tally as caption background" per tile (as the layout, on, off) and per layout.
 - The layout editor draws local clocks in the multiviewer's time zone, not the browser's.
 - Layout editor: "Use as start layout" per output, with a note when the environment sets the start layout.
+- Layout editor: "+ Image" tiles with a web address or a stored picture (upload, choose, delete) and a preview on the canvas.
 - Layout editor: an Alarms panel per input tile (border, labels, where the labels stack).
 - Layout editor: audio bar positions grouped as over or beside the picture; the tile preview shows the strip.
 - Layout editor: audio bar level scale on or off ("Apply to all input tiles" copies it too).
@@ -38,6 +44,8 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - `GET /api/v1/inputs`, `/statusz`, and the WebSocket: `tsl_lh`, `tsl_rh`, and `tsl_text_tally` per input, next to `tally` and `tsl_text`.
 - Layouts carry `tally_text` on the layout and on each tile. A value that is not `true` or `false` (or `null` on a tile) is rejected with 400.
 - `GET /api/v1/info`: `timezone` (the zone of local clocks) and `utc_offset_s`.
+- `GET /api/v1/images`, and `GET`, `PUT`, `DELETE /api/v1/images/{name}`: stored pictures of image tiles. Request bodies over 16 MiB are refused with 413.
+- Layouts: tile options `alarm_border`, `alarm_labels`, `alarm_label_position`, `umd_align`, `audio_bar_scale`, `image_url`, `image_file`; `audio_bar_position` `left-beside` and `right-beside`; `content` `image`. Bad values are rejected with 400. Saved layouts without them load as before and look the same.
 - `PUT /api/v1/outputs/{h}` takes `start_layout` (a layout name, or `null`); each output in `GET /api/v1/outputs` and the WebSocket has `start_layout` and `start_layout_env`. The layout book has `start_layouts`.
 
 ## 1.2.1

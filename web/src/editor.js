@@ -131,6 +131,8 @@ export function makeTile(content, id, rect, z) {
     clock_zone: "utc",
     timecode_rate: "",
     label_text: content === "label" ? "Label" : "",
+    image_url: "",
+    image_file: "",
   };
 }
 

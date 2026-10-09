@@ -3,6 +3,7 @@
 #include "app/runtime.hpp"
 #include "config/store.hpp"
 #include "layout/book.hpp"
+#include "media/imagestore.hpp"
 #include "ops/httpserver.hpp"
 #include "ops/metrics.hpp"
 
@@ -24,6 +25,8 @@ class Api
 public:
     Api(Config config, ConfigStore& store, LayoutBookStore& layouts, RuntimeModel& runtime, Metrics& metrics);
     void setFlowCallback(std::function<void(OutputFlowNote const&)> callback);
+    // Stored pictures of image tiles (/api/v1/images); without it those routes are 404.
+    void setImages(ImageStore& images);
     [[nodiscard]] HttpResponse handle(HttpRequest const& request);
     [[nodiscard]] std::string eventsJson() const;
 
@@ -34,5 +37,6 @@ private:
     RuntimeModel& runtime_;
     Metrics& metrics_;
     std::function<void(OutputFlowNote const&)> onFlow_;
+    ImageStore* images_ = nullptr;
 };
 } // namespace mv

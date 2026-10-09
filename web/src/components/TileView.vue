@@ -51,6 +51,9 @@ const clock = computed(() => {
   return { text: `${pad(h)}:${pad(m)}:${pad(s)}`, h, m, s };
 });
 
+// An image tile previews its picture: the web address, or the stored file from the API.
+const imageSrc = computed(() => props.tile.image_url || (props.tile.image_file ? `/api/v1/images/${encodeURIComponent(props.tile.image_file)}` : ""));
+
 function hand(degrees, length) {
   const rad = ((degrees - 90) * Math.PI) / 180;
   return { x2: 50 + Math.cos(rad) * length, y2: 50 + Math.sin(rad) * length };
@@ -94,6 +97,10 @@ function hand(degrees, length) {
       </svg>
       <div v-else class="clockface">{{ clock.text }}</div>
       <div class="state">{{ tile.clock_zone.toUpperCase() }}{{ tile.timecode_rate ? ` · timecode ${tile.timecode_rate}` : "" }}</div>
+    </div>
+    <div v-else-if="tile.content === 'image'" class="centre">
+      <img v-if="imageSrc" class="picture" :src="imageSrc" :style="{ objectFit: tile.scale === 'fill' ? 'cover' : 'contain' }" alt="" draggable="false" />
+      <div v-else class="state">Image (no picture set)</div>
     </div>
     <div v-else-if="tile.content === 'label'" class="centre">
       <div class="labeltext">{{ tile.label_text || "(no text)" }}</div>

@@ -250,6 +250,7 @@ struct Engine::Impl
     RuntimeModel& runtime;
     LayoutBookStore& layouts;
     Metrics& metrics;
+    ImageStore& images;
     std::atomic<bool> run{false};
     std::string domainId;
     std::mutex routeMu;
@@ -292,11 +293,12 @@ struct Engine::Impl
     std::vector<std::shared_ptr<OverlayFrame const>> overlays;
     std::mutex overlayMu;
 
-    explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn)
+    explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn, ImageStore& imagesIn)
         : config(std::move(cfg))
         , runtime(runtimeIn)
         , layouts(layoutsIn)
         , metrics(metricsIn)
+        , images(imagesIn)
     {
         videoRoutes.resize(static_cast<std::size_t>(config.maxInputs));
         audioRoutes.resize(static_cast<std::size_t>(config.maxInputs));
@@ -1250,6 +1252,21 @@ struct Engine::Impl
             {
                 item.labelText = tile.labelText;
             }
+            if (tile.content == TileContent::Image)
+            {
+                // Fetched, decoded, and scaled on the image store's thread; until then the tile is empty.
+                auto const picture = images.get(tile.imageUrl, tile.imageFile, item.rect.w, item.rect.h, tile.scale);
+                item.image = picture.image;
+                if (picture.image != nullptr)
+                {
+                    item.imageFrame = imageFrameAt(picture.image->delaysMs, steadyMs());
+                }
+                else if (!picture.error.empty())
+                {
+                    item.slate = "NO IMAGE";
+                    item.slateLabel = picture.error;
+                }
+            }
             if (tile.content == TileContent::Clock)
             {
                 item.clock = true;
@@ -2080,8 +2097,8 @@ struct Engine::Impl
     }
 };
 
-Engine::Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics)
-    : impl_(new Impl(std::move(config), runtime, layouts, metrics))
+Engine::Engine(Config config, RuntimeModel& runtime, LayoutBookStore& layouts, Metrics& metrics, ImageStore& images)
+    : impl_(new Impl(std::move(config), runtime, layouts, metrics, images))
 {
 }
 

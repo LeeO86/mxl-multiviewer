@@ -22,6 +22,8 @@ namespace mv
 {
 namespace
 {
+constexpr std::size_t kMaxBodyBytes = 16u * 1024u * 1024u;
+
 std::string lower(std::string text)
 {
     for (char& c : text)
@@ -62,6 +64,8 @@ std::string statusText(int status)
         return "Not Found";
     case 409:
         return "Conflict";
+    case 413:
+        return "Payload Too Large";
     case 503:
         return "Service Unavailable";
     default:
@@ -201,6 +205,16 @@ struct HttpServer::Impl
                         {
                             bodyLen = static_cast<std::size_t>(std::strtoul(value.c_str(), nullptr, 10));
                         }
+                    }
+                    // Uploads (pictures, imports) are a few MiB; a larger body is refused before it is read.
+                    if (bodyLen > kMaxBodyBytes)
+                    {
+                        std::string const body = "{\"error\":\"the body is too large\"}";
+                        std::string const refused = "HTTP/1.1 413 " + statusText(413) + "\r\nContent-Type: application/json\r\nContent-Length: " +
+                                                    std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+                        sendAll(conn.fd, refused.data(), refused.size());
+                        drop.push_back(conn.fd);
+                        continue;
                     }
                     if (conn.buffer.size() < headerEnd + 4 + bodyLen)
                     {

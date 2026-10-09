@@ -46,6 +46,8 @@ Tile legacyTile()
     tile.clockZone = ClockZone::Utc;
     tile.timecodeRate.clear();
     tile.labelText.clear();
+    tile.imageUrl.clear();
+    tile.imageFile.clear();
     return tile;
 }
 
@@ -206,7 +208,7 @@ bool sameLayout(Layout const& a, Layout const& b)
                           x.alarmBorder == y.alarmBorder && x.alarmLabels == y.alarmLabels && x.alarmLabelPosition == y.alarmLabelPosition &&
                           x.formatLabel == y.formatLabel && x.latency == y.latency && x.safeArea == y.safeArea && x.centre == y.centre &&
                           x.aspectMarkers == y.aspectMarkers && x.clockStyle == y.clockStyle && x.clockZone == y.clockZone &&
-                          x.timecodeRate == y.timecodeRate && x.labelText == y.labelText;
+                          x.timecodeRate == y.timecodeRate && x.labelText == y.labelText && x.imageUrl == y.imageUrl && x.imageFile == y.imageFile;
         if (!same)
         {
             return false;

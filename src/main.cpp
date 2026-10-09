@@ -116,7 +116,9 @@ int main(int argc, char** argv)
             mv::logInfo("head_layout", {{"head", std::to_string(head)}, {"layout", start}});
         }
         mv::Metrics metrics;
-        mv::Engine engine(config, runtime, layouts, metrics);
+        // Pictures of image tiles: stored under the state folder, URLs fetched off the render path.
+        mv::ImageStore images(config.stateDir + "/images");
+        mv::Engine engine(config, runtime, layouts, metrics, images);
         mv::NmosNode node(config, [&](int input, bool video, bool enable, std::string domain, std::string flow, std::string sender) {
             engine.setRoute(input, video, enable, std::move(domain), std::move(flow), std::move(sender));
         });
@@ -124,6 +126,7 @@ int main(int argc, char** argv)
             node.updateOutputFlow(head, videoFlow, audioFlow, format);
         });
         mv::Api api(config, store, layouts, runtime, metrics);
+        api.setImages(images);
         mv::HttpServer http;
         try
         {

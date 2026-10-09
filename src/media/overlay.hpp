@@ -2,11 +2,13 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "layout/geometry.hpp"
 #include "layout/model.hpp"
+#include "media/image.hpp"
 
 namespace mv
 {
@@ -44,6 +46,8 @@ struct Overlay
     // Advance width of `value` as text() draws it at this size.
     [[nodiscard]] int textWidth(std::string const& value, int pixelSize) const;
     void line(int x0, int y0, int x1, int y1, Rgba color, double width = 1.6);
+    // A w × h picture of premultiplied BGRA pixels (ScaledImage) with its top-left at (x, y).
+    void image(int x, int y, int w, int h, std::uint32_t const* prgb);
 
     // Set by renderOverlay while a Blend2D context owns the frame. Null on the bitmap path.
     void* blContext = nullptr;
@@ -134,6 +138,9 @@ struct OverlayTile
     std::string clockText;
     std::string timecodeText;
     std::string labelText;
+    // Image tiles: the picture scaled to the tile, and the frame to show (animations).
+    std::shared_ptr<ScaledImage const> image;
+    std::size_t imageFrame = 0;
 };
 
 // The active alarms of an input (§6.3).

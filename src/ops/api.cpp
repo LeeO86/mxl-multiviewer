@@ -123,6 +123,11 @@ void Api::setFlowCallback(std::function<void(OutputFlowNote const&)> callback)
     onFlow_ = std::move(callback);
 }
 
+void Api::setImages(ImageStore& images)
+{
+    images_ = &images;
+}
+
 HttpResponse Api::handle(HttpRequest const& request)
 {
     auto const& path = request.path;
@@ -383,6 +388,69 @@ HttpResponse Api::handle(HttpRequest const& request)
             }
         }
         return jsonResponse(200, "{\"ok\":true}");
+    }
+    if (path == "/api/v1/images" && request.method == "GET" && images_ != nullptr)
+    {
+        std::ostringstream out;
+        out << "{\"max_bytes\":" << kImageMaxBytes << ",\"max_side\":" << kImageMaxSide << ",\"max_pixels\":" << kImageMaxPixels << ",\"images\":[";
+        bool first = true;
+        for (auto const& image : images_->list())
+        {
+            out << (first ? "" : ",") << "{\"name\":" << quote(image.name) << ",\"type\":" << quote(image.type) << ",\"bytes\":" << image.bytes << "}";
+            first = false;
+        }
+        out << "]}";
+        return jsonResponse(200, out.str());
+    }
+    if (path.rfind("/api/v1/images/", 0) == 0 && images_ != nullptr)
+    {
+        auto const name = urlDecode(path.substr(std::string("/api/v1/images/").size()));
+        if (request.method == "GET")
+        {
+            auto const file = images_->read(name);
+            if (!file)
+            {
+                return jsonResponse(404, "{\"error\":\"picture not found\"}");
+            }
+            HttpResponse response;
+            response.contentType = file->second;
+            response.body = file->first;
+            return response;
+        }
+        if (request.method == "PUT")
+        {
+            auto const type = request.headers.find("content-type");
+            auto const saved = images_->save(name, type == request.headers.end() ? std::string{} : type->second, request.body);
+            if (auto const* problem = std::get_if<std::string>(&saved))
+            {
+                return jsonResponse(400, "{\"error\":" + quote(*problem) + "}");
+            }
+            auto const& image = std::get<ImageStore::Info>(saved);
+            std::ostringstream out;
+            out << "{\"name\":" << quote(image.name) << ",\"type\":" << quote(image.type) << ",\"bytes\":" << image.bytes << ",\"width\":" << image.width
+                << ",\"height\":" << image.height << ",\"frames\":" << image.frames << "}";
+            return jsonResponse(201, out.str());
+        }
+        if (request.method == "DELETE")
+        {
+            // A picture a layout shows stays, as a layout on an output does.
+            for (auto const& layoutName : layouts_.names())
+            {
+                auto const layout = layouts_.layout(layoutName);
+                for (auto const& tile : layout ? layout->tiles : std::vector<Tile>{})
+                {
+                    if (tile.content == TileContent::Image && tile.imageUrl.empty() && tile.imageFile == name)
+                    {
+                        return jsonResponse(409, "{\"error\":" + quote("the picture is in layout " + layoutName) + "}");
+                    }
+                }
+            }
+            if (!images_->remove(name))
+            {
+                return jsonResponse(404, "{\"error\":\"picture not found\"}");
+            }
+            return jsonResponse(200, "{\"deleted\":" + quote(name) + "}");
+        }
     }
     if (path == "/api/v1/alarms" && request.method == "GET")
     {

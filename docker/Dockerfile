@@ -28,6 +28,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         libboost-date-time-dev libboost-regex-dev libboost-random-dev \
         libboost-filesystem-dev libcpprest-dev nlohmann-json3-dev \
         libssl-dev uuid-dev libavahi-compat-libdnssd-dev tzdata \
+        libcurl4-openssl-dev libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg \
@@ -70,6 +71,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         ca-certificates curl \
         libcpprest2.10 libboost-chrono1.83.0t64 libboost-thread1.83.0 \
         libssl3t64 libavahi-compat-libdnssd1 tzdata \
+        libcurl4t64 libwebp7 libwebpdemux2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/mxl/lib/ /usr/local/lib/
 COPY --from=build /tmp/mxl/build/vcpkg_installed/x64-linux/lib/ /usr/local/lib/

@@ -8,7 +8,7 @@ The output is an NMOS sender. Route it to `mxl-decklink` for an SDI wall or to `
 
 ## Build
 
-Linux, CMake ≥ 3.24, GCC ≥ 12 or Clang ≥ 16, Node.js ≥ 20 (admin UI). MXL is `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`.
+Linux, CMake ≥ 3.24, GCC ≥ 12 or Clang ≥ 16, Node.js ≥ 20 (admin UI), libcurl and libwebp (`libcurl4-openssl-dev libwebp-dev` on Ubuntu) for image tiles. MXL is `dmf-mxl/mxl` `release/v1.1` at `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`, built with `-DMXL_ENABLE_FABRICS_OFI=OFF`.
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -69,6 +69,8 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 | POST | `/api/v1/layouts/{name}/activate` |
 | PUT | `/api/v1/outputs/{h}` |
 | GET | `/api/v1/alarms` |
+| GET | `/api/v1/images` |
+| GET, PUT, DELETE | `/api/v1/images/{name}` |
 | GET | `/api/v1/events` (WebSocket) |
 | GET | `/preview.jpg` (`?head=<h>` for heads 2 and 3) |
 | GET, PUT | `/api/v1/config` |
@@ -95,7 +97,7 @@ Precedence is environment, then `MV_CONFIG_FILE` (one flat JSON object of string
 | `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes |
 | `MV_OUTPUT_DOMAIN_DIR` (`MXL_OUTPUT_DOMAIN_DIR`) | `/Volumes/mxl/multiviewer` | yes |
 | `MV_OUTPUT_DOMAIN_ID` (`MXL_OUTPUT_DOMAIN_ID`) | empty, UUIDv5 from `NMOS_SEED` | yes |
-| `MV_STATE_DIR` | `/config` | yes |
+| `MV_STATE_DIR` | `/config` (also `images/`) | yes |
 | `MXL_CLEANUP_ON_EXIT` | `false` | yes |
 | `MV_BACKEND` | `auto` | yes |
 | `MV_MAX_INPUTS` | `16` | yes |
@@ -176,7 +178,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
 Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`), so a reload stays on the tab.
 
 - **Preview**: the output picture at `MV_PREVIEW_FPS`, a head selector with more than one head, the layout on air with Activate, and the output counters.
-- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its alarm display (border, labels and where they stack), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL, aligned left, centre, or right; at the bottom or top over the picture, or below or above the tile), audio bars, tally, and overlays, and the layout's background colour and text tally default. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, Use as start layout (per output), and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
+- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, image, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its alarm display (border, labels and where they stack), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL, aligned left, centre, or right; at the bottom or top over the picture, or below or above the tile), audio bars, tally, and overlays, and the layout's background colour and text tally default. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, Use as start layout (per output), and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
 - **Inputs**: video and audio state, source, format, live PPM levels, alarms, and the receiver ids to route to (IS-05 only).
 - **Alarms**: active alarms with severity and since when.
 - **Settings**: every setting with its origin (ENV, FILE, DEFAULT); environment values are read-only, saved values go into the configuration file and apply at the next start. Export as JSON or `KEY=value` (download or copy), import an exported document.
@@ -218,6 +220,8 @@ On the platform the tally calculator sends TSL 5.0 to the Service on 8910/udp: s
 
 ### Platform
 
+Image tiles show a picture from an http(s) URL or one uploaded in the layout editor (`PUT /api/v1/images/{name}`, kept in `<MV_STATE_DIR>/images/`): PNG, JPEG, GIF (animated GIFs play), or WebP, at most 8 MiB, 4096 × 4096 pixels, and 32 megapixels over all frames. The multiviewer fetches a URL itself (3 s to connect, 10 s in all, through `https_proxy`/`http_proxy` from its environment, certificates checked) on a worker thread, so a slow URL never holds up the output; a failed picture shows `NO IMAGE` with the reason and is tried again after 30 s. Image tiles are drawn over the video tiles.
+
 Clock tiles with local time use `MV_TIMEZONE` (an IANA name such as `Europe/Zurich`), else the container's `TZ`, else UTC; the image has the zone database (`tzdata`). The platform sets `TZ=Europe/Zurich`. `GET /api/v1/info` reports the zone (`timezone`, `utc_offset_s`), and the layout editor draws local clocks in it.
 
 `deploy/mxl-multiviewer.yaml` is the pod-network Deployment: MXL root hostPath `/Volumes/mxl`, writable `/config`, `NMOS_HOST_ADDRESS` from `status.podIP`, probes on `/livez` and `/readyz`, and `terminationGracePeriodSeconds` above `SHUTDOWN_TIMEOUT_S`. Set `MXL_CLEANUP_ON_EXIT=true` so production-down sees the output domain disappear. Replace the example emptyDir with a persistent volume when `/config` must survive a reschedule. The GPU file adds `runtimeClassName: nvidia` and one GPU; the process still starts on CPU when the device is missing and `MV_BACKEND=auto`.
@@ -239,4 +243,4 @@ Hardware targets are in `docs/performance.md`. They have not been measured on an
 
 ## License
 
-Apache-2.0. Vendored `third_party/doctest`, `picojson`, `stb`, and `font8x8_basic.h` keep their own notices. DejaVu Sans in `third_party/dejavu/` is under its own license. Blend2D 0.21.2 and the asmjit it ships are fetched at configure time and linked statically.
+Apache-2.0. Vendored `third_party/doctest`, `picojson`, `stb`, and `font8x8_basic.h` keep their own notices. DejaVu Sans in `third_party/dejavu/` is under its own license. Blend2D 0.21.2 and the asmjit it ships are fetched at configure time and linked statically. Image tiles link the system libraries libcurl (curl licence, MIT-style) and libwebp with libwebpdemux (BSD-3-Clause).

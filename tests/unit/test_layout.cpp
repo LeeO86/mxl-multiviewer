@@ -164,6 +164,34 @@ TEST_CASE("audio_bar_scale is on unless a tile turns it off")
     }
 }
 
+TEST_CASE("image tiles show an http(s) URL or a stored picture")
+{
+    auto const body = [](std::string const& fields) {
+        return "{\"version\":1,\"name\":\"i\",\"tiles\":[{\"id\":\"a\",\"content\":\"image\"" + fields + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(",\"image_url\":\"https://example.org/logo.png\",\"scale\":\"fill\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].content == TileContent::Image);
+    CHECK(layout.tiles[0].imageUrl == "https://example.org/logo.png");
+    CHECK(layout.tiles[0].scale == ScaleMode::Fill);
+    auto const json = layoutToJson(layout);
+    CHECK(json.find("\"content\":\"image\"") != std::string::npos);
+    CHECK(json.find("\"image_url\":\"https://example.org/logo.png\",\"image_file\":\"\"") != std::string::npos);
+    REQUIRE_FALSE(parseLayout(body(",\"image_file\":\"bug.gif\""), layout, 4).has_value());
+    CHECK(layout.tiles[0].imageFile == "bug.gif");
+    // Not set yet: allowed, the tile says so on the wall.
+    CHECK_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"file:///etc/passwd\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"ftp://example.org/a.png\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_file\":\"../config.json\""), layout, 4).has_value());
+    CHECK(parseLayout(body(",\"image_url\":\"https://example.org/a.png\",\"image_file\":\"a.png\""), layout, 4).has_value());
+    // Layouts without image tiles look as before; a 1.1.x preset with a URL counts as edited.
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].imageUrl = "https://example.org/a.png";
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
 TEST_CASE("audio zones must rise towards full scale")
 {
     auto const body = [](int green, int amber) {

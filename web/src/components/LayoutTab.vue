@@ -213,7 +213,7 @@ function submitImport() {
 
 // ---- tiles --------------------------------------------------------------------
 
-const SIZES = { input: [1 / 4, 1 / 4], clock: [1 / 6, 1 / 6], label: [1 / 3, 1 / 12], empty: [1 / 4, 1 / 4] };
+const SIZES = { input: [1 / 4, 1 / 4], clock: [1 / 6, 1 / 6], label: [1 / 3, 1 / 12], empty: [1 / 4, 1 / 4], image: [1 / 6, 1 / 6] };
 
 function snap(v) {
   return Math.round(v * grid.value) / grid.value;
@@ -426,6 +426,7 @@ onUnmounted(() => clearInterval(clockTimer));
               <button class="btn small secondary" @click="addTile('input')">+ Input</button>
               <button class="btn small secondary" @click="addTile('clock')">+ Clock</button>
               <button class="btn small secondary" @click="addTile('label')">+ Label</button>
+              <button class="btn small secondary" @click="addTile('image')">+ Image</button>
               <button class="btn small secondary" @click="addTile('empty')">+ Empty</button>
             </div>
             <span class="sep"></span>

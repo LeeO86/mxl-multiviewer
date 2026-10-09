@@ -1,13 +1,13 @@
 // REST client and the live state from /api/v1/events (SPECIFICATION.md §8).
 import { reactive } from "vue";
 
-async function request(path, { method = "GET", body, text = false } = {}) {
+async function request(path, { method = "GET", body, text = false, type = "" } = {}) {
   const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined) headers["Content-Type"] = type || "application/json";
   const resp = await fetch(path, {
     method,
     headers,
-    body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+    body: body === undefined ? undefined : typeof body === "string" || body instanceof Blob ? body : JSON.stringify(body),
     cache: "no-store",
   });
   const raw = await resp.text();
@@ -32,6 +32,8 @@ export const api = {
   put: (path, body) => request(path, { method: "PUT", body }),
   post: (path, body) => request(path, { method: "POST", body: body ?? {} }),
   del: (path) => request(path, { method: "DELETE" }),
+  /** PUT of a file as it is, with its own Content-Type (picture uploads). */
+  upload: (path, file) => request(path, { method: "PUT", body: file, type: file.type }),
 };
 
 /** Live state shared by every tab. `inputs`, `outputs` and `alarms` follow the WebSocket. */

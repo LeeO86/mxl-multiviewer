@@ -1,5 +1,7 @@
 #include "layout/model.hpp"
 
+#include "media/image.hpp"
+#include "util/fetch.hpp"
 #include "util/jsonutil.hpp"
 #include "util/logging.hpp"
 
@@ -24,6 +26,8 @@ char const* contentToString(TileContent content)
         return "label";
     case TileContent::Empty:
         return "empty";
+    case TileContent::Image:
+        return "image";
     case TileContent::Input:
         return "input";
     }
@@ -47,6 +51,10 @@ std::optional<TileContent> contentFromString(std::string const& text)
     if (text == "empty")
     {
         return TileContent::Empty;
+    }
+    if (text == "image")
+    {
+        return TileContent::Image;
     }
     return std::nullopt;
 }
@@ -533,6 +541,18 @@ std::optional<std::string> validateLayout(Layout const& layout, int maxInputs)
                 return "tile " + tile.id + " has an unknown aspect marker";
             }
         }
+        if (!tile.imageUrl.empty() && !httpUrl(tile.imageUrl))
+        {
+            return "tile " + tile.id + " image_url must be an http or https URL";
+        }
+        if (!tile.imageFile.empty() && !imageName(tile.imageFile))
+        {
+            return "tile " + tile.id + " image_file is not a stored picture name";
+        }
+        if (tile.content == TileContent::Image && !tile.imageUrl.empty() && !tile.imageFile.empty())
+        {
+            return "tile " + tile.id + " sets image_url and image_file; an image tile shows one of them";
+        }
     }
     return std::nullopt;
 }
@@ -708,6 +728,8 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.clockZone = zone.value_or(ClockZone::Utc);
         tile.timecodeRate = str(tileObj, "timecode_rate");
         tile.labelText = str(tileObj, "label_text");
+        tile.imageUrl = str(tileObj, "image_url");
+        tile.imageFile = str(tileObj, "image_file");
         layout.tiles.push_back(std::move(tile));
     }
     if (auto const problem = validateLayout(layout, maxInputs))
@@ -754,7 +776,8 @@ std::string layoutToJson(Layout const& layout)
         }
         out << "],\"clock_style\":\"" << (tile.clockStyle == ClockStyle::Analogue ? "analogue" : "digital") << "\",\"clock_zone\":\""
             << (tile.clockZone == ClockZone::Tai ? "tai" : tile.clockZone == ClockZone::Local ? "local" : "utc") << "\",\"timecode_rate\":"
-            << quoted(tile.timecodeRate) << ",\"label_text\":" << quoted(tile.labelText) << "}";
+            << quoted(tile.timecodeRate) << ",\"label_text\":" << quoted(tile.labelText) << ",\"image_url\":" << quoted(tile.imageUrl)
+            << ",\"image_file\":" << quoted(tile.imageFile) << "}";
     }
     out << "]}";
     return out.str();

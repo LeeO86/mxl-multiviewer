@@ -1,7 +1,7 @@
 <script setup>
 // Settings of the selected tile (§6.2), grouped by what they change on the wall.
-import { computed } from "vue";
-import { inputLabel, live } from "../api.js";
+import { computed, onMounted, ref, watch } from "vue";
+import { api, inputLabel, live } from "../api.js";
 import Field from "./Field.vue";
 
 const props = defineProps({
@@ -16,6 +16,7 @@ const CONTENTS = [
   { id: "input", label: "Input" },
   { id: "clock", label: "Clock" },
   { id: "label", label: "Label" },
+  { id: "image", label: "Image" },
   { id: "empty", label: "Empty" },
 ];
 const RATES = [
@@ -124,6 +125,69 @@ function barsToAll() {
     if (t !== props.tile) for (const key of BAR_KEYS) t[key] = props.tile[key];
   }
 }
+
+// ---- image tiles: a web address or a picture stored on the multiviewer ----
+const pictures = ref([]);
+const pictureMsg = ref({ kind: "", text: "" });
+const imageMode = ref("");
+const imageSource = computed(() => imageMode.value || (props.tile.image_file && !props.tile.image_url ? "file" : "url"));
+watch(
+  () => props.tile,
+  () => (imageMode.value = ""),
+);
+
+/** Picks the web address or a stored picture; the other one is cleared (a tile shows one). */
+function useSource(kind) {
+  imageMode.value = kind;
+  if (kind === "url") props.tile.image_file = "";
+  else props.tile.image_url = "";
+}
+
+async function loadPictures() {
+  try {
+    pictures.value = (await api.get("/api/v1/images")).images || [];
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+async function upload(ev) {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  const name = file.name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 100) || "picture";
+  try {
+    const info = await api.upload(`/api/v1/images/${encodeURIComponent(name)}`, file);
+    props.tile.image_file = name;
+    props.tile.image_url = "";
+    pictureMsg.value = { kind: "ok", text: `Stored ${name}: ${info.width} × ${info.height}${info.frames > 1 ? `, ${info.frames} frames` : ""}.` };
+    await loadPictures();
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+async function removePicture() {
+  const name = props.tile.image_file;
+  try {
+    await api.del(`/api/v1/images/${encodeURIComponent(name)}`);
+    props.tile.image_file = "";
+    pictureMsg.value = { kind: "ok", text: `Deleted ${name}.` };
+    await loadPictures();
+  } catch (e) {
+    pictureMsg.value = { kind: "err", text: e.message };
+  }
+}
+
+const kib = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+
+onMounted(() => {
+  if (props.tile.content === "image") loadPictures();
+});
+watch(
+  () => props.tile.content,
+  (content) => content === "image" && loadPictures(),
+);
 
 function toggleMarker(marker) {
   const list = props.tile.aspect_markers;
@@ -337,6 +401,43 @@ function toggleMarker(marker) {
       <input id="tile-label" v-model="tile.label_text" maxlength="200" />
     </Field>
     <p class="note">The text is centred and sized to fit the tile.</p>
+  </div>
+
+  <div v-else-if="tile.content === 'image'" class="panel">
+    <h3>Image</h3>
+    <Field label="Picture from">
+      <span class="seg" role="group" aria-label="Picture source">
+        <button type="button" :aria-pressed="imageSource === 'url'" @click="useSource('url')">Web address</button>
+        <button type="button" :aria-pressed="imageSource === 'file'" @click="useSource('file')">Stored picture</button>
+      </span>
+    </Field>
+    <Field v-if="imageSource === 'url'" label="Address (http or https)" id="tile-image-url">
+      <input id="tile-image-url" v-model.trim="tile.image_url" type="url" maxlength="2048" placeholder="https://example.org/logo.png" />
+    </Field>
+    <template v-else>
+      <Field label="Stored picture" id="tile-image-file">
+        <select id="tile-image-file" v-model="tile.image_file">
+          <option value="">(none)</option>
+          <option v-for="p in pictures" :key="p.name" :value="p.name">{{ p.name }} · {{ kib(p.bytes) }}</option>
+        </select>
+      </Field>
+      <div class="row tight">
+        <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Upload a picture" @change="upload" />
+        <button class="btn small danger" :disabled="!tile.image_file" @click="removePicture">Delete picture</button>
+      </div>
+    </template>
+    <Field label="Scale" id="tile-image-scale">
+      <select id="tile-image-scale" v-model="tile.scale">
+        <option value="fit">Fit (whole picture)</option>
+        <option value="fill">Fill (crop to tile)</option>
+      </select>
+    </Field>
+    <div v-if="pictureMsg.text" class="msg" :class="pictureMsg.kind">{{ pictureMsg.text }}</div>
+    <p class="note">
+      PNG, JPEG, GIF (animated GIFs play), or WebP; at most 8 MiB and 4096 × 4096 pixels. The multiviewer fetches a web address itself, through
+      its proxy, within 10 s; while it loads the tile is empty, and when it fails the tile shows NO IMAGE with the reason (retried after 30 s).
+      Uploaded pictures are kept in the configuration volume. Image tiles are drawn over the video tiles.
+    </p>
   </div>
 
   <div v-else class="panel">

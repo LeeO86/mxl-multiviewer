@@ -66,6 +66,7 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - CUDA backend: compiled when the CUDA toolkit is present. Each input thread uploads its grains on its own stream straight from page-locked MXL memory; frames stay packed v210 on the device and the scale kernel decodes the samples it needs. Kernels scale, blend the overlay and pack v210; the result goes by DMA into the MXL output grain.
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.
+- Image tiles: PNG, JPEG, and GIF through stb; WebP through the system `libwebp` (BSD-3-Clause); http(s) through the system `libcurl` (curl licence, MIT-style).
 - Web UI: Vue 3 built to one HTML file and embedded. No CDN.
 - Base image: Ubuntu 24.04 with `tzdata`. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
 - Tests: doctest (vendored). Integration tests are shell scripts.
@@ -224,7 +225,7 @@ A layout is JSON, `version: 1`:
 }
 ```
 
-`rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
+`rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, `image`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
 
 The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone, a `tally_text` that is not a boolean) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
 
@@ -286,6 +287,8 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local` (the zone of `MV_TIMEZONE`, else of `TZ`, else UTC), optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
 
 Label tiles: `label_text`, centred and sized to the tile.
+
+Image tiles: a picture from `image_url` (`http://` or `https://`, at most 2048 characters) or `image_file` (a picture stored with `PUT /api/v1/images/{name}` under `<MV_STATE_DIR>/images/`), placed with `scale` (`fit` or `fill`). Setting both is rejected; setting neither shows `NO IMAGE`. Formats are PNG, JPEG, GIF, and WebP; animated GIFs (and WebPs) play by their frame times in a loop, a frame time under 20 ms plays as 100 ms. Limits: 8 MiB per file, 4096 × 4096 pixels, and 32 megapixels over all frames, decoded and again scaled to the tile. A picture is accepted only when the magic bytes say PNG, JPEG, GIF, or WebP and match the Content-Type (`image/png`, `image/jpeg`, `image/gif`, `image/webp`); the size limits are checked from the headers before the frames are decoded. A URL is fetched with libcurl: http and https only (redirects too, at most 3), 3 s to connect, 10 s in all, the proxy from the environment (`https_proxy`, `http_proxy`, `no_proxy`), TLS certificates checked against the image's CA store. Fetching, decoding, and scaling run on one worker thread; the overlay thread only takes finished pictures, so a slow or failing URL never delays a frame. While a picture loads the tile is empty; when it fails the tile shows `NO IMAGE` and the reason, and the picture is tried again after 30 s. A picture is fetched once and kept while a tile shows it; one that no tile asked for in 60 s is dropped. Image tiles are drawn in the overlay, so they lie over every video tile whatever their `z`.
 
 Background: `background` colour where no tile covers the canvas. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles. Letterbox and pillarbox areas of `fit` tiles stay limited-range black.
 
@@ -351,6 +354,10 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | GET | `/api/v1/presets` | today's built-in presets, as a book |
 | PUT | `/api/v1/outputs/{h}` | `{"layout": "name", "audio_follow": n, "format": "1920x1080p50", "start_layout": "name"}` (`start_layout` may be null); an unknown layout is 404, `audio_follow` outside 0–`MV_MAX_INPUTS` is 400, a `start_layout` that is not a name or null is 400; the layout is saved for the next start, `start_layout` is the head's start layout (§6.1) |
 | GET | `/api/v1/alarms` | active alarms: input, name, `severity` (`red`, `amber`), `since` (Unix ms) |
+| GET | `/api/v1/images` | stored pictures (`name`, `type`, `bytes`) and the limits (`max_bytes`, `max_side`, `max_pixels`) |
+| GET | `/api/v1/images/{name}` | one stored picture, with its Content-Type |
+| PUT | `/api/v1/images/{name}` | store a picture: the body is the file, `Content-Type` its type; 201 with `width`, `height`, `frames`; 400 when the name, type, magic bytes, size, or decoding fail. Names are 1–100 letters, digits, `.`, `_`, `-`, not starting with `.` |
+| DELETE | `/api/v1/images/{name}` | delete a stored picture; 409 while an image tile of a layout shows it |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
 | GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
@@ -383,7 +390,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MXL_DOMAIN_SCAN_PATH` | `/Volumes/mxl` | yes | MXL root. Parent of domain directories, mirrors included |
 | `MV_OUTPUT_DOMAIN_DIR` | `/Volumes/mxl/multiviewer` | yes | output domain directory. Alias: `MXL_OUTPUT_DOMAIN_DIR` |
 | `MV_OUTPUT_DOMAIN_ID` | empty (UUIDv5) | yes | `domain_def.json` id when the file is created. Alias: `MXL_OUTPUT_DOMAIN_ID` |
-| `MV_STATE_DIR` | `/config` | yes | only directory this process writes for its own state: `config.json`, `layouts.json`, `routes.json` |
+| `MV_STATE_DIR` | `/config` | yes | only directory this process writes for its own state: `config.json`, `layouts.json`, `routes.json`, and the stored pictures in `images/` |
 | `MXL_CLEANUP_ON_EXIT` | false | yes | remove the output domain directory after SIGTERM |
 | `MV_BACKEND` | `auto` | yes | `auto`, `cuda`, `cpu` |
 | `MV_MAX_INPUTS` | 16 | yes | 1–32 |
@@ -523,8 +530,8 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 
 ## 14. Testing
 
-- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, freeze timing (a repeated-grain cadence and small motion are not frozen, a still picture is after `MV_FREEZE_MS`), TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
-- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
+- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, freeze timing (a repeated-grain cadence and small motion are not frozen, a still picture is after `MV_FREEZE_MS`), TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, alarm labels and border, caption alignment, bars beside the picture, image tiles (type by magic bytes and Content-Type, limits before decoding, GIF frames, scaling, fetch with timeout and size cap, the worker that keeps fetching off the render path, the images API), start layouts, the time zone of local clocks, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; an uploaded PNG on an image tile and an input tile with bars beside the picture are on the output; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

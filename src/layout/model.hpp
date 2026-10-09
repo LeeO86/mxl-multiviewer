@@ -20,7 +20,8 @@ enum class TileContent
     Input,
     Clock,
     Label,
-    Empty
+    Empty,
+    Image
 };
 enum class ScaleMode
 {
@@ -119,6 +120,9 @@ struct Tile
     ClockZone clockZone = ClockZone::Utc;
     std::string timecodeRate;
     std::string labelText;
+    // Image tiles: a picture from an http(s) URL, or one stored with the API (§6.2).
+    std::string imageUrl;
+    std::string imageFile;
 };
 
 struct Layout

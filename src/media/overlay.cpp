@@ -594,6 +594,35 @@ void Overlay::line(int x0, int y0, int x1, int y1, Rgba color, double width)
     }
 }
 
+void Overlay::image(int x, int y, int w, int h, std::uint32_t const* prgb)
+{
+#ifdef MV_WITH_BLEND2D
+    if (auto* ctx = blendContext(*this))
+    {
+        BLImage picture;
+        if (w > 0 && h > 0 &&
+            picture.create_from_data(w, h, BL_FORMAT_PRGB32, const_cast<std::uint32_t*>(prgb), static_cast<intptr_t>(w) * 4, BL_DATA_ACCESS_READ) == BL_SUCCESS)
+        {
+            ctx->blit_image(BLPointI(x, y), picture);
+        }
+        return;
+    }
+#endif
+    for (int row = 0; row < h; ++row)
+    {
+        for (int col = 0; col < w; ++col)
+        {
+            auto const px = prgb[static_cast<std::size_t>(row) * static_cast<std::size_t>(w) + static_cast<std::size_t>(col)];
+            auto const a = px >> 24;
+            if (a != 0)
+            {
+                auto const straight = [a](std::uint32_t v) { return static_cast<std::uint8_t>(std::min(255u, (v * 255u + a / 2u) / a)); };
+                plot(*this, x + col, y + row, Rgba{straight((px >> 16) & 255u), straight((px >> 8) & 255u), straight(px & 255u), static_cast<std::uint8_t>(a)});
+            }
+        }
+    }
+}
+
 namespace
 {
 // Analogue face or digital time, sized to the tile, with the optional timecode under it.
@@ -681,6 +710,11 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
     for (auto const& tile : tiles)
     {
         PixelRect const& r = tile.rect;
+        if (tile.image != nullptr && tile.imageFrame < tile.image->frames.size())
+        {
+            auto const& picture = *tile.image;
+            overlay.image(r.x + picture.x, r.y + picture.y, picture.width, picture.height, picture.frames[tile.imageFrame].data());
+        }
         if (tile.tallyBorder)
         {
             auto const color = tallyColor(tile.tally);
