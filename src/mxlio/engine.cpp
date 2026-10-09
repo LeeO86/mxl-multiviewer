@@ -1135,8 +1135,9 @@ struct Engine::Impl
 
     // The overlay items of one head (UMD, tally, meters, alarms, slates, clocks), from
     // input snapshots and runtime state only, so the overlay thread can build them.
-    std::vector<OverlayTile> overlayTiles(std::vector<Tile> const& tiles, VideoFormat const& format)
+    std::vector<OverlayTile> overlayTiles(Layout const& layout, VideoFormat const& format)
     {
+        auto const& tiles = layout.tiles;
         std::vector<OverlayTile> drawn;
         auto const inputs = runtime.inputs();
         auto const now = mxlGetTime();
@@ -1172,6 +1173,10 @@ struct Engine::Impl
             item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
             item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
             item.tally = viewIn.tally;
+            item.lhTally = viewIn.tslLh;
+            item.rhTally = viewIn.tslRh;
+            item.textTally = viewIn.tslTextTally;
+            item.textTallyBg = tallyTextOn(layout, tile);
             item.tallyBorder = tile.tallyBorder;
             item.tallyLamp = tile.tallyLamp;
             item.umdFg = tallyRgba(item.tally);
@@ -1323,14 +1328,14 @@ struct Engine::Impl
         {
             auto const format = runtime.headFormat(head);
             auto const layout = layouts.layout(runtime.headLayout(head));
-            std::vector<Tile> tiles = layout ? layout->tiles : std::vector<Tile>{};
-            std::sort(tiles.begin(), tiles.end(), [](Tile const& a, Tile const& b) { return a.z < b.z; });
+            Layout shown = layout ? *layout : Layout{};
+            std::sort(shown.tiles.begin(), shown.tiles.end(), [](Tile const& a, Tile const& b) { return a.z < b.z; });
             if (overlay.width != format.width || overlay.height != format.height)
             {
                 overlay.resize(format.width, format.height);
             }
             overlay.clear();
-            renderOverlay(overlay, overlayTiles(tiles, format));
+            renderOverlay(overlay, overlayTiles(shown, format));
             auto frame = std::make_shared<OverlayFrame>();
             frame->rgba = overlay.rgba;
             frame->width = overlay.width;
@@ -1981,7 +1986,7 @@ struct Engine::Impl
                 int const input = inputForDisplay(config.tslMap, display.index);
                 if (input >= 1 && input <= config.maxInputs)
                 {
-                    runtime.setTally(input, display.textValue, effectiveTally(display));
+                    runtime.setTally(input, display);
                 }
             }
         };

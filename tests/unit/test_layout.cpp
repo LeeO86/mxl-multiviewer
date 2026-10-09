@@ -213,6 +213,75 @@ TEST_CASE("the book keeps the layout chosen for each head")
     CHECK(back.presetRevision == kPresetRevision);
 }
 
+TEST_CASE("tally_text defaults from the layout and a tile can override it")
+{
+    auto const body = [](std::string const& layoutValue) {
+        return "{\"version\":1,\"name\":\"t\"" + layoutValue +
+               ",\"tiles\":["
+               "{\"id\":\"a\",\"input\":1,\"rect\":{\"x\":0,\"y\":0,\"w\":0.25,\"h\":1}},"
+               "{\"id\":\"b\",\"input\":1,\"tally_text\":null,\"rect\":{\"x\":0.25,\"y\":0,\"w\":0.25,\"h\":1}},"
+               "{\"id\":\"c\",\"input\":1,\"tally_text\":true,\"rect\":{\"x\":0.5,\"y\":0,\"w\":0.25,\"h\":1}},"
+               "{\"id\":\"d\",\"input\":1,\"tally_text\":false,\"rect\":{\"x\":0.75,\"y\":0,\"w\":0.25,\"h\":1}}]}";
+    };
+    auto const shown = [](Layout const& layout) {
+        std::string out;
+        for (auto const& tile : layout.tiles)
+        {
+            out += tallyTextOn(layout, tile) ? '1' : '0';
+        }
+        return out;
+    };
+    // Off unless the layout (the head that shows it) or the tile turns it on.
+    Layout off;
+    REQUIRE_FALSE(parseLayout(body(""), off, 4).has_value());
+    CHECK_FALSE(off.tallyText);
+    CHECK_FALSE(off.tiles[0].tallyText.has_value());
+    CHECK_FALSE(off.tiles[1].tallyText.has_value());
+    CHECK(shown(off) == "0010");
+    Layout on;
+    REQUIRE_FALSE(parseLayout(body(",\"tally_text\":true"), on, 4).has_value());
+    CHECK(on.tallyText);
+    CHECK(shown(on) == "1110");
+
+    // Saved as written: the layout value, each override, and null for "follow the layout".
+    auto const json = layoutToJson(on);
+    CHECK(json.find("\"background\":\"#101010\",\"tally_text\":true") != std::string::npos);
+    CHECK(json.find("\"tally_lamp\":true,\"tally_text\":null") != std::string::npos);
+    off.name = "u";
+    LayoutBook book;
+    book.active = "t";
+    book.layouts = {on, off};
+    LayoutBook back;
+    REQUIRE_FALSE(parseBook(bookToJson(book), back, 4).has_value());
+    CHECK(shown(back.layouts[0]) == "1110");
+    CHECK(shown(back.layouts[1]) == "0010");
+    CHECK_FALSE(back.layouts[0].tiles[0].tallyText.has_value());
+    CHECK(back.layouts[0].tiles[3].tallyText == false);
+
+    // The API rejects other values; a layout file is repaired.
+    Layout bad;
+    CHECK(parseLayout(body(",\"tally_text\":\"yes\""), bad, 4).has_value());
+    auto const badTile = std::string("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"tally_text\":1,\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}");
+    CHECK(parseLayout(badTile, bad, 4).has_value());
+    std::vector<std::string> repairs;
+    REQUIRE_FALSE(parseLayout(badTile, bad, 4, &repairs).has_value());
+    CHECK(repairs.size() == 1);
+    CHECK_FALSE(bad.tiles[0].tallyText.has_value());
+
+    // Presets leave it off; a 1.1.x preset with it set counts as edited.
+    for (auto const& layout : builtinPresets(16))
+    {
+        CHECK(shown(layout).find('1') == std::string::npos);
+    }
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tallyText = true;
+    CHECK_FALSE(sameLayout(old[1], edited));
+    edited = old[1];
+    edited.tiles[0].tallyText = false;
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
 TEST_CASE("layout json round trip and rejection")
 {
     auto const book = defaultBook(16, "2x2");

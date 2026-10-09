@@ -74,6 +74,8 @@ struct Tile
     std::string umdBg = "#000000c0";
     bool tallyBorder = true;
     bool tallyLamp = true;
+    // Text tally as the UMD background. Unset follows the layout's `tally_text`.
+    std::optional<bool> tallyText;
     bool audioBars = false;
     bool audioBarRms = false;
     int audioBarChannels = 2;
@@ -97,8 +99,13 @@ struct Layout
     int version = 1;
     std::string name;
     std::string background = "#101010";
+    // Default `tally_text` of the tiles. A head gets it by showing this layout (§6.2).
+    bool tallyText = false;
     std::vector<Tile> tiles;
 };
+
+// The tile's `tally_text`, or the layout's when the tile leaves it unset.
+bool tallyTextOn(Layout const& layout, Tile const& tile);
 
 // Revision of the built-in preset defaults: 1 is 1.1.x (no audio bars), 2 is 1.2 (bars on
 // input tiles). A book file without `preset_revision` is revision 1 (layout/migrate.hpp).

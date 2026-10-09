@@ -462,6 +462,9 @@ onUnmounted(() => clearInterval(clockTimer));
               <code>{{ layout.background }}</code>
             </div>
           </Field>
+          <Field label="Text tally" help="Default of every tile that does not set its own. To use it on one output only, give that output its own layout.">
+            <label class="check"><input v-model="layout.tally_text" type="checkbox" /> Text tally as caption background</label>
+          </Field>
         </div>
       </div>
     </div>

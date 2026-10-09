@@ -57,6 +57,49 @@ TEST_CASE("tsl 5.0 display message and dle stuffing")
     CHECK(effectiveTally(message.displays[0]) == 3);
 }
 
+TEST_CASE("tsl 5.0 keeps lh, rh and text tally apart and decodes utf-16 labels")
+{
+    // As the platform's tally calculator sends it: screen 0, UTF-16LE, display n-1 for input n.
+    std::vector<std::uint8_t> body;
+    put16(body, 0);
+    body.push_back(0);
+    body.push_back(0x01);
+    put16(body, 0);
+    put16(body, 2);
+    put16(body, 2 | (3 << 2) | (1 << 4));
+    // "Zü", U+1F3A5 as a surrogate pair, a lone high surrogate, "A".
+    std::vector<int> const units{'Z', 0xFC, 0xD83C, 0xDFA5, 0xD800, 'A'};
+    put16(body, static_cast<int>(units.size() * 2));
+    for (int unit : units)
+    {
+        put16(body, unit);
+    }
+    body[0] = static_cast<std::uint8_t>((body.size() - 2) & 0xff);
+    body[1] = static_cast<std::uint8_t>(((body.size() - 2) >> 8) & 0xff);
+    auto const message = parseTsl5(body.data(), body.size());
+    CHECK(message.error.empty());
+    REQUIRE(message.displays.size() == 1);
+    auto const& display = message.displays[0];
+    CHECK(display.screen == 0);
+    CHECK(display.index == 2);
+    CHECK(display.lh == 1);
+    CHECK(display.rh == 2);
+    CHECK(display.text == 3);
+    CHECK(display.textValue == "Z\xC3\xBC\xF0\x9F\x8E\xA5\xEF\xBF\xBD" "A");
+    CHECK(inputForDisplay("", display.index) == 3);
+    CHECK(inputForDisplay("2:7", display.index) == 7);
+
+    // The border colour: text tally, else RH, else LH.
+    TallyUpdate update;
+    CHECK(effectiveTally(update) == 0);
+    update.lh = 1;
+    CHECK(effectiveTally(update) == 1);
+    update.rh = 2;
+    CHECK(effectiveTally(update) == 2);
+    update.text = 3;
+    CHECK(effectiveTally(update) == 3);
+}
+
 TEST_CASE("tcp tsl frames reassemble across reads")
 {
     std::vector<std::uint8_t> body;
@@ -100,4 +143,8 @@ TEST_CASE("tsl 3.1 datagram")
     CHECK(message.displays[0].index == 4);
     CHECK(message.displays[0].textValue == "PREVIEW");
     CHECK(effectiveTally(message.displays[0]) == 3);
+    // One tally for both lamps and the text.
+    CHECK(message.displays[0].lh == 3);
+    CHECK(message.displays[0].rh == 3);
+    CHECK(message.displays[0].text == 3);
 }

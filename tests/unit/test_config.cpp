@@ -155,6 +155,55 @@ TEST_CASE("layout routes decode percent-encoded names and keep the json valid")
     CHECK(api.handle(HttpRequest{"GET", "/preview.jpg", "head=2", {}, {}}).status == 204);
 }
 
+TEST_CASE("inputs carry the TSL tally fields; layouts carry tally_text")
+{
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    auto const dir = std::string("/tmp/mv-tally-test");
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, dir + "/layouts.json");
+    RuntimeModel runtime(cfg);
+    Metrics metrics;
+    Api api(cfg, store, layouts, runtime, metrics);
+    TallyUpdate update;
+    update.lh = 1;
+    update.rh = 2;
+    update.textValue = "CAM 2";
+    runtime.setTally(2, update);
+    for (auto const* path : {"/api/v1/inputs", "/statusz"})
+    {
+        std::string error;
+        auto const doc = json::parse(api.handle(HttpRequest{"GET", path, {}, {}, {}}).body, error);
+        REQUIRE(error.empty());
+        auto const& input = doc.get("inputs").get(1);
+        CHECK(input.get("tsl_lh").get<double>() == 1);
+        CHECK(input.get("tsl_rh").get<double>() == 2);
+        CHECK(input.get("tsl_text_tally").get<double>() == 0);
+        CHECK(input.get("tally").get<double>() == 2);
+        CHECK(input.get("tsl_text").get<std::string>() == "CAM 2");
+        CHECK(doc.get("inputs").get(0).get("tsl_lh").get<double>() == 0);
+    }
+    CHECK(api.eventsJson().find("\"tsl_lh\":1,\"tsl_rh\":2,\"tsl_text_tally\":0") != std::string::npos);
+
+    auto const put = [&](std::string const& body) { return api.handle(HttpRequest{"PUT", "/api/v1/layouts/wall", {}, body, {}}); };
+    auto const tile = std::string(R"({"id":"a","input":1,"tally_text":false,"rect":{"x":0,"y":0,"w":1,"h":1}})");
+    auto const rejected = put(R"({"version":1,"name":"wall","tally_text":"on","tiles":[]})");
+    CHECK(rejected.status == 400);
+    CHECK(rejected.body.find("tally_text") != std::string::npos);
+    CHECK(put(R"({"version":1,"name":"wall","tally_text":true,"tiles":[{"id":"a","tally_text":"off","rect":{"x":0,"y":0,"w":1,"h":1}}]})").status == 400);
+    auto const saved = put(R"({"version":1,"name":"wall","tally_text":true,"tiles":[)" + tile + "]}");
+    CHECK(saved.status == 200);
+    CHECK(layouts.layout("wall")->tallyText);
+    CHECK(layouts.layout("wall")->tiles[0].tallyText == false);
+    auto const book = api.handle(HttpRequest{"GET", "/api/v1/layouts", {}, {}, {}}).body;
+    CHECK(book.find(R"("name":"wall","background":"#101010","tally_text":true)") != std::string::npos);
+    // Persisted: a restart reads the same values back.
+    LayoutBookStore reloaded(cfg.maxInputs, cfg.activeLayout, dir + "/layouts.json");
+    CHECK(reloaded.layout("wall")->tallyText);
+    CHECK(reloaded.layout("wall")->tiles[0].tallyText == false);
+}
+
 TEST_CASE("outputs, deletes, and imports keep every head on a layout that exists")
 {
     std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}, {"MV_OUTPUTS", "2"}};

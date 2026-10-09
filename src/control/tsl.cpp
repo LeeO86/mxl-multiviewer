@@ -11,6 +11,32 @@ std::uint16_t read16(std::uint8_t const* p)
 {
     return static_cast<std::uint16_t>(p[0] | (p[1] << 8));
 }
+
+void appendUtf8(std::string& out, std::uint32_t cp)
+{
+    if (cp < 0x80)
+    {
+        out.push_back(static_cast<char>(cp));
+    }
+    else if (cp < 0x800)
+    {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    else if (cp < 0x10000)
+    {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    else
+    {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
 } // namespace
 
 std::vector<std::uint8_t> unwrapDle(std::uint8_t const* data, std::size_t size, bool& ok)
@@ -187,12 +213,26 @@ TslMessage parseTsl5(std::uint8_t const* body, std::size_t size)
         update.brightness = (control >> 6) & 0x3;
         if (unicode)
         {
+            // UTF-16LE to UTF-8 (the overlay and the API carry UTF-8). A lone surrogate is U+FFFD.
             for (int i = 0; i + 1 < length; i += 2)
             {
-                char const ch = static_cast<char>(body[cursor + static_cast<std::size_t>(i)]);
-                if (ch != 0)
+                std::uint32_t cp = read16(body + cursor + static_cast<std::size_t>(i));
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 3 < length)
                 {
-                    update.textValue.push_back(ch);
+                    std::uint32_t const low = read16(body + cursor + static_cast<std::size_t>(i) + 2);
+                    if (low >= 0xDC00 && low <= 0xDFFF)
+                    {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                        i += 2;
+                    }
+                }
+                if (cp >= 0xD800 && cp <= 0xDFFF)
+                {
+                    cp = 0xFFFD;
+                }
+                if (cp != 0)
+                {
+                    appendUtf8(update.textValue, cp);
                 }
             }
         }
@@ -236,6 +276,8 @@ TslMessage parseTsl31(std::uint8_t const* data, std::size_t size)
     {
         tally = 2;
     }
+    // TSL 3.1 has one tally: both lamps and the text show it.
+    update.lh = tally;
     update.rh = tally;
     update.text = tally;
     update.textValue.assign(reinterpret_cast<char const*>(data + 2), reinterpret_cast<char const*>(data + 18));

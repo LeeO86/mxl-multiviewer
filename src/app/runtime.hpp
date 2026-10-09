@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "config/config.hpp"
+#include "control/tsl.hpp"
 
 namespace mv
 {
@@ -62,8 +63,13 @@ struct InputView
     bool alarmFormat = false;
     // Wall-clock milliseconds since the Unix epoch when each alarm became active, 0 when it is not.
     std::array<std::int64_t, kAlarmCount> alarmSinceMs{};
+    // TSL (§7): the label text, the border colour (text, else RH, else LH), and the three
+    // tally fields as received. 0 off, 1 red, 2 green, 3 amber.
     std::string tslText;
     int tally = 0;
+    int tslLh = 0;
+    int tslRh = 0;
+    int tslTextTally = 0;
 };
 
 struct OutputView
@@ -92,7 +98,7 @@ public:
     // the audio reader owns `audio`, the meters, and the silence and clip alarms.
     void setInputVideo(InputView const& view);
     void setInputAudio(InputView const& view);
-    void setTally(int input, std::string text, int tally);
+    void setTally(int input, TallyUpdate const& update);
     void addLate(int input);
     void setOutput(OutputView view);
     void setPreview(int head, std::string jpeg);

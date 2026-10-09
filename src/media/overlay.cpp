@@ -766,19 +766,27 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         }
         if (umd)
         {
-            overlay.fillRect(r.x, umdY, r.w, band, tile.umdBg);
+            // tally_text: the text tally fills the band and the text turns black, readable on red, green, and amber.
+            bool const textBg = tile.textTallyBg && tile.textTally != 0;
+            overlay.fillRect(r.x, umdY, r.w, band, textBg ? tallyColor(tile.textTally) : tile.umdBg);
             int const lamp = std::max(6, band / 2);
             int const textX = r.x + (tile.tallyLamp ? lamp + 8 : 8);
             int const room = r.w - (textX - r.x) - (tile.tallyLamp ? lamp + 8 : 8);
-            overlay.text(textX, umdY + (band - tile.umdFont) / 2, fitText(overlay, tile.umdText, tile.umdFont, room), tile.umdFont, tile.umdFg);
+            overlay.text(textX, umdY + (band - tile.umdFont) / 2, fitText(overlay, tile.umdText, tile.umdFont, room), tile.umdFont,
+                textBg ? Rgba{0, 0, 0, 255} : tile.umdFg);
             if (tile.tallyLamp)
             {
-                auto const color = tallyColor(tile.tally);
-                if (color.a != 0)
+                // An off lamp is not drawn.
+                int const lampY = umdY + (band - lamp) / 2;
+                auto const left = tallyColor(tile.lhTally);
+                auto const right = tallyColor(tile.rhTally);
+                if (left.a != 0)
                 {
-                    int const lampY = umdY + (band - lamp) / 2;
-                    overlay.fillRect(r.x + 4, lampY, lamp, lamp, color);
-                    overlay.fillRect(r.x + r.w - lamp - 4, lampY, lamp, lamp, color);
+                    overlay.fillRect(r.x + 4, lampY, lamp, lamp, left);
+                }
+                if (right.a != 0)
+                {
+                    overlay.fillRect(r.x + r.w - lamp - 4, lampY, lamp, lamp, right);
                 }
             }
         }

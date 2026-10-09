@@ -89,6 +89,12 @@ const firstChannel = computed({
   set: (v) => (props.tile.audio_bar_first = Math.max(0, Math.min(16 - props.tile.audio_bar_channels, Math.round(Number(v) || 1) - 1))),
 });
 
+// tally_text: null follows the layout, true or false overrides it.
+const tallyText = computed({
+  get: () => props.tile.tally_text ?? null,
+  set: (v) => (props.tile.tally_text = v),
+});
+
 const textLabel = computed(() => (props.tile.umd_source === "manual" ? "Caption text" : "Fallback text"));
 const textHelp = computed(() => {
   if (props.tile.umd_source === "manual") return "Always shown as written.";
@@ -221,6 +227,17 @@ function toggleMarker(marker) {
       <div class="checks">
         <label v-for="o in OVERLAYS" :key="o.key" class="check"><input v-model="tile[o.key]" type="checkbox" /> {{ o.label }}</label>
       </div>
+      <Field
+        label="Text tally as caption background"
+        id="tile-tally-text"
+        help="The left lamp shows the TSL left-hand tally, the right lamp the right-hand tally. This colours the caption with the text tally."
+      >
+        <select id="tile-tally-text" v-model="tallyText" :disabled="!tile.umd">
+          <option :value="null">As the layout ({{ layout.tally_text ? "on" : "off" }})</option>
+          <option :value="true">On</option>
+          <option :value="false">Off</option>
+        </select>
+      </Field>
       <Field label="Aspect ratio markers">
         <div class="row tight">
           <label v-for="m in MARKERS" :key="m" class="check">
