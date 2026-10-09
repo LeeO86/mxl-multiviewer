@@ -272,6 +272,9 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `audio_bar_first` | 0-based channel; `audio_bar_first` + `audio_bar_channels` ≤ 16 | 0 |
 | `audio_bar_position` | `left`, `right`, `overlay` | `right` |
 | `zone_green`, `zone_amber` | dBFS where amber and where red start; −60 ≤ `zone_green` ≤ `zone_amber` ≤ 0 | −18 / −9 |
+| `alarm_border` | bool, the alarm border (§6.3) | true |
+| `alarm_labels` | bool, a label per active alarm (§6.3) | true |
+| `alarm_label_position` | `top-left`, `top`, `top-right`, `bottom-left`, `bottom`, `bottom-right`: where the labels stack from | `top` |
 | `format_label` | bool | true |
 | `latency` | bool, grain origin versus now | false |
 | `safe_area` | 90% and 80% rectangles | false |
@@ -302,7 +305,7 @@ Evaluated per input with debounce `MV_ALARM_DEBOUNCE_MS` (default 500) and clear
 | `clip` | clip latch on a metered channel |
 | `format_mismatch` | routed video is outside the receiver caps (rate or raster the node did not advertise, or not v210/v210a) |
 
-An alarm shows a badge and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally: the alarm border sits inside the tally border. A tile that shows a slate (§6.4) has no badge. Active alarms increment `mxl_multiviewer_alarms_total`. `silence` also rises when routed audio does not arrive.
+An alarm shows a label and a coloured border (red for no-signal, black, freeze; amber for silence and format; red for clip) distinct from tally: the alarm border sits inside the tally border. Each active alarm has its own label in its own colour, most severe first (no signal, black, freeze, clip, silence, format), stacked from `alarm_label_position` into the tile (downwards from a top position, upwards from a bottom one) as far as the tile has room; labels at a side keep clear of the audio bars on that side and, top left, of the format and latency captions. `alarm_border` and `alarm_labels` turn either off (both off: no alarm display on that tile). A tile that shows a slate (§6.4) has no label. Active alarms increment `mxl_multiviewer_alarms_total`. `silence` also rises when routed audio does not arrive.
 
 ### 6.4 Slate
 

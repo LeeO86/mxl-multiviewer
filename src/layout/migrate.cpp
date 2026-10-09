@@ -33,6 +33,9 @@ Tile legacyTile()
     tile.audioBarPosition = BarsPosition::Right;
     tile.zoneGreen = -18;
     tile.zoneAmber = -9;
+    tile.alarmBorder = true;
+    tile.alarmLabels = true;
+    tile.alarmLabelPosition = AlarmLabelPosition::Top;
     tile.formatLabel = true;
     tile.latency = false;
     tile.safeArea = false;
@@ -199,6 +202,7 @@ bool sameLayout(Layout const& a, Layout const& b)
                           x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.tallyText == y.tallyText && x.audioBars == y.audioBars &&
                           x.audioBarRms == y.audioBarRms && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
                           x.audioBarPosition == y.audioBarPosition && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&
+                          x.alarmBorder == y.alarmBorder && x.alarmLabels == y.alarmLabels && x.alarmLabelPosition == y.alarmLabelPosition &&
                           x.formatLabel == y.formatLabel && x.latency == y.latency && x.safeArea == y.safeArea && x.centre == y.centre &&
                           x.aspectMarkers == y.aspectMarkers && x.clockStyle == y.clockStyle && x.clockZone == y.clockZone &&
                           x.timecodeRate == y.timecodeRate && x.labelText == y.labelText;

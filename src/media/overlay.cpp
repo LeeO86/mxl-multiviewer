@@ -803,17 +803,51 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         {
             overlay.text(captionX, contentTop + caption + 6, tile.latencyText, caption, {180, 220, 255, 220});
         }
-        if (!tile.badge.empty())
+        if (!tile.badges.empty())
         {
             int const size = std::max(10, scaled(16, s));
             int const padX = std::max(4, scaled(6, s));
             int const height = size + std::max(4, scaled(6, s));
-            int const width = std::min(r.w - 2 * thickness, overlay.textWidth(tile.badge, size) + 2 * padX);
-            int const x = r.x + (r.w - width) / 2;
-            int const y = contentTop + thickness * 2;
-            bool const amber = tile.alarm == AlarmLevel::Amber;
-            overlay.fillRect(x, y, width, height, amber ? Rgba{240, 170, 30, 235} : Rgba{200, 30, 30, 235});
-            centredText(overlay, x + width / 2, y + height / 2, tile.badge, size, amber ? Rgba{24, 18, 6, 255} : Rgba{255, 255, 255, 255});
+            int const gap = std::max(2, scaled(3, s));
+            auto const pos = tile.badgePosition;
+            bool const bottom = pos == AlarmLabelPosition::BottomLeft || pos == AlarmLabelPosition::Bottom || pos == AlarmLabelPosition::BottomRight;
+            bool const left = pos == AlarmLabelPosition::TopLeft || pos == AlarmLabelPosition::BottomLeft;
+            bool const right = pos == AlarmLabelPosition::TopRight || pos == AlarmLabelPosition::BottomRight;
+            // Centred labels span the tile inside the tally border (as before 1.3.0); labels at
+            // a side keep clear of the borders, the audio bars on that side, and the format caption.
+            int areaLeft = r.x + (left ? 2 * thickness : thickness);
+            int areaRight = r.x + r.w - (right ? 2 * thickness : thickness);
+            if (left && bars.w > 0 && bars.x + bars.w < r.x + r.w / 2)
+            {
+                areaLeft = std::max(areaLeft, bars.x + bars.w + gap);
+            }
+            if (right && bars.w > 0 && bars.x > r.x + r.w / 2)
+            {
+                areaRight = std::min(areaRight, bars.x - gap);
+            }
+            int y = bottom ? contentBottom - thickness * 2 - height : contentTop + thickness * 2;
+            if (pos == AlarmLabelPosition::TopLeft && !tile.latencyText.empty())
+            {
+                y = std::max(y, contentTop + 2 * caption + 6 + gap);
+            }
+            else if (pos == AlarmLabelPosition::TopLeft && !tile.formatText.empty())
+            {
+                y = std::max(y, contentTop + caption + 4 + gap);
+            }
+            // Stacked from the edge into the tile, in alarm order, as many as fit.
+            for (auto const& badge : tile.badges)
+            {
+                if (y < contentTop || y + height > contentBottom || areaRight - areaLeft < 2 * padX)
+                {
+                    break;
+                }
+                int const width = std::min(areaRight - areaLeft, overlay.textWidth(badge.text, size) + 2 * padX);
+                int const x = left ? areaLeft : right ? areaRight - width : areaLeft + (areaRight - areaLeft - width) / 2;
+                bool const amber = badge.level == AlarmLevel::Amber;
+                overlay.fillRect(x, y, width, height, amber ? Rgba{240, 170, 30, 235} : Rgba{200, 30, 30, 235});
+                centredText(overlay, x + width / 2, y + height / 2, badge.text, size, amber ? Rgba{24, 18, 6, 255} : Rgba{255, 255, 255, 255});
+                y += bottom ? -(height + gap) : height + gap;
+            }
         }
     }
 #ifdef MV_WITH_BLEND2D
@@ -824,6 +858,29 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         copyPremultipliedBgra(image, overlay);
     }
 #endif
+}
+
+void showAlarms(OverlayTile& item, Tile const& tile, ActiveAlarms const& alarms)
+{
+    bool const red = alarms.noSignal || alarms.black || alarms.freeze || alarms.clip;
+    bool const amber = alarms.silence || alarms.format;
+    item.alarm = !tile.alarmBorder ? AlarmLevel::None : red ? AlarmLevel::Red : amber ? AlarmLevel::Amber : AlarmLevel::None;
+    item.badges.clear();
+    item.badgePosition = tile.alarmLabelPosition;
+    if (!item.slate.empty() || !tile.alarmLabels)
+    {
+        return;
+    }
+    std::pair<bool, AlarmBadge> const labels[] = {{alarms.noSignal, {"NO SIGNAL", AlarmLevel::Red}}, {alarms.black, {"BLACK", AlarmLevel::Red}},
+        {alarms.freeze, {"FREEZE", AlarmLevel::Red}}, {alarms.clip, {"CLIP", AlarmLevel::Red}}, {alarms.silence, {"SILENCE", AlarmLevel::Amber}},
+        {alarms.format, {"FORMAT", AlarmLevel::Amber}}};
+    for (auto const& [active, label] : labels)
+    {
+        if (active)
+        {
+            item.badges.push_back(label);
+        }
+    }
 }
 
 bool overlayUsesBlend2d()

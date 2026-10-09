@@ -71,6 +71,13 @@ enum class AlarmLevel
     Amber
 };
 
+// One alarm label: the alarm's name in its colour.
+struct AlarmBadge
+{
+    std::string text;
+    AlarmLevel level = AlarmLevel::Red;
+};
+
 struct OverlayTile
 {
     PixelRect rect;
@@ -109,9 +116,10 @@ struct OverlayTile
     bool safeArea = false;
     bool centre = false;
     std::vector<std::string> aspectMarkers;
-    // Alarm badge text and the colour of badge and alarm border.
-    std::string badge;
+    // The alarm border's colour (None: no border), and the labels stacked at `badgePosition`.
     AlarmLevel alarm = AlarmLevel::None;
+    std::vector<AlarmBadge> badges;
+    AlarmLabelPosition badgePosition = AlarmLabelPosition::Top;
     // Text over the black tile after MV_HOLD_MS (§6.4): NO SIGNAL, NOT ROUTED or WAITING,
     // with the input label under it.
     std::string slate;
@@ -125,6 +133,23 @@ struct OverlayTile
     std::string timecodeText;
     std::string labelText;
 };
+
+// The active alarms of an input (§6.3).
+struct ActiveAlarms
+{
+    bool noSignal = false;
+    bool black = false;
+    bool freeze = false;
+    bool clip = false;
+    bool silence = false;
+    bool format = false;
+};
+
+// The alarm border and labels of an input tile, as its options say (`alarm_border`,
+// `alarm_labels`, `alarm_label_position`): red for no signal, black, freeze, and clip, amber
+// for silence and format; one label per active alarm, most severe first. A tile with a
+// slate (set `item.slate` first) gets no labels: the slate says what is wrong.
+void showAlarms(OverlayTile& item, Tile const& tile, ActiveAlarms const& alarms);
 
 // PPM scale marks in dBFS (§5.7), and the meter range they cover.
 inline constexpr std::array<int, 8> kPpmMarks{0, -6, -12, -18, -24, -36, -48, -60};

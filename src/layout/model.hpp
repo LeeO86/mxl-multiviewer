@@ -46,6 +46,16 @@ enum class UmdAlign
     Centre,
     Right
 };
+// Where a tile's alarm labels stack (§6.3): from that corner or edge into the tile.
+enum class AlarmLabelPosition
+{
+    TopLeft,
+    Top,
+    TopRight,
+    BottomLeft,
+    Bottom,
+    BottomRight
+};
 enum class BarsPosition
 {
     Left,
@@ -90,6 +100,10 @@ struct Tile
     BarsPosition audioBarPosition = BarsPosition::Right;
     double zoneGreen = -18;
     double zoneAmber = -9;
+    // Alarm display (§6.3): the alarm border, and a label per active alarm.
+    bool alarmBorder = true;
+    bool alarmLabels = true;
+    AlarmLabelPosition alarmLabelPosition = AlarmLabelPosition::Top;
     bool formatLabel = true;
     bool latency = false;
     bool safeArea = false;

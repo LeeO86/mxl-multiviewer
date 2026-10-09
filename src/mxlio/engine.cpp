@@ -1238,40 +1238,9 @@ struct Engine::Impl
                     item.formatText.clear();
                     item.latencyText.clear();
                 }
-                // §6.3: red for no signal, black, freeze, and clip; amber for silence and format.
                 bool const clip = sound != nullptr && sound->alarmClip;
                 bool const silence = sound != nullptr && sound->alarmSilence;
-                bool const red = current->alarmNoSignal || current->alarmBlack || current->alarmFreeze || clip;
-                bool const amber = silence || current->alarmFormat;
-                item.alarm = red ? AlarmLevel::Red : amber ? AlarmLevel::Amber : AlarmLevel::None;
-                // A slate already says what is wrong; the badge names the first other alarm.
-                if (item.slate.empty())
-                {
-                    if (current->alarmNoSignal)
-                    {
-                        item.badge = "NO SIGNAL";
-                    }
-                    else if (current->alarmBlack)
-                    {
-                        item.badge = "BLACK";
-                    }
-                    else if (current->alarmFreeze)
-                    {
-                        item.badge = "FREEZE";
-                    }
-                    else if (clip)
-                    {
-                        item.badge = "CLIP";
-                    }
-                    else if (silence)
-                    {
-                        item.badge = "SILENCE";
-                    }
-                    else if (current->alarmFormat)
-                    {
-                        item.badge = "FORMAT";
-                    }
-                }
+                showAlarms(item, tile, ActiveAlarms{current->alarmNoSignal, current->alarmBlack, current->alarmFreeze, clip, silence, current->alarmFormat});
             }
             item.safeArea = tile.safeArea;
             item.centre = tile.centre;

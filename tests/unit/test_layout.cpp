@@ -120,6 +120,35 @@ TEST_CASE("umd_align is left, centre, or right; a saved tile without it stays le
     CHECK_FALSE(sameLayout(old[1], edited));
 }
 
+TEST_CASE("alarm display options: border and labels on by default, label positions checked")
+{
+    auto const body = [](std::string const& options) {
+        return "{\"version\":1,\"name\":\"a\",\"tiles\":[{\"id\":\"a\",\"input\":1" + options + ",\"rect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1}}]}";
+    };
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(body(""), layout, 4).has_value());
+    CHECK(layout.tiles[0].alarmBorder);
+    CHECK(layout.tiles[0].alarmLabels);
+    CHECK(layout.tiles[0].alarmLabelPosition == AlarmLabelPosition::Top);
+    REQUIRE_FALSE(parseLayout(body(",\"alarm_border\":false,\"alarm_labels\":true,\"alarm_label_position\":\"bottom-right\""), layout, 4).has_value());
+    CHECK_FALSE(layout.tiles[0].alarmBorder);
+    CHECK(layout.tiles[0].alarmLabelPosition == AlarmLabelPosition::BottomRight);
+    auto const json = layoutToJson(layout);
+    CHECK(json.find("\"alarm_border\":false,\"alarm_labels\":true,\"alarm_label_position\":\"bottom-right\"") != std::string::npos);
+    Layout back;
+    REQUIRE_FALSE(parseLayout(json, back, 4).has_value());
+    CHECK(back.tiles[0].alarmLabelPosition == AlarmLabelPosition::BottomRight);
+    for (auto const* position : {"top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"})
+    {
+        CHECK_FALSE(parseLayout(body(std::string(",\"alarm_label_position\":\"") + position + "\""), layout, 4).has_value());
+    }
+    CHECK(parseLayout(body(",\"alarm_label_position\":\"middle\""), layout, 4).has_value());
+    auto const old = legacyPresets(16);
+    Layout edited = old[1];
+    edited.tiles[0].alarmLabels = false;
+    CHECK_FALSE(sameLayout(old[1], edited));
+}
+
 TEST_CASE("audio zones must rise towards full scale")
 {
     auto const body = [](int green, int amber) {

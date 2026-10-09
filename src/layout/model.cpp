@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace mv
 {
@@ -154,6 +155,34 @@ std::optional<UmdAlign> umdAlignFromString(std::string const& text)
     if (text == "right")
     {
         return UmdAlign::Right;
+    }
+    return std::nullopt;
+}
+
+constexpr std::pair<AlarmLabelPosition, char const*> kAlarmLabelPositions[] = {{AlarmLabelPosition::TopLeft, "top-left"}, {AlarmLabelPosition::Top, "top"},
+    {AlarmLabelPosition::TopRight, "top-right"}, {AlarmLabelPosition::BottomLeft, "bottom-left"}, {AlarmLabelPosition::Bottom, "bottom"},
+    {AlarmLabelPosition::BottomRight, "bottom-right"}};
+
+char const* alarmLabelPositionToString(AlarmLabelPosition pos)
+{
+    for (auto const& [value, name] : kAlarmLabelPositions)
+    {
+        if (value == pos)
+        {
+            return name;
+        }
+    }
+    return "top";
+}
+
+std::optional<AlarmLabelPosition> alarmLabelPositionFromString(std::string const& text)
+{
+    for (auto const& [value, name] : kAlarmLabelPositions)
+    {
+        if (text == name)
+        {
+            return value;
+        }
     }
     return std::nullopt;
 }
@@ -622,6 +651,14 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
                                    std::to_string(tile.audioBarFirst + tile.audioBarChannels));
             }
         }
+        tile.alarmBorder = flag(tileObj, "alarm_border", true);
+        tile.alarmLabels = flag(tileObj, "alarm_labels", true);
+        auto const labels = alarmLabelPositionFromString(str(tileObj, "alarm_label_position", "top"));
+        if (!labels)
+        {
+            return "alarm_label_position is invalid";
+        }
+        tile.alarmLabelPosition = *labels;
         tile.formatLabel = flag(tileObj, "format_label", true);
         tile.latency = flag(tileObj, "latency", false);
         tile.safeArea = flag(tileObj, "safe_area", false);
@@ -690,6 +727,8 @@ std::string layoutToJson(Layout const& layout)
             << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
             << barsToString(tile.audioBarPosition) << "\",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber
+            << ",\"alarm_border\":" << (tile.alarmBorder ? "true" : "false") << ",\"alarm_labels\":" << (tile.alarmLabels ? "true" : "false")
+            << ",\"alarm_label_position\":\"" << alarmLabelPositionToString(tile.alarmLabelPosition) << '"'
             << ",\"format_label\":" << (tile.formatLabel ? "true" : "false") << ",\"latency\":" << (tile.latency ? "true" : "false")
             << ",\"safe_area\":" << (tile.safeArea ? "true" : "false") << ",\"centre\":" << (tile.centre ? "true" : "false") << ",\"aspect_markers\":[";
         for (std::size_t m = 0; m < tile.aspectMarkers.size(); ++m)

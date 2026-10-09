@@ -29,6 +29,14 @@ const RATES = [
   { value: "60", label: "60 fps" },
 ];
 const MARKERS = ["16:9", "4:3", "1:1", "9:16"];
+const ALARM_SPOTS = [
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top centre" },
+  { value: "top-right", label: "Top right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom centre" },
+  { value: "bottom-right", label: "Bottom right" },
+];
 const ALIGNS = [
   { id: "left", label: "Left" },
   { id: "centre", label: "Centre" },
@@ -240,6 +248,23 @@ function toggleMarker(marker) {
       <div class="actions" style="margin-top: 0.4rem">
         <button class="btn small secondary" :disabled="inputTiles.length < 2" @click="barsToAll">Apply to all {{ inputTiles.length }} input tiles</button>
       </div>
+    </div>
+
+    <div class="panel">
+      <h3>Alarms</h3>
+      <div class="checks">
+        <label class="check"><input v-model="tile.alarm_border" type="checkbox" /> Alarm border</label>
+        <label class="check"><input v-model="tile.alarm_labels" type="checkbox" /> Alarm labels</label>
+      </div>
+      <Field label="Labels at" id="tile-alarm-pos">
+        <select id="tile-alarm-pos" v-model="tile.alarm_label_position" :disabled="!tile.alarm_labels">
+          <option v-for="p in ALARM_SPOTS" :key="p.value" :value="p.value">{{ p.label }}</option>
+        </select>
+      </Field>
+      <p class="note">
+        One label per active alarm (no signal, black, freeze, clip, silence, format), stacked from that edge into the tile. The border is red or amber,
+        inside the tally border. Turn both off to show no alarms on this tile; the Alarms tab still lists them.
+      </p>
     </div>
 
     <div class="panel">

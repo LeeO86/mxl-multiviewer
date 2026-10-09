@@ -472,7 +472,7 @@ TEST_CASE("overlay draws umd pixels")
     tile.umdFont = 16;
     tile.tally = 1;
     tile.tallyBorder = true;
-    tile.badge = "NOSIG";
+    tile.badges = {{"NOSIG", AlarmLevel::Red}};
     renderOverlay(overlay, {tile});
     int ink = 0;
     for (std::size_t i = 3; i < overlay.rgba.size(); i += 4)
@@ -768,16 +768,18 @@ TEST_CASE("slate shows the state and the input in the middle of the tile")
 
 TEST_CASE("alarm border and badge colours follow the alarm level")
 {
-    // 540 canvas: tally border 4 px, alarm border 2 px inside it.
+    // 540 canvas: tally border 4 px, alarm border 2 px inside it. Default tile options: as before 1.3.0.
     Overlay overlay;
     overlay.resize(960, 540);
     OverlayTile silence;
     silence.rect = {0, 0, 480, 270};
-    silence.alarm = AlarmLevel::Amber;
+    showAlarms(silence, Tile{}, ActiveAlarms{.silence = true});
+    CHECK(silence.alarm == AlarmLevel::Amber);
     OverlayTile black;
     black.rect = {480, 0, 480, 270};
-    black.alarm = AlarmLevel::Red;
-    black.badge = "BLACK";
+    showAlarms(black, Tile{}, ActiveAlarms{.black = true});
+    REQUIRE(black.badges.size() == 1);
+    CHECK(black.badges[0].text == "BLACK");
     renderOverlay(overlay, {silence, black});
     auto const* amberEdge = pixel(overlay, 5, 135);
     CHECK(amberEdge[3] > 200);
@@ -792,6 +794,62 @@ TEST_CASE("alarm border and badge colours follow the alarm level")
     // Nothing in the middle of either tile.
     CHECK(countPixels(overlay, 100, 100, 380, 200, inked) == 0);
     CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
+}
+
+TEST_CASE("alarm display: labels stack at their position, border and labels can be off")
+{
+    // 540 canvas, 480 × 270 tile: border 4 px, labels 14 px high with 2 px between them.
+    auto const redLabel = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 180 && px[1] < 60; };
+    auto const amberLabel = [](std::uint8_t const* px) { return px[3] > 200 && px[0] > 220 && px[1] > 150 && px[2] < 60; };
+    ActiveAlarms const alarms{.black = true, .silence = true};
+    auto const draw = [&](Tile const& options, std::string const& format = {}) {
+        OverlayTile item;
+        item.rect = {0, 0, 480, 270};
+        item.formatText = format;
+        showAlarms(item, options, alarms);
+        Overlay overlay;
+        overlay.resize(960, 540);
+        renderOverlay(overlay, {item});
+        return overlay;
+    };
+    // Default: the alarm border, and every active alarm as a label, most severe first, from the top centre down.
+    Tile options;
+    auto const top = draw(options);
+    CHECK(countPixels(top, 200, 8, 280, 22, redLabel) > 100);
+    CHECK(countPixels(top, 200, 24, 280, 38, amberLabel) > 100);
+    CHECK(countPixels(top, 0, 100, 4, 140, inked) == 0);
+    CHECK(countPixels(top, 4, 100, 6, 140, redLabel) == 2 * 40);
+    // Bottom right: from the bottom edge up, right-aligned inside the border.
+    options.alarmLabelPosition = AlarmLabelPosition::BottomRight;
+    auto const corner = draw(options);
+    CHECK(countPixels(corner, 420, 248, 472, 262, redLabel) > 100);
+    CHECK(countPixels(corner, 420, 232, 472, 246, amberLabel) > 100);
+    CHECK(countPixels(corner, 472, 232, 474, 262, redLabel) == 0); // the alarm border is at x 474..475
+    CHECK(countPixels(corner, 8, 8, 470, 40, [&](std::uint8_t const* px) { return redLabel(px) || amberLabel(px); }) == 0);
+    // Top left keeps clear of the format caption.
+    options.alarmLabelPosition = AlarmLabelPosition::TopLeft;
+    auto const left = draw(options, "1080p50");
+    CHECK(countPixels(left, 8, 14, 60, 28, redLabel) > 100);
+    CHECK(countPixels(left, 8, 8, 60, 13, redLabel) == 0);
+    // Labels only, border only, none.
+    options.alarmLabelPosition = AlarmLabelPosition::Top;
+    options.alarmBorder = false;
+    auto const labelsOnly = draw(options);
+    CHECK(countPixels(labelsOnly, 4, 100, 6, 140, inked) == 0);
+    CHECK(countPixels(labelsOnly, 200, 8, 280, 22, redLabel) > 100);
+    options.alarmBorder = true;
+    options.alarmLabels = false;
+    auto const borderOnly = draw(options);
+    CHECK(countPixels(borderOnly, 4, 100, 6, 140, redLabel) == 2 * 40);
+    CHECK(countPixels(borderOnly, 200, 8, 280, 40, [&](std::uint8_t const* px) { return redLabel(px) || amberLabel(px); }) == 0);
+    options.alarmBorder = false;
+    CHECK(countPixels(draw(options), 0, 0, 480, 270, inked) == 0);
+    // A slate says what is wrong: no labels.
+    OverlayTile slate;
+    slate.slate = "NO SIGNAL";
+    showAlarms(slate, Tile{}, ActiveAlarms{.noSignal = true});
+    CHECK(slate.badges.empty());
+    CHECK(slate.alarm == AlarmLevel::Red);
 }
 
 TEST_CASE("caption text aligns left, centre, or right; text that overflows is cut")
