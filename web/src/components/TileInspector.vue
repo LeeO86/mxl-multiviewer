@@ -1,7 +1,7 @@
 <script setup>
 // Settings of the selected tile (§6.2), grouped by what they change on the wall.
 import { computed } from "vue";
-import { inputLabel } from "../api.js";
+import { inputLabel, live } from "../api.js";
 import Field from "./Field.vue";
 
 const props = defineProps({
@@ -270,7 +270,10 @@ function toggleMarker(marker) {
         </select>
       </Field>
     </div>
-    <p class="note">Local time is the time zone of the multiviewer host (TZ). Timecode is HH:MM:SS:FF counted from TAI at the chosen rate.</p>
+    <p class="note">
+      Local time is the multiviewer's time zone ({{ live.info?.timezone || "unknown" }}: MV_TIMEZONE, else TZ). Timecode is HH:MM:SS:FF counted from TAI at the
+      chosen rate.
+    </p>
   </div>
 
   <div v-else-if="tile.content === 'label'" class="panel">

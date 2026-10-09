@@ -162,7 +162,8 @@ HttpResponse Api::handle(HttpRequest const& request)
             << quote(config_.nmosLabel.empty() ? config_.hostId : config_.nmosLabel) << ",\"backend\":\"" << config_.backend
             << "\",\"cuda_compiled\":" << (runtime_.cudaCompiled() ? "true" : "false") << ",\"cuda_devices\":" << runtime_.cudaDevices()
             << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"grid\":" << config_.grid << ",\"preview_fps\":"
-            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
+            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"timezone\":" << quote(localZoneName()) << ",\"utc_offset_s\":" << utcOffsetSeconds()
+            << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
             << ids.device << "\",\"domain_id\":\"" << (config_.outputDomainId.empty() ? ids.domain : config_.outputDomainId) << "\",\"overlay_blend2d\":"
             << (overlayUsesBlend2d() ? "true" : "false") << ",\"receivers\":[";
         for (int i = 1; i <= config_.maxInputs; ++i)

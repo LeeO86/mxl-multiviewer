@@ -2,7 +2,7 @@
 // A tile on the editor canvas, drawn the way the output shows it: input number and source,
 // caption (UMD), audio bars with live levels, the clock, or the label text.
 import { computed } from "vue";
-import { live, meterPct, stateText } from "../api.js";
+import { live, localClock, meterPct, stateText } from "../api.js";
 
 const props = defineProps({
   tile: { type: Object, required: true },
@@ -42,14 +42,11 @@ function rgba(hex) {
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a.toFixed(2)})`;
 }
 
-// Clock time in the tile's zone; TAI is UTC plus 37 s.
+// Clock time in the tile's zone; TAI is UTC plus 37 s, local is the multiviewer's zone.
 const clock = computed(() => {
   const t = props.tile;
   const at = new Date(props.now + (t.clock_zone === "tai" ? 37000 : 0));
-  const local = t.clock_zone === "local";
-  const h = local ? at.getHours() : at.getUTCHours();
-  const m = local ? at.getMinutes() : at.getUTCMinutes();
-  const s = local ? at.getSeconds() : at.getUTCSeconds();
+  const { h, m, s } = t.clock_zone === "local" ? localClock(props.now) : { h: at.getUTCHours(), m: at.getUTCMinutes(), s: at.getUTCSeconds() };
   const pad = (v) => String(v).padStart(2, "0");
   return { text: `${pad(h)}:${pad(m)}:${pad(s)}`, h, m, s };
 });

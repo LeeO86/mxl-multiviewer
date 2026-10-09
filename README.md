@@ -81,7 +81,7 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 
 `GET /api/v1/config/export` returns one JSON document (`version`, `secrets`, `settings`, `layouts`, `routes`). This process has no secrets, so `secrets` is false and nothing is left out. `POST /api/v1/config/import` restores that document. Settings set by the environment are skipped (listed in `skipped`). Routes in the file apply on the next start.
 
-`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket and `/statusz`) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`, and per input the TSL state: `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour), and `tsl_text` (the label). `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, and `hold_ms`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
+`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket and `/statusz`) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`, and per input the TSL state: `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour), and `tsl_text` (the label). `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, `hold_ms`, `timezone`, and `utc_offset_s`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
 
 `/readyz` is 200 when the composer heartbeat is fresh and, if a registry address is set, the Query API currently lists the node. `/metrics` is Prometheus text with the prefix `mxl_multiviewer_`.
 
@@ -119,6 +119,7 @@ Precedence is environment, then `MV_CONFIG_FILE` (one flat JSON object of string
 | `MV_ALARM_CLEAR_MS` | `500` | no |
 | `MV_FREEZE_MS` | `2000` | no |
 | `MV_BACKGROUND_FILE` | empty | no |
+| `MV_TIMEZONE` | empty (`TZ`) | yes |
 | `MV_CONFIG_FILE` | empty (`<MV_STATE_DIR>/config.json`) | yes |
 | `NMOS_ENABLE` | `true` | yes |
 | `NMOS_REGISTRY_ADDRESS` | empty | yes |
@@ -216,6 +217,8 @@ On the platform the tally calculator sends TSL 5.0 to the Service on 8910/udp: s
 | 143 | SIGTERM or SIGINT, including a shutdown that ran past `SHUTDOWN_TIMEOUT_S` |
 
 ### Platform
+
+Clock tiles with local time use `MV_TIMEZONE` (an IANA name such as `Europe/Zurich`), else the container's `TZ`, else UTC; the image has the zone database (`tzdata`). The platform sets `TZ=Europe/Zurich`. `GET /api/v1/info` reports the zone (`timezone`, `utc_offset_s`), and the layout editor draws local clocks in it.
 
 `deploy/mxl-multiviewer.yaml` is the pod-network Deployment: MXL root hostPath `/Volumes/mxl`, writable `/config`, `NMOS_HOST_ADDRESS` from `status.podIP`, probes on `/livez` and `/readyz`, and `terminationGracePeriodSeconds` above `SHUTDOWN_TIMEOUT_S`. Set `MXL_CLEANUP_ON_EXIT=true` so production-down sees the output domain disappear. Replace the example emptyDir with a persistent volume when `/config` must survive a reschedule. The GPU file adds `runtimeClassName: nvidia` and one GPU; the process still starts on CPU when the device is missing and `MV_BACKEND=auto`.
 

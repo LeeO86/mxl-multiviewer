@@ -1,7 +1,9 @@
 #include "media/timebase.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <string>
 
 namespace mv
@@ -39,6 +41,30 @@ std::uint64_t taiNowNs()
         clock_gettime(CLOCK_REALTIME, &ts);
     }
     return static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<std::uint64_t>(ts.tv_nsec);
+}
+
+std::string localZoneName()
+{
+    if (char const* tz = std::getenv("TZ"); tz != nullptr && *tz != '\0')
+    {
+        return tz[0] == ':' ? tz + 1 : tz;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists("/etc/localtime", ec))
+    {
+        return "UTC";
+    }
+    auto const target = std::filesystem::read_symlink("/etc/localtime", ec).string();
+    auto const at = target.find("zoneinfo/");
+    return ec || at == std::string::npos ? std::string{} : target.substr(at + 9);
+}
+
+long utcOffsetSeconds()
+{
+    std::time_t const now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    return tm.tm_gmtoff;
 }
 
 bool parseRateToken(std::string const& text, int& numerator, int& denominator)

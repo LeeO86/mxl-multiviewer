@@ -1,6 +1,7 @@
 #include "app/runtime.hpp"
 #include "config/store.hpp"
 #include "layout/book.hpp"
+#include "media/timebase.hpp"
 #include "mxlio/engine.hpp"
 #include "nmos/node.hpp"
 #include "ops/api.hpp"
@@ -17,7 +18,9 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -79,6 +82,13 @@ int main(int argc, char** argv)
         auto config = store.effectiveConfig();
         mv::setLogLevel(mv::parseLogLevel(config.logLevel));
         mv::setLogFormatJson(config.logFormat != "text");
+        // Local time of the clock tiles (§6.2): MV_TIMEZONE beats TZ. Set before any thread starts.
+        if (!config.timezone.empty())
+        {
+            setenv("TZ", config.timezone.c_str(), 1);
+        }
+        tzset();
+        mv::logInfo("time_zone", {{"zone", mv::localZoneName()}, {"utc_offset_s", std::to_string(mv::utcOffsetSeconds())}});
 #if !defined(MV_WITH_NMOS)
         if (config.nmosEnable)
         {

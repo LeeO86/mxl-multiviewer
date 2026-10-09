@@ -67,7 +67,7 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.
 - Web UI: Vue 3 built to one HTML file and embedded. No CDN.
-- Base image: Ubuntu 24.04. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
+- Base image: Ubuntu 24.04 with `tzdata`. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
 - Tests: doctest (vendored). Integration tests are shell scripts.
 - Where the pinned MXL or nmos-cpp API differs from this text, follow the API and record the deviation.
 
@@ -270,7 +270,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `aspect_markers` | any of `16:9`, `4:3`, `1:1`, `9:16` | none |
 | `scale` | `fit`, `fill` | `fit` |
 
-Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local`, optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
+Clock tiles: `clock_style` `analogue` (also accepted as `analog`) or `digital`, `clock_zone` `tai`, `utc`, or `local` (the zone of `MV_TIMEZONE`, else of `TZ`, else UTC), optional `timecode_rate` (`25`, `50`, `30000/1001`, …) drawn as `HH:MM:SS:FF` from the TAI index at that rate. Other values are rejected. The clock and its timecode are sized to the tile.
 
 Label tiles: `label_text`, centred and sized to the tile.
 
@@ -347,7 +347,7 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
 
-`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, and `hold_ms`. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each), and its TSL state (§7): `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour: text, else RH, else LH), and `tsl_text` (the label). `/statusz` and the WebSocket carry the same input objects. Layout names in paths are percent-decoded.
+`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, `hold_ms`, `timezone` (the IANA zone of `local` clocks: `MV_TIMEZONE`, else `TZ`, else the zone `/etc/localtime` names, else `UTC`; empty when unknown), and `utc_offset_s` (that zone's offset now). The web UI draws `local` clocks in that zone, not in the browser's. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each), and its TSL state (§7): `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour: text, else RH, else LH), and `tsl_text` (the label). `/statusz` and the WebSocket carry the same input objects. Layout names in paths are percent-decoded.
 
 ### 8.3 Ops
 
@@ -394,6 +394,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_ALARM_CLEAR_MS` | 500 | no | |
 | `MV_FREEZE_MS` | 2000 | no | 1000–600000; freeze alarm after the picture has not changed for this long (§6.3) |
 | `MV_BACKGROUND_FILE` | empty | no | JPEG or PNG under the tiles |
+| `MV_TIMEZONE` | empty | yes | IANA zone (`Europe/Zurich`) of clock tiles with `clock_zone: local`; overrides `TZ`. A name the zone database does not have is invalid |
 | `MV_CONFIG_FILE` | empty | yes | flat JSON |
 | `NMOS_ENABLE` | true | yes | |
 | `NMOS_REGISTRY_ADDRESS` | empty | yes | registration dial address. A DNS name is allowed here; it is not announced |

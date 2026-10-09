@@ -140,6 +140,25 @@ export function inputLabel(n) {
   return input?.video?.label || `MV In ${n}`;
 }
 
+/**
+ * Hours, minutes and seconds of `ms` in the multiviewer's local time zone (MV_TIMEZONE, else
+ * TZ; /api/v1/info), which clock tiles with "local" draw; not the browser's zone.
+ */
+export function localClock(ms) {
+  const zone = live.info?.timezone;
+  if (zone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hourCycle: "h23", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(ms);
+      const part = (type) => Number(parts.find((p) => p.type === type)?.value);
+      return { h: part("hour"), m: part("minute"), s: part("second") };
+    } catch {
+      /* not a zone name the browser knows (a POSIX TZ string): use the offset */
+    }
+  }
+  const at = new Date(ms + (live.info?.utc_offset_s || 0) * 1000);
+  return { h: at.getUTCHours(), m: at.getUTCMinutes(), s: at.getUTCSeconds() };
+}
+
 /** Percentage of a PPM bar for a dBFS value (-60..0). */
 export function meterPct(db) {
   const v = typeof db === "number" && Number.isFinite(db) ? db : -120;

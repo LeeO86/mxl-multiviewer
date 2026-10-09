@@ -14,6 +14,7 @@
 #include "util/uuid.hpp"
 
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 
 using namespace mv;
@@ -81,6 +82,62 @@ TEST_CASE("config precedence and validation")
     CHECK(queryOverride.nmosLabel == "wall");
     CHECK(queryOverride.outputDomainId == "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     CHECK(queryOverride.cleanupOnExit);
+}
+
+TEST_CASE("MV_TIMEZONE takes an IANA zone of the zone database; info reports the zone of the clocks")
+{
+    CHECK(knownTimeZone("Europe/Zurich"));
+    CHECK(knownTimeZone("UTC"));
+    CHECK(knownTimeZone("America/Argentina/Buenos_Aires"));
+    CHECK_FALSE(knownTimeZone("Mars/Olympus_Mons"));
+    CHECK_FALSE(knownTimeZone("../../etc/passwd"));
+    CHECK_FALSE(knownTimeZone("/usr/share/zoneinfo/UTC"));
+    CHECK_FALSE(knownTimeZone("Europe/Zurich "));
+    CHECK_FALSE(knownTimeZone("leapseconds")); // a text file of the database, not a zone
+    CHECK(loadConfig({{"NMOS_ENABLE", "false"}, {"MV_TIMEZONE", "Europe/Zurich"}}, {}).timezone == "Europe/Zurich");
+    CHECK(loadConfig({{"NMOS_ENABLE", "false"}}, {}).timezone.empty());
+    CHECK_THROWS_AS(loadConfig({{"NMOS_ENABLE", "false"}, {"MV_TIMEZONE", "CET-1CEST"}}, {}), ConfigError);
+
+    // main() sets TZ from MV_TIMEZONE; local time then follows the zone database.
+    char const* before = std::getenv("TZ");
+    std::string const saved = before != nullptr ? before : "";
+    setenv("TZ", "Europe/Zurich", 1);
+    tzset();
+    CHECK(localZoneName() == "Europe/Zurich");
+    std::time_t const winter = 1768478400; // 2026-01-15 12:00:00 UTC
+    std::time_t const summer = 1784116800; // 2026-07-15 12:00:00 UTC
+    std::tm tm{};
+    localtime_r(&winter, &tm);
+    CHECK(tm.tm_hour == 13);
+    localtime_r(&summer, &tm);
+    CHECK(tm.tm_hour == 14);
+    auto const offset = utcOffsetSeconds();
+    CHECK((offset == 3600 || offset == 7200));
+    std::map<std::string, std::string> env{{"NMOS_ENABLE", "false"}, {"MV_BACKEND", "cpu"}};
+    ConfigStore store(env, std::nullopt);
+    auto const cfg = store.effectiveConfig();
+    LayoutBookStore layouts(cfg.maxInputs, cfg.activeLayout, "");
+    RuntimeModel runtime(cfg);
+    Metrics metrics;
+    Api api(cfg, store, layouts, runtime, metrics);
+    std::string error;
+    auto const info = json::parse(api.handle(HttpRequest{"GET", "/api/v1/info", {}, {}, {}}).body, error);
+    REQUIRE(error.empty());
+    CHECK(info.get("timezone").get<std::string>() == "Europe/Zurich");
+    CHECK(info.get("utc_offset_s").get<double>() == doctest::Approx(offset));
+    setenv("TZ", ":UTC", 1);
+    tzset();
+    CHECK(localZoneName() == "UTC");
+    CHECK(utcOffsetSeconds() == 0);
+    if (before != nullptr)
+    {
+        setenv("TZ", saved.c_str(), 1);
+    }
+    else
+    {
+        unsetenv("TZ");
+    }
+    tzset();
 }
 
 TEST_CASE("config file layer")

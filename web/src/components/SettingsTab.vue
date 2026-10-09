@@ -14,7 +14,7 @@ const importMsg = ref({ kind: "", text: "" });
 const exportMsg = ref("");
 
 const GROUPS = [
-  { title: "Output and layout", test: /^(MV_OUTPUTS|MV_OUTPUT_FORMAT|MV_OUT\d|MV_ACTIVE_LAYOUT|MV_LAYOUTS_FILE|MV_BACKGROUND_FILE|MV_GRID|MV_PREVIEW_|MV_OVERLAY_HZ|MV_AUDIO_)/ },
+  { title: "Output and layout", test: /^(MV_OUTPUTS|MV_OUTPUT_FORMAT|MV_OUT\d|MV_ACTIVE_LAYOUT|MV_LAYOUTS_FILE|MV_BACKGROUND_FILE|MV_GRID|MV_PREVIEW_|MV_OVERLAY_HZ|MV_AUDIO_|MV_TIMEZONE)/ },
   { title: "Inputs and alarms", test: /^(MV_MAX_INPUTS|MV_INPUT_OFFSET|MV_HOLD_MS|MV_BLACK_Y|MV_SILENCE|MV_CLIP|MV_ALARM|MV_FREEZE)/ },
   { title: "NMOS", test: /^NMOS_/ },
   { title: "Web and TSL", test: /^(WEB_|TSL_)/ },
@@ -50,6 +50,7 @@ const DESCRIPTIONS = {
   MV_ALARM_CLEAR_MS: "How long a condition is gone before its alarm clears.",
   MV_FREEZE_MS: "Freeze alarm: the picture has not changed for this long (at least 1000 ms).",
   MV_BACKGROUND_FILE: "JPEG or PNG picture under the tiles.",
+  MV_TIMEZONE: "Time zone of clocks with local time, e.g. Europe/Zurich (empty: TZ).",
   MV_CONFIG_FILE: "This configuration file.",
   NMOS_ENABLE: "Run the NMOS node (IS-04 registration, IS-05 routing).",
   NMOS_REGISTRY_ADDRESS: "Registry address.",

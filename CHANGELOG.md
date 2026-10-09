@@ -16,14 +16,18 @@ TSL 5.0 tally per field, and display options from the platform rollout of 1.2.1.
 - A TSL 3.1 tally sets both lamps and the text tally, so 3.1 looks as before.
 - Freeze: the alarm rises when the picture has not changed for `MV_FREEZE_MS` (new setting, default 2000, at least 1000) and clears after `MV_ALARM_CLEAR_MS` of motion. Before, it compared two grains in a row: a source that repeats grains (25p in 50p, the browser source) kept the alarm up for good once a still moment had raised it. The hash now sums the luma of every second line per block of a 32×18 grid, so a clock or a ticker counts as motion; it sampled about 4096 single pixels before.
 
+- Clocks with local time drew UTC: the image had no time zone database. The image now has `tzdata`, so `TZ` works; the new setting `MV_TIMEZONE` (an IANA name such as `Europe/Zurich`, checked at start) overrides it.
+
 ### Web UI
 
 - Layout editor: "Text tally as caption background" per tile (as the layout, on, off) and per layout.
+- The layout editor draws local clocks in the multiviewer's time zone, not the browser's.
 
 ### API
 
 - `GET /api/v1/inputs`, `/statusz`, and the WebSocket: `tsl_lh`, `tsl_rh`, and `tsl_text_tally` per input, next to `tally` and `tsl_text`.
 - Layouts carry `tally_text` on the layout and on each tile. A value that is not `true` or `false` (or `null` on a tile) is rejected with 400.
+- `GET /api/v1/info`: `timezone` (the zone of local clocks) and `utc_offset_s`.
 
 ## 1.2.1
 
