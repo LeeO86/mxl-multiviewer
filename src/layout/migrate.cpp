@@ -24,6 +24,7 @@ Tile legacyTile()
     tile.umdBg = "#000000c0";
     tile.tallyBorder = true;
     tile.tallyLamp = true;
+    tile.tallyText.reset();
     tile.audioBars = false;
     tile.audioBarRms = false;
     tile.audioBarChannels = 2;
@@ -49,6 +50,7 @@ Layout legacyLayout(std::string name)
     layout.version = 1;
     layout.name = std::move(name);
     layout.background = "#101010";
+    layout.tallyText = false;
     return layout;
 }
 
@@ -182,7 +184,7 @@ std::vector<Layout> legacyPresets(int maxInputs)
 
 bool sameLayout(Layout const& a, Layout const& b)
 {
-    if (a.version != b.version || a.name != b.name || a.background != b.background || a.tiles.size() != b.tiles.size())
+    if (a.version != b.version || a.name != b.name || a.background != b.background || a.tallyText != b.tallyText || a.tiles.size() != b.tiles.size())
     {
         return false;
     }
@@ -193,7 +195,7 @@ bool sameLayout(Layout const& a, Layout const& b)
         bool const same = x.id == y.id && x.content == y.content && x.input == y.input && near(x.rect.x, y.rect.x) && near(x.rect.y, y.rect.y) &&
                           near(x.rect.w, y.rect.w) && near(x.rect.h, y.rect.h) && x.z == y.z && x.scale == y.scale && x.umd == y.umd &&
                           x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdFont == y.umdFont &&
-                          x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.audioBars == y.audioBars &&
+                          x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.tallyText == y.tallyText && x.audioBars == y.audioBars &&
                           x.audioBarRms == y.audioBarRms && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
                           x.audioBarPosition == y.audioBarPosition && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&
                           x.formatLabel == y.formatLabel && x.latency == y.latency && x.safeArea == y.safeArea && x.centre == y.centre &&

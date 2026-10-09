@@ -81,7 +81,7 @@ Two instances on one host need distinct values. A port that cannot be bound exit
 
 `GET /api/v1/config/export` returns one JSON document (`version`, `secrets`, `settings`, `layouts`, `routes`). This process has no secrets, so `secrets` is false and nothing is left out. `POST /api/v1/config/import` restores that document. Settings set by the environment are skipped (listed in `skipped`). Routes in the file apply on the next start.
 
-`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`. `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, and `hold_ms`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
+`GET /api/v1/alarms` lists the active alarms with `severity` (`red` or `amber`) and `since` (Unix milliseconds). `GET /api/v1/inputs` (and the WebSocket and `/statusz`) carry per channel `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip`, and per input the TSL state: `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour), and `tsl_text` (the label). `GET /api/v1/info` also has `label`, `grid`, `preview_fps`, and `hold_ms`. Layout names in paths are percent-encoded (`2+8` is `2%2B8`).
 
 `/readyz` is 200 when the composer heartbeat is fresh and, if a registry address is set, the Query API currently lists the node. `/metrics` is Prometheus text with the prefix `mxl_multiviewer_`.
 
@@ -162,7 +162,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.2.1
+  ghcr.io/leeo86/mxl-multiviewer:1.3.0
 ```
 
 `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
@@ -174,7 +174,7 @@ docker run --gpus all --network host -e NVIDIA_DRIVER_CAPABILITIES=compute,utili
 Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`), so a reload stays on the tab.
 
 - **Preview**: the output picture at `MV_PREVIEW_FPS`, a head selector with more than one head, the layout on air with Activate, and the output counters.
-- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
+- **Layout**: the layout editor. Tiles snap to the `MV_GRID` grid; drag to move, drag the corner to resize, arrow keys move by one cell, Shift + arrows resize, Delete removes, Ctrl+D duplicates. Add input, clock, label, and empty tiles; the inspector sets what a tile shows (input and scale, analogue or digital clock with time zone and timecode, label text), its caption (UMD: the name strip under the picture, from the NMOS sender label, fixed text, or TSL), audio bars, tally, and overlays, and the layout's background colour and text tally default. Save, Save as, Discard, New, Delete (not the built-in presets), Preset defaults (reset a built-in preset), Activate, and Import / export of one layout or all of them. "Apply to all input tiles" copies one tile's audio bar settings to the others. Unsaved edits survive tab switches and lost connections.
 - **Inputs**: video and audio state, source, format, live PPM levels, alarms, and the receiver ids to route to (IS-05 only).
 - **Alarms**: active alarms with severity and since when.
 - **Settings**: every setting with its origin (ENV, FILE, DEFAULT); environment values are read-only, saved values go into the configuration file and apply at the next start. Export as JSON or `KEY=value` (download or copy), import an exported document.
@@ -182,6 +182,28 @@ Open `http://<host>:8110/`. The tabs keep their place in the address (`#layout`)
 A head starts on the layout last chosen for it (Activate, or `PUT /api/v1/outputs/{h}`), else on `MV_OUT<h>_LAYOUT`, else on the active layout of `layouts.json`; `MV_ACTIVE_LAYOUT` only applies until that file exists. Built-in presets that a 1.1.x release saved unedited get the current preset defaults at the first start (the old file stays as `layouts.json.bak`).
 
 The overlay draws audio bars on input tiles (built-in presets have them on): a PPM scale from 0 to −60 dBFS, a 2 s peak hold, and a clip light. Dim, crossed-out bars mean no audio is routed to that input. After `MV_HOLD_MS` without a frame the tile shows `NO SIGNAL` (or `WAITING` while the flow is missing); an input without a video route shows `NOT ROUTED`.
+
+### Tally (TSL)
+
+TSL UMD 5.0 arrives on `TSL_UDP_PORT` and `TSL_TCP_PORT` (TSL 3.1 on UDP with `TSL_V31=true`). With an empty `TSL_MAP`, display index `i` is input `i+1`; `TSL_SCREEN` (−1: every screen) picks one screen. One index drives every tile on every head that shows that input. UTF-16 labels are read as UTF-16 (umlauts included).
+
+| TSL field | On the wall |
+| --- | --- |
+| LH tally | left lamp of the caption |
+| RH tally | right lamp of the caption |
+| text tally | the border (RH, then LH, while it is off); the caption background where `tally_text` is on |
+| text | the caption of tiles with `umd_source: tsl` |
+
+| Option | Where | Default | Meaning |
+| --- | --- | --- | --- |
+| `tally_border` | tile | `true` | border in the tally colour |
+| `tally_lamp` | tile | `true` | LH and RH lamps at the ends of the caption; an off lamp is not drawn |
+| `tally_text` | layout | `false` | the text tally colours the caption background (black text on it) |
+| `tally_text` | tile | `null` | `true` or `false` overrides the layout, `null` follows it |
+
+The heads share one TSL input, so per head the choice comes from the layout the head shows: give a head its own layout (Save as) to turn text tally backgrounds on for it alone.
+
+On the platform the tally calculator sends TSL 5.0 to the Service on 8910/udp: screen 0, every change and a refresh each second, UTF-16 labels, index n−1 for input n.
 
 ### Exit codes
 

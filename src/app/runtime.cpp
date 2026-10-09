@@ -70,13 +70,17 @@ void RuntimeModel::setInputAudio(InputView const& view)
     }
 }
 
-void RuntimeModel::setTally(int input, std::string text, int tally)
+void RuntimeModel::setTally(int input, TallyUpdate const& update)
 {
     std::lock_guard lock{mutex_};
     if (input >= 1 && input <= static_cast<int>(inputs_.size()))
     {
-        inputs_[static_cast<std::size_t>(input - 1)].tslText = std::move(text);
-        inputs_[static_cast<std::size_t>(input - 1)].tally = tally;
+        auto& slot = inputs_[static_cast<std::size_t>(input - 1)];
+        slot.tslText = update.textValue;
+        slot.tally = effectiveTally(update);
+        slot.tslLh = update.lh;
+        slot.tslRh = update.rh;
+        slot.tslTextTally = update.text;
     }
 }
 

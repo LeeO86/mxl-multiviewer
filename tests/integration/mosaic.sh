@@ -28,6 +28,7 @@ FLOW_ID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 REG_PORT=13210
 WEB_PORT=18110
 NMOS_PORT=13262
+TSL_PORT=18910
 
 mkdir -p "$WORK/src" "$WORK/config"
 cat > "$WORK/config/routes.json" <<EOF
@@ -51,7 +52,9 @@ MV_MAX_INPUTS=4 \
 MV_OUTPUT_FORMAT=192x108p50 \
 MV_ACTIVE_LAYOUT=2x2 \
 MV_AUDIO_CHANNELS=0 \
-TSL_ENABLE=false \
+TSL_ENABLE=true \
+TSL_UDP_PORT="$TSL_PORT" \
+TSL_TCP_PORT="$((TSL_PORT + 1))" \
 NMOS_ENABLE=true \
 NMOS_REGISTRY_ADDRESS=127.0.0.1 \
 NMOS_REGISTRY_PORT="$REG_PORT" \
@@ -206,6 +209,43 @@ if [[ "$PIXEL2" != "200" ]]; then
   echo "full-frame layout did not show input 1" >&2
   exit 1
 fi
+
+# TSL 5.0 as the platform's tally calculator sends it: UDP, screen 0, display 0 = input 1,
+# UTF-16LE label. LH red, RH green, text amber. Tile a follows the layout's tally_text (on),
+# tile b turns it off. 192x108: 16 px caption band from y=92, 8 px lamps at y=96.
+curl -sf -X PUT -H 'Content-Type: application/json' \
+  -d '{"version":1,"name":"tally","tally_text":true,"tiles":[{"id":"a","input":1,"umd_source":"tsl","rect":{"x":0,"y":0,"w":0.5,"h":1}},{"id":"b","input":1,"tally_text":false,"rect":{"x":0.5,"y":0,"w":0.5,"h":1}}]}' \
+  "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/tally" >/dev/null
+curl -sf -X POST "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/tally/activate" >/dev/null
+send_tsl() {
+  python3 - "$TSL_PORT" <<'PY'
+import socket, struct, sys
+text = "Kamera Zürich".encode("utf-16-le")
+display = struct.pack("<HHH", 0, 2 | (3 << 2) | (1 << 4), len(text)) + text
+body = struct.pack("<BBH", 0, 0x01, 0) + display
+socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(struct.pack("<H", len(body)) + body, ("127.0.0.1", int(sys.argv[1])))
+PY
+}
+sample() { "$SAMPLE" --domain "$WORK/mv" --flow "$FLOW_OUT" --x "$1" --y "$2" --width 192; }
+near() { (( $1 >= $2 - 8 && $1 <= $2 + 8 )); }
+# 10-bit Y of the tally colours: red 367, green 485, amber 625.
+tally_ok=0
+for _ in $(seq 1 25); do
+  send_tsl
+  sleep 0.2
+  A_LH="$(sample 7 99)"; A_RH="$(sample 87 99)"; A_BG="$(sample 48 93)"; B_LH="$(sample 103 99)"; B_BG="$(sample 144 93)"
+  if near "$A_LH" 367 && near "$A_RH" 485 && near "$A_BG" 625 && near "$B_LH" 367 && (( B_BG < 150 )); then
+    tally_ok=1
+    break
+  fi
+done
+echo "tally lh=$A_LH rh=$A_RH text_bg=$A_BG b_lh=$B_LH b_bg=$B_BG"
+if [[ "$tally_ok" != 1 ]]; then
+  echo "TSL tally is not on the output" >&2
+  exit 1
+fi
+INPUTS="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/inputs")"
+python3 -c 'import json,sys; i=json.loads(sys.argv[1])["inputs"][0]; assert (i["tsl_lh"], i["tsl_rh"], i["tsl_text_tally"], i["tally"]) == (1, 2, 3, 3), i; assert i["tsl_text"] == "Kamera Zürich", i["tsl_text"]' "$INPUTS"
 
 curl -sf "http://127.0.0.1:${WEB_PORT}/metrics" | grep -q "mxl_multiviewer_output_frames_total"
 NODE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["node_id"])' "$INFO")"

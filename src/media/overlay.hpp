@@ -80,7 +80,14 @@ struct OverlayTile
     int umdFont = 28;
     Rgba umdBg{0, 0, 0, 192};
     Rgba umdFg{255, 255, 255, 255};
+    // TSL colours (0 off, 1 red, 2 green, 3 amber): `tally` is the border (text, else RH,
+    // else LH), the left lamp shows LH, the right lamp RH. With `textTallyBg` the UMD
+    // background shows the text tally while it is not off.
     int tally = 0;
+    int lhTally = 0;
+    int rhTally = 0;
+    int textTally = 0;
+    bool textTallyBg = false;
     bool tallyBorder = false;
     bool tallyLamp = false;
     // Audio bars (§5.7). Only input tiles set this.

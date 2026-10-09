@@ -33,7 +33,7 @@ std::vector<std::vector<std::uint8_t>> pullTslFrames(std::vector<std::uint8_t>& 
 TslMessage parseTsl5(std::uint8_t const* body, std::size_t size);
 TslMessage parseTsl31(std::uint8_t const* data, std::size_t size);
 
-// text tally, else RH, else LH.
+// The border colour: text tally, else RH, else LH. The lamps show LH and RH themselves.
 int effectiveTally(TallyUpdate const& update);
 int inputForDisplay(std::string const& map, int display);
 } // namespace mv

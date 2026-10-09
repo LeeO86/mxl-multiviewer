@@ -287,6 +287,11 @@ char const* scaleName(ScaleMode mode)
     return scaleToString(mode);
 }
 
+bool tallyTextOn(Layout const& layout, Tile const& tile)
+{
+    return tile.tallyText.value_or(layout.tallyText);
+}
+
 std::vector<Layout> builtinPresets(int maxInputs)
 {
     std::vector<Layout> layouts;
@@ -482,6 +487,15 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
     layout.version = static_cast<int>(num(obj, "version", 1));
     layout.name = str(obj, "name");
     layout.background = str(obj, "background", "#101010");
+    if (auto const it = obj.find("tally_text"); it != obj.end() && !it->second.is<bool>())
+    {
+        if (repairs == nullptr)
+        {
+            return "layout tally_text must be true or false";
+        }
+        repairs->push_back("layout " + layout.name + ": tally_text set to false");
+    }
+    layout.tallyText = flag(obj, "tally_text", false);
     auto const tiles = obj.find("tiles");
     if (tiles == obj.end() || !tiles->second.is<picojson::array>())
     {
@@ -535,6 +549,19 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.umdBg = str(tileObj, "umd_bg", "#000000c0");
         tile.tallyBorder = flag(tileObj, "tally_border", true);
         tile.tallyLamp = flag(tileObj, "tally_lamp", true);
+        // true or false overrides the layout; null or missing follows it.
+        if (auto const it = tileObj.find("tally_text"); it != tileObj.end() && it->second.is<bool>())
+        {
+            tile.tallyText = it->second.get<bool>();
+        }
+        else if (it != tileObj.end() && !it->second.is<picojson::null>())
+        {
+            if (repairs == nullptr)
+            {
+                return "tally_text must be true, false, or null";
+            }
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": tally_text follows the layout");
+        }
         tile.audioBars = flag(tileObj, "audio_bars", false);
         tile.audioBarRms = flag(tileObj, "audio_bar_rms", false);
         tile.audioBarChannels = static_cast<int>(num(tileObj, "audio_bar_channels", 2));
@@ -616,7 +643,8 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
 std::string layoutToJson(Layout const& layout)
 {
     std::ostringstream out;
-    out << "{\"version\":1,\"name\":" << quoted(layout.name) << ",\"background\":" << quoted(layout.background) << ",\"tiles\":[";
+    out << "{\"version\":1,\"name\":" << quoted(layout.name) << ",\"background\":" << quoted(layout.background)
+        << ",\"tally_text\":" << (layout.tallyText ? "true" : "false") << ",\"tiles\":[";
     for (std::size_t i = 0; i < layout.tiles.size(); ++i)
     {
         auto const& tile = layout.tiles[i];
@@ -629,7 +657,8 @@ std::string layoutToJson(Layout const& layout)
             << ",\"scale\":\"" << scaleToString(tile.scale) << "\",\"umd\":" << (tile.umd ? "true" : "false") << ",\"umd_source\":\""
             << umdSourceToString(tile.umdSource) << "\",\"umd_text\":" << quoted(tile.umdText) << ",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
             << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
-            << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
+            << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"tally_text\":" << (!tile.tallyText ? "null" : *tile.tallyText ? "true" : "false")
+            << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
             << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
             << barsToString(tile.audioBarPosition) << "\",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber

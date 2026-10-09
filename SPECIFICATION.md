@@ -226,7 +226,7 @@ A layout is JSON, `version: 1`:
 
 `rect` is normalised, origin top-left, `x,y,w,h` in `[0,1]`, `x+w` and `y+h` ≤ 1 within 1e-6. `content` is `input`, `clock`, `label`, or `empty`. `input` is 1-based and ≤ `MV_MAX_INPUTS`. Tile ids are unique inside the layout. Names are unique across the book.
 
-The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
+The book is stored at `MV_LAYOUTS_FILE` when that variable is set (atomic write). At start, values an older release accepted (audio zones out of order or range, bars past channel 16, an unknown clock style or zone, a `tally_text` that is not a boolean) are corrected and logged (`layout_repaired`); a file that still cannot be read is renamed to `<file>.bad` and logged (`layouts_file_invalid`), and the presets run. The API rejects those values. Import and export are the same document with a `layouts` array and an `active` name. An imported book needs at least one layout; an `active` name it does not contain becomes its first layout, and a head whose layout is not in the book switches to the book's active layout. Built-in presets are recreated if missing: `1`, `2x2`, `3x3`, `4x4`, `2+8`, `1+5`, `1+7`, `2+6`, `5x5`.
 
 The book also keeps the layout last chosen for each head (`"heads": {"1": "3x3"}`) and the revision of the preset defaults it follows (`preset_revision`, 2 since 1.2). A head starts on its saved layout, else on `MV_OUT<h>_LAYOUT` when that is set, else on the book's `active` layout; `MV_ACTIVE_LAYOUT` is the active layout of a book that has no file yet. `POST /api/v1/layouts/{name}/activate` makes a layout active and the saved layout of every head; `PUT /api/v1/outputs/{h}` saves it for that head. A saved name that is no longer in the book is skipped.
 
@@ -256,6 +256,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `umd_font` | px at a 1080-tall canvas, scaled with the canvas | 28 |
 | `umd_bg` | `#RRGGBB` or `#RRGGBBAA` | `#000000c0` |
 | `tally_border`, `tally_lamp` | bool | true |
+| `tally_text` | `true`, `false`, or `null` (follow the layout's `tally_text`) | `null`; the layout's `tally_text` is false |
 | `audio_bars` | bool | true in the built-in presets; false when the key is missing |
 | `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
 | `audio_bar_channels` | 1–16 | 2 |
@@ -275,7 +276,9 @@ Label tiles: `label_text`, centred and sized to the tile.
 
 Background: `background` colour where no tile covers the canvas. Optional JPEG or PNG at `MV_BACKGROUND_FILE`, decoded and scaled to cover the canvas under the tiles. Letterbox and pillarbox areas of `fit` tiles stay limited-range black.
 
-Tally colours: red, green, amber, off. Border width is 8 px at 1080 and scales. Lamps sit at the two ends of the UMD.
+Tally colours: red, green, amber, off (TSL, §7). Border width is 8 px at 1080 and scales. The border shows the text tally, else RH, else LH. Lamps sit at the two ends of the UMD: the left lamp shows LH, the right lamp RH; an off lamp is not drawn. The UMD text is drawn in the border's colour, white when all three are off.
+
+`tally_text` colours the UMD background with the text tally while that is not off, and the text is then black; otherwise the background is `umd_bg`. The layout carries `tally_text` too (`"tally_text": true` next to `background`, default false): it applies to every tile that leaves its own `tally_text` null or out. The heads share one TSL input, so a head gets text tally backgrounds by showing a layout that has them; heads that show the same layout look the same. Other values are rejected by the API and repaired in a layout file (§6.1).
 
 ### 6.3 Alarms
 
@@ -301,10 +304,11 @@ After the hold time the tile is limited-range black with the text `NO SIGNAL` an
 ## 7. TSL
 
 - `TSL_ENABLE=true` listens on `TSL_UDP_PORT` (default 8910) and `TSL_TCP_PORT` (default 8911).
-- TSL UMD 5.0. UDP packets are the little-endian body (`PBC`, `VER`, `FLAGS`, `SCREEN`, then display messages). A DLE/STX … DLE/ETX wrapper (DLE = 0xFE, STX = 0x02, ETX = 0x03, stuffed DLE DLE) is accepted on UDP and required on TCP. `PBC` is the number of bytes after the PBC field. `VER` 0. `FLAGS` bit 0 selects UTF-16LE, otherwise ASCII. Bit 1 (screen control) is ignored. Display message: `INDEX`, `CONTROL`, `LENGTH`, `TEXT`. Tally in `CONTROL` bits 0–1 (RH), 2–3 (text), 4–5 (LH): 0 off, 1 red, 2 green, 3 amber. Brightness bits 6–7 are stored and not required for the drawing. Bit 15 (control data) skips that display.
-- The tally colour for an input is the text tally if it is not off, otherwise RH if not off, otherwise LH.
+- TSL UMD 5.0. UDP packets are the little-endian body (`PBC`, `VER`, `FLAGS`, `SCREEN`, then display messages). A DLE/STX … DLE/ETX wrapper (DLE = 0xFE, STX = 0x02, ETX = 0x03, stuffed DLE DLE) is accepted on UDP and required on TCP. `PBC` is the number of bytes after the PBC field. `VER` 0. `FLAGS` bit 0 selects UTF-16LE, otherwise ASCII; UTF-16 text (surrogate pairs included) is converted to UTF-8, a lone surrogate becomes U+FFFD. Bit 1 (screen control) is ignored. Display message: `INDEX`, `CONTROL`, `LENGTH`, `TEXT`. Tally in `CONTROL` bits 0–1 (RH), 2–3 (text), 4–5 (LH): 0 off, 1 red, 2 green, 3 amber. Brightness bits 6–7 are stored and not required for the drawing. Bit 15 (control data) skips that display.
+- Each input keeps the LH, RH, and text tally and the text of its last display message. The drawing (§6.2): left lamp LH, right lamp RH, border the text tally if it is not off, otherwise RH if not off, otherwise LH; the text tally colours the UMD background of tiles with `tally_text`. One display index applies to every tile on every head that shows that input.
 - Display index maps to inputs through `TSL_MAP` (`0:1,1:2` means display 0 → input 1). Empty map means display `i` → input `i+1`. `TSL_SCREEN` default −1 accepts every screen; otherwise only that screen index is applied.
-- `TSL_V31=true` also parses 18-byte TSL 3.1 datagrams on the UDP port: address in byte 0 bits 0–6, byte 1 bit 0 red, bit 1 green, bit 2 amber (both red and green without amber is shown as amber), bytes 2–17 ASCII text. The same index map applies.
+- `TSL_V31=true` also parses 18-byte TSL 3.1 datagrams on the UDP port: address in byte 0 bits 0–6, byte 1 bit 0 red, bit 1 green, bit 2 amber (both red and green without amber is shown as amber), bytes 2–17 ASCII text. That one tally sets LH, RH, and text tally alike. The same index map applies.
+- On the platform the tally calculator sends TSL 5.0 over UDP to the multiviewer's Service (8910/udp): `SCREEN` 0, every change plus a refresh each second, UTF-16 labels, `INDEX` n−1 for input n (empty `TSL_MAP`).
 
 ---
 
@@ -343,7 +347,7 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 
 `PUT /api/v1/config` body is `{ "KEY": "value" | null }`. Null removes the file layer. The merge is validated before the file is replaced.
 
-`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, and `hold_ms`. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each). Layout names in paths are percent-decoded.
+`GET /api/v1/info` also carries `label` (node label), `grid` (`MV_GRID`), `preview_fps`, and `hold_ms`. Each input in `GET /api/v1/inputs` carries `ppm_dbfs`, `hold_dbfs`, `rms_dbfs`, and `clip` per channel (16 each), and its TSL state (§7): `tsl_lh`, `tsl_rh`, `tsl_text_tally` (0 off, 1 red, 2 green, 3 amber), `tally` (the border colour: text, else RH, else LH), and `tsl_text` (the label). `/statusz` and the WebSocket carry the same input objects. Layout names in paths are percent-decoded.
 
 ### 8.3 Ops
 
@@ -504,8 +508,8 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 
 ## 14. Testing
 
-- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing and a TSL 3.1 datagram, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
-- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
+- Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
+- Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

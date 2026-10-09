@@ -109,6 +109,7 @@ export function makeTile(content, id, rect, z) {
     umd_bg: "#000000c0",
     tally_border: input,
     tally_lamp: input,
+    tally_text: null,
     audio_bars: input,
     audio_bar_rms: false,
     audio_bar_channels: 2,

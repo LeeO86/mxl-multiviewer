@@ -189,7 +189,8 @@ HttpResponse Api::handle(HttpRequest const& request)
             }
             auto const& input = inputs[i];
             out << "{\"index\":" << input.index << ",\"video\":" << legJson(input.video) << ",\"audio\":" << legJson(input.audio) << ",\"tally\":" << input.tally
-                << ",\"tsl_text\":" << quote(input.tslText) << ",\"ppm_dbfs\":[";
+                << ",\"tsl_text\":" << quote(input.tslText) << ",\"tsl_lh\":" << input.tslLh << ",\"tsl_rh\":" << input.tslRh
+                << ",\"tsl_text_tally\":" << input.tslTextTally << ",\"ppm_dbfs\":[";
             numbers(out, input.ppmDbfs);
             out << "],\"hold_dbfs\":[";
             numbers(out, input.holdDbfs);

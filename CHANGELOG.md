@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0
+
+TSL 5.0 tally per field.
+
+### Overlay
+
+- The left lamp of a caption shows the TSL LH tally and the right lamp the RH tally. Before, both lamps showed one combined colour. An off lamp is still not drawn.
+- The border keeps the combined colour: text tally, else RH, else LH.
+- New option `tally_text`: the text tally colours the caption background (the text turns black on it) while the text tally is not off. The layout sets the default (`tally_text`, false); a tile can set `true` or `false`, or `null` to follow the layout. A head gets it by showing a layout that has it.
+
+### Behaviour
+
+- UTF-16 TSL labels are decoded as UTF-16; non-ASCII characters (`ü`) were broken on the wall and in the API.
+- A TSL 3.1 tally sets both lamps and the text tally, so 3.1 looks as before.
+
+### Web UI
+
+- Layout editor: "Text tally as caption background" per tile (as the layout, on, off) and per layout.
+
+### API
+
+- `GET /api/v1/inputs`, `/statusz`, and the WebSocket: `tsl_lh`, `tsl_rh`, and `tsl_text_tally` per input, next to `tally` and `tsl_text`.
+- Layouts carry `tally_text` on the layout and on each tile. A value that is not `true` or `false` (or `null` on a tile) is rejected with 400.
+
 ## 1.2.1
 
 Fixes from the platform rollout of 1.2.0.

@@ -687,6 +687,65 @@ TEST_CASE("alarm border and badge colours follow the alarm level")
     CHECK(countPixels(overlay, 580, 100, 860, 200, inked) == 0);
 }
 
+TEST_CASE("tally lamps show LH and RH, the border the combined tally, tally_text the caption background")
+{
+    // 540 canvas: border 4 px; caption band 36 px from y=234 (the bottom border under its last rows);
+    // 18 px lamps at x=4 and x=458, y=243.
+    auto const isColour = [](Rgba c) {
+        return [c](std::uint8_t const* px) { return px[3] == c.a && std::abs(px[0] - c.r) <= 2 && std::abs(px[1] - c.g) <= 2 && std::abs(px[2] - c.b) <= 2; };
+    };
+    Rgba const red{220, 32, 32, 255};
+    Rgba const green{32, 180, 64, 255};
+    Rgba const amber{220, 160, 32, 255};
+    Rgba const black{0, 0, 0, 255};
+    Rgba const umdBg{0, 0, 0, 192};
+    OverlayTile tile;
+    tile.rect = {0, 0, 480, 270};
+    tile.umd = true;
+    tile.umdText = "CAM";
+    tile.umdFont = 28;
+    tile.umdBg = umdBg;
+    tile.tallyBorder = true;
+    tile.tallyLamp = true;
+    tile.lhTally = 1;
+    tile.rhTally = 2;
+    tile.textTally = 3;
+    tile.tally = 3;
+    int const lampArea = 18 * 18;
+
+    Overlay off;
+    off.resize(960, 540);
+    renderOverlay(off, {tile});
+    CHECK(countPixels(off, 4, 243, 22, 261, isColour(red)) == lampArea);
+    CHECK(countPixels(off, 458, 243, 476, 261, isColour(green)) == lampArea);
+    CHECK(countPixels(off, 0, 100, 4, 140, isColour(amber)) == 4 * 40);
+    // tally_text off: the caption keeps umd_bg and the text its colour (white here).
+    CHECK(countPixels(off, 200, 236, 440, 262, isColour(umdBg)) == 240 * 26);
+    CHECK(countPixels(off, 26, 236, 120, 262, isColour(black)) == 0);
+
+    // tally_text on: the band is the text tally, the text is black, the lamps stay LH and RH.
+    tile.textTallyBg = true;
+    Overlay on;
+    on.resize(960, 540);
+    renderOverlay(on, {tile});
+    CHECK(countPixels(on, 200, 236, 440, 262, isColour(amber)) == 240 * 26);
+    CHECK(countPixels(on, 26, 236, 120, 262, isColour(black)) > 20);
+    CHECK(countPixels(on, 4, 243, 22, 261, isColour(red)) == lampArea);
+    CHECK(countPixels(on, 458, 243, 476, 261, isColour(green)) == lampArea);
+
+    // Text tally off: tally_text leaves umd_bg. An off lamp is not drawn; the border falls back to RH.
+    tile.textTally = 0;
+    tile.lhTally = 0;
+    tile.tally = 2;
+    Overlay plain;
+    plain.resize(960, 540);
+    renderOverlay(plain, {tile});
+    CHECK(countPixels(plain, 200, 236, 440, 262, isColour(umdBg)) == 240 * 26);
+    CHECK(countPixels(plain, 4, 243, 22, 261, isColour(umdBg)) == lampArea);
+    CHECK(countPixels(plain, 458, 243, 476, 261, isColour(green)) == lampArea);
+    CHECK(countPixels(plain, 0, 100, 4, 140, isColour(green)) == 4 * 40);
+}
+
 TEST_CASE("audio ring keeps the newest samples and copies by sample index")
 {
     AudioRing ring(8);
