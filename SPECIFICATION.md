@@ -189,7 +189,7 @@ Per input channel, peak programme meter:
 
 - IEC 60268-10 type IIa attack: a step reaches `1 − exp(−t/τ)` with `τ = 10 ms`.
 - Decay: 24 dB in 2.8 s (linear-amplitude exponential), the type IIa return time.
-- Scale is dBFS. 0 dBFS is full scale. The overlay draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60 beside the bars, with dBFS labels when the bar is tall enough. Colour zones default to green below −18 dBFS, amber below −9, red at and above −9, by position on the bar. Zones are configurable per tile (`zone_green`, `zone_amber`).
+- Scale is dBFS. 0 dBFS is full scale. The overlay draws PPM marks at 0, −6, −12, −18, −24, −36, −48, −60 beside the bars, with dBFS labels when the bar is tall enough (`audio_bar_scale`, §6.2, hides them). Colour zones default to green below −18 dBFS, amber below −9, red at and above −9, by position on the bar. Zones are configurable per tile (`zone_green`, `zone_amber`).
 - Peak hold default 2 s, then the same decay. The overlay draws it as a line on the bar.
 - Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
 - EBU R 128 momentary loudness is not in this version.
@@ -268,6 +268,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `tally_text` | `true`, `false`, or `null` (follow the layout's `tally_text`) | `null`; the layout's `tally_text` is false |
 | `audio_bars` | bool | true in the built-in presets; false when the key is missing |
 | `audio_bar_rms` | bool, draw the 250 ms RMS tick on each bar | false |
+| `audio_bar_scale` | bool, the PPM scale beside the bars (ticks and dBFS labels, §5.7); the marks across the bars stay | true |
 | `audio_bar_channels` | 1–16 | 2 |
 | `audio_bar_first` | 0-based channel; `audio_bar_first` + `audio_bar_channels` ≤ 16 | 0 |
 | `audio_bar_position` | `left`, `right`, `overlay` | `right` |

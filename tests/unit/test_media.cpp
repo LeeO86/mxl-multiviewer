@@ -724,6 +724,17 @@ TEST_CASE("audio bars draw zones, PPM scale, peak hold, and clip")
     CHECK(countPixels(unrouted, 870, 10, 917, 540, [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; }) == 0);
     CHECK(pixel(unrouted, 930, 450)[3] < 200);
     CHECK(pixel(unrouted, 939, 274)[0] > 150);
+
+    // audio_bar_scale off: the same bars without ticks and labels; the panel ends 2 px left of them.
+    Overlay plain;
+    plain.resize(1920, 1080);
+    tile.audioRouted = true;
+    tile.barScale = false;
+    renderOverlay(plain, {tile});
+    CHECK(red(pixel(plain, 930, 80)));
+    CHECK(green(pixel(plain, 946, 400)));
+    CHECK(countPixels(plain, 860, 0, 922, 540, inked) == 0);
+    CHECK(countPixels(plain, 922, 10, 924, 540, inked) > 500);
 }
 
 TEST_CASE("digital clock and label text scale with the tile")

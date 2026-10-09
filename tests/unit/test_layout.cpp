@@ -149,6 +149,21 @@ TEST_CASE("alarm display options: border and labels on by default, label positio
     CHECK_FALSE(sameLayout(old[1], edited));
 }
 
+TEST_CASE("audio_bar_scale is on unless a tile turns it off")
+{
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(R"({"version":1,"name":"s","tiles":[{"id":"a","input":1,"rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+    CHECK(layout.tiles[0].audioBarScale);
+    REQUIRE_FALSE(
+        parseLayout(R"({"version":1,"name":"s","tiles":[{"id":"a","input":1,"audio_bar_scale":false,"rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+    CHECK_FALSE(layout.tiles[0].audioBarScale);
+    CHECK(layoutToJson(layout).find("\"audio_bar_scale\":false") != std::string::npos);
+    for (auto const& preset : builtinPresets(16))
+    {
+        CHECK(preset.tiles[0].audioBarScale);
+    }
+}
+
 TEST_CASE("audio zones must rise towards full scale")
 {
     auto const body = [](int green, int amber) {

@@ -95,6 +95,8 @@ struct Tile
     std::optional<bool> tallyText;
     bool audioBars = false;
     bool audioBarRms = false;
+    // The PPM scale (ticks and dBFS labels) beside the bars.
+    bool audioBarScale = true;
     int audioBarChannels = 2;
     int audioBarFirst = 0;
     BarsPosition audioBarPosition = BarsPosition::Right;

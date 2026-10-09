@@ -1187,6 +1187,7 @@ struct Engine::Impl
             // Bars only on input tiles; the flag is ignored on clock, label, and empty tiles.
             item.bars = tile.audioBars && isInput;
             item.showRms = tile.audioBarRms;
+            item.barScale = tile.audioBarScale;
             item.barChannels = tile.audioBarChannels;
             item.barsPosition = tile.audioBarPosition;
             item.zoneGreen = tile.zoneGreen;

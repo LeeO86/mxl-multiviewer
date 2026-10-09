@@ -115,7 +115,7 @@ const textHelp = computed(() => {
   return "Shown when the NMOS registry has no name for the routed sender.";
 });
 
-const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "zone_green", "zone_amber"];
+const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "audio_bar_scale", "zone_green", "zone_amber"];
 const inputTiles = computed(() => props.layout.tiles.filter((t) => t.content === "input"));
 
 /** Gives every input tile of the layout this tile's audio bar settings. */
@@ -234,8 +234,9 @@ function toggleMarker(marker) {
             <option value="overlay">Centre, over picture</option>
           </select>
         </Field>
-        <Field label="RMS">
-          <label class="check"><input v-model="tile.audio_bar_rms" type="checkbox" :disabled="!tile.audio_bars" /> Show RMS tick</label>
+        <Field label="Show">
+          <label class="check"><input v-model="tile.audio_bar_rms" type="checkbox" :disabled="!tile.audio_bars" /> RMS tick</label>
+          <label class="check"><input v-model="tile.audio_bar_scale" type="checkbox" :disabled="!tile.audio_bars" /> Level scale (0 −6 −12 …)</label>
         </Field>
         <Field label="Amber from (dBFS)" id="tile-zone-a">
           <input id="tile-zone-a" v-model.number="tile.zone_green" type="number" min="-60" max="0" :disabled="!tile.audio_bars" />

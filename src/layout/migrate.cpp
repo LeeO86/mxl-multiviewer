@@ -28,6 +28,7 @@ Tile legacyTile()
     tile.tallyText.reset();
     tile.audioBars = false;
     tile.audioBarRms = false;
+    tile.audioBarScale = true;
     tile.audioBarChannels = 2;
     tile.audioBarFirst = 0;
     tile.audioBarPosition = BarsPosition::Right;
@@ -200,7 +201,7 @@ bool sameLayout(Layout const& a, Layout const& b)
                           near(x.rect.w, y.rect.w) && near(x.rect.h, y.rect.h) && x.z == y.z && x.scale == y.scale && x.umd == y.umd &&
                           x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdAlign == y.umdAlign && x.umdFont == y.umdFont &&
                           x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.tallyText == y.tallyText && x.audioBars == y.audioBars &&
-                          x.audioBarRms == y.audioBarRms && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
+                          x.audioBarRms == y.audioBarRms && x.audioBarScale == y.audioBarScale && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
                           x.audioBarPosition == y.audioBarPosition && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&
                           x.alarmBorder == y.alarmBorder && x.alarmLabels == y.alarmLabels && x.alarmLabelPosition == y.alarmLabelPosition &&
                           x.formatLabel == y.formatLabel && x.latency == y.latency && x.safeArea == y.safeArea && x.centre == y.centre &&

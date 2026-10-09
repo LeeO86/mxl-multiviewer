@@ -251,7 +251,7 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     int const labelSize = std::min(meterH / 10 * 85 / 100, scaled(15, s));
     int const tickW = std::max(2, scaled(4, s));
     int labelW = 0;
-    if (tile.audioRouted && labelSize >= 9)
+    if (tile.audioRouted && tile.barScale && labelSize >= 9)
     {
         labelW = overlay.textWidth("-48", labelSize) + gap;
     }
@@ -259,7 +259,7 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     {
         labelW = 0;
     }
-    int const scaleW = tile.audioRouted ? tickW + labelW : 0;
+    int const scaleW = tile.audioRouted && tile.barScale ? tickW + labelW : 0;
     int const panelW = barsW + scaleW + 2 * gap;
     int barsX = tile.rect.x + tile.rect.w - margin - barsW;
     if (tile.barsPosition == BarsPosition::Left)
@@ -338,9 +338,13 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     int const tickX = scaleRight ? barsX + barsW + gap : barsX - gap - tickW;
     for (int mark : kPpmMarks)
     {
+        // The marks across the bars stay without the scale beside them.
         int const y = std::min(yOf(mark), meterBottom - lineH);
-        overlay.fillRect(tickX, y, tickW, lineH, {210, 210, 210, 220});
         overlay.fillRect(barsX, y, barsW, lineH, {0, 0, 0, 110});
+        if (scaleW > 0)
+        {
+            overlay.fillRect(tickX, y, tickW, lineH, {210, 210, 210, 220});
+        }
         if (labelW > 0)
         {
             std::string const text = std::to_string(mark);

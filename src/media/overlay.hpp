@@ -103,6 +103,8 @@ struct OverlayTile
     // False when the input's audio leg is not routed: dim, empty bars with a strike.
     bool audioRouted = true;
     bool showRms = false;
+    // The PPM scale (ticks and dBFS labels) beside the bars.
+    bool barScale = true;
     int barChannels = 2;
     std::array<double, 16> ppmDbfs = silentMeters();
     std::array<double, 16> holdDbfs = silentMeters();

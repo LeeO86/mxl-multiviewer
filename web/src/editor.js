@@ -113,6 +113,7 @@ export function makeTile(content, id, rect, z) {
     tally_text: null,
     audio_bars: input,
     audio_bar_rms: false,
+    audio_bar_scale: true,
     audio_bar_channels: 2,
     audio_bar_first: 0,
     audio_bar_position: "right",
