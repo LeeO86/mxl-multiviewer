@@ -234,10 +234,17 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
 {
     double const s = std::max(0.5, overlay.height / 1080.0);
     int const channels = std::clamp(tile.barChannels, 1, 16);
-    int const margin = std::max(3, scaled(6, s));
-    int const gap = std::max(1, scaled(2, s));
-    int const barW = std::clamp(tile.rect.w / (channels * 4), std::max(3, scaled(3, s)), std::max(4, scaled(14, s)));
-    int const barsW = channels * barW + (channels - 1) * gap;
+    auto const m = barMetrics(tile.rect.w, channels, overlay.height);
+    int const margin = m.margin;
+    int const gap = m.gap;
+    int const barW = m.barW;
+    int const barsW = m.barsW;
+    // Beside the picture the bars stay in the strip the composer left for them.
+    bool const beside = tile.barsPosition == BarsPosition::LeftBeside || tile.barsPosition == BarsPosition::RightBeside;
+    if (beside && barsStripWidth(tile.rect.w, channels, tile.barScale, overlay.height) == 0)
+    {
+        return {};
+    }
     top += margin;
     bottom -= margin;
     int const clipH = std::max(2, barW / 2);
@@ -249,20 +256,21 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     }
     // Labels of the PPM marks when the 6 dB steps leave room for them.
     int const labelSize = std::min(meterH / 10 * 85 / 100, scaled(15, s));
-    int const tickW = std::max(2, scaled(4, s));
+    int const tickW = m.tickW;
     int labelW = 0;
     if (tile.audioRouted && tile.barScale && labelSize >= 9)
     {
         labelW = overlay.textWidth("-48", labelSize) + gap;
     }
-    if (barsW + tickW + labelW + 2 * gap + 2 * margin > tile.rect.w)
+    if (barsW + tickW + labelW + 2 * gap + 2 * margin > tile.rect.w || (beside && labelW > m.labelReserve))
     {
         labelW = 0;
     }
     int const scaleW = tile.audioRouted && tile.barScale ? tickW + labelW : 0;
     int const panelW = barsW + scaleW + 2 * gap;
     int barsX = tile.rect.x + tile.rect.w - margin - barsW;
-    if (tile.barsPosition == BarsPosition::Left)
+    bool const left = tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside;
+    if (left)
     {
         barsX = tile.rect.x + margin;
     }
@@ -271,7 +279,7 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
         barsX = tile.rect.x + (tile.rect.w - barsW) / 2;
     }
     // The scale sits on the inner side of the bars: left of them, or right of left bars.
-    bool const scaleRight = tile.barsPosition == BarsPosition::Left;
+    bool const scaleRight = left;
     int const panelX = scaleRight ? barsX - gap : barsX - gap - scaleW;
     PixelRect const panel{panelX, top - gap, panelW, bottom - top + 2 * gap};
     overlay.fillRect(panel.x, panel.y, panel.w, panel.h, {0, 0, 0, static_cast<std::uint8_t>(tile.audioRouted ? 130 : 70)});
@@ -798,7 +806,7 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             }
         }
         int const caption = std::max(8, overlay.height * 16 / 1080);
-        int const captionX = tile.barsPosition == BarsPosition::Left && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
+        int const captionX = (tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside) && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
         if (!tile.formatText.empty())
         {
             overlay.text(captionX, contentTop + 4, tile.formatText, caption, {255, 255, 255, 220});

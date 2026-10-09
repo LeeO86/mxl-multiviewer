@@ -159,6 +159,9 @@ a { color: var(--accent); }
 .tile .bars.right { right: .4em; }
 .tile .bars.left { left: .4em; }
 .tile .bars.overlay { left: 50%; transform: translateX(-50%); }
+.tile .bars.right-beside, .tile .bars.left-beside { top: 0; bottom: 0; padding: 4% .4em 14%; background: #000; }
+.tile .bars.right-beside { right: 0; }
+.tile .bars.left-beside { left: 0; }
 .tile .bars.off { opacity: .35; }
 .tile .bars span { width: .45em; max-width: 8px; min-width: 3px; background: rgba(0, 0, 0, .5); position: relative; }
 .tile .bars span i { position: absolute; left: 0; right: 0; bottom: 0; }

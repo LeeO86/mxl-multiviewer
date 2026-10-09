@@ -194,7 +194,7 @@ Per input channel, peak programme meter:
 - Optional RMS (250 ms) is computed and exported on the WebSocket. It is not on the bar unless the tile asks for it.
 - EBU R 128 momentary loudness is not in this version.
 
-Bars: 1–16 channels within the first 16 channels of the input (the metered ones: first channel + count ≤ 16), first channel selectable, position left, right, or overlay, clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
+Bars: 1–16 channels within the first 16 channels of the input (the metered ones: first channel + count ≤ 16), first channel selectable, position left, right, or overlay (over the picture) or left-beside, right-beside (in a strip of the tile; the picture is placed in the rest), clip indicator above each bar when `|sample| ≥ MV_CLIP_LINEAR` (default 0.999). Bars are drawn on input tiles only. When the input's audio leg is not routed the bars are dim and crossed out; routed audio without samples shows empty bars.
 
 The audio leg is read from its own flow and domain, independent of the video leg (§4.2). Every new sample is metered from the flow's head index. A head that does not move for `MV_HOLD_MS` is `no_signal`.
 
@@ -271,7 +271,7 @@ Activating a layout swaps the pointer the composer reads at the next frame bound
 | `audio_bar_scale` | bool, the PPM scale beside the bars (ticks and dBFS labels, §5.7); the marks across the bars stay | true |
 | `audio_bar_channels` | 1–16 | 2 |
 | `audio_bar_first` | 0-based channel; `audio_bar_first` + `audio_bar_channels` ≤ 16 | 0 |
-| `audio_bar_position` | `left`, `right`, `overlay` | `right` |
+| `audio_bar_position` | `left`, `right`, `overlay` (centre): over the picture. `left-beside`, `right-beside`: in a strip at that side of the tile, and the picture is scaled into the rest of the tile; the strip is as wide as the bars, their scale, and margins (none when that is more than half the tile) and is limited-range black under the bar panel | `right` |
 | `zone_green`, `zone_amber` | dBFS where amber and where red start; −60 ≤ `zone_green` ≤ `zone_amber` ≤ 0 | −18 / −9 |
 | `alarm_border` | bool, the alarm border (§6.3) | true |
 | `alarm_labels` | bool, a label per active alarm (§6.3) | true |

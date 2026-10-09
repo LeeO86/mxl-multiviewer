@@ -56,11 +56,15 @@ enum class AlarmLabelPosition
     Bottom,
     BottomRight
 };
+// Left, Right, and Overlay (centre) lie over the picture; LeftBeside and RightBeside take a
+// strip of the tile and the picture is placed in the rest (§6.2).
 enum class BarsPosition
 {
     Left,
     Right,
-    Overlay
+    Overlay,
+    LeftBeside,
+    RightBeside
 };
 enum class ClockStyle
 {

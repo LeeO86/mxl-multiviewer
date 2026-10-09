@@ -366,6 +366,61 @@ TEST_CASE("layout json round trip and rejection")
     CHECK(parseLayout("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"w\":1.2,\"h\":1}}]}", bad, 4).has_value());
 }
 
+TEST_CASE("audio bars beside the picture take a strip of the tile; over the picture they do not")
+{
+    // 1080 canvas, 960 px tile, 2 channels: margins 6 + 6, bars 2 × 14 + 2, gap 2, tick 4, labels 28.
+    CHECK(barsStripWidth(960, 2, true, 1080) == 76);
+    CHECK(barsStripWidth(960, 2, false, 1080) == 44);
+    for (int channels = 1; channels <= 16; ++channels)
+    {
+        for (int const height : {540, 720, 1080, 2160})
+        {
+            CHECK(barsStripWidth(960, channels, true, height) % 2 == 0);
+        }
+    }
+    Tile tile;
+    tile.audioBars = true;
+    tile.audioBarPosition = BarsPosition::RightBeside;
+    PixelRect const px{960, 0, 960, 540};
+    auto const right = pictureRect(px, tile, 1080);
+    CHECK(right.x == 960);
+    CHECK(right.w == 884);
+    CHECK(right.h == 540);
+    tile.audioBarPosition = BarsPosition::LeftBeside;
+    auto const left = pictureRect(px, tile, 1080);
+    CHECK(left.x == 1036);
+    CHECK(left.w == 884);
+    // A 16:9 source fits into the rest, letterboxed; the strip stays free.
+    auto const placed = placeTile(left, 1920, 1080, ScaleMode::Fit);
+    CHECK(placed.dst.x >= 1036);
+    CHECK(placed.dst.x % 2 == 0);
+    CHECK(placed.dst.w == 884);
+    CHECK(placed.dst.h == 497);
+    // Over the picture, bars off, other content, or a tile too narrow for the strip: the whole tile.
+    for (auto const position : {BarsPosition::Left, BarsPosition::Right, BarsPosition::Overlay})
+    {
+        tile.audioBarPosition = position;
+        CHECK(pictureRect(px, tile, 1080).w == 960);
+    }
+    tile.audioBarPosition = BarsPosition::RightBeside;
+    tile.audioBars = false;
+    CHECK(pictureRect(px, tile, 1080).w == 960);
+    tile.audioBars = true;
+    tile.content = TileContent::Clock;
+    CHECK(pictureRect(px, tile, 1080).w == 960);
+    tile.content = TileContent::Input;
+    CHECK(barsStripWidth(100, 2, true, 1080) == 0);
+    CHECK(pictureRect(PixelRect{0, 0, 100, 56}, tile, 1080).w == 100);
+
+    // The positions parse and round-trip; older layouts keep left, right, and overlay.
+    Layout layout;
+    REQUIRE_FALSE(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"left-beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4)
+                      .has_value());
+    CHECK(layout.tiles[0].audioBarPosition == BarsPosition::LeftBeside);
+    CHECK(layoutToJson(layout).find("\"audio_bar_position\":\"left-beside\"") != std::string::npos);
+    CHECK(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+}
+
 TEST_CASE("tile geometry snaps to even pixels and letterboxes")
 {
     auto const full = rectToPixels({0, 0, 0.5, 0.5}, 1920, 1080);

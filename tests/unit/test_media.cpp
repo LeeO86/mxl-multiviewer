@@ -735,6 +735,24 @@ TEST_CASE("audio bars draw zones, PPM scale, peak hold, and clip")
     CHECK(green(pixel(plain, 946, 400)));
     CHECK(countPixels(plain, 860, 0, 922, 540, inked) == 0);
     CHECK(countPixels(plain, 922, 10, 924, 540, inked) > 500);
+
+    // Beside the picture: the same bars, the scale inside the 76 px strip the picture leaves.
+    auto const label = [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; };
+    tile.barScale = true;
+    tile.barsPosition = BarsPosition::RightBeside;
+    Overlay right;
+    right.resize(1920, 1080);
+    renderOverlay(right, {tile});
+    CHECK(red(pixel(right, 930, 80)));
+    CHECK(countPixels(right, 884, 10, 917, 540, label) > 40);
+    CHECK(countPixels(right, 0, 0, 884, 540, inked) == 0);
+    tile.barsPosition = BarsPosition::LeftBeside;
+    Overlay left;
+    left.resize(1920, 1080);
+    renderOverlay(left, {tile});
+    CHECK(red(pixel(left, 12, 80)));
+    CHECK(countPixels(left, 42, 10, 76, 540, label) > 40);
+    CHECK(countPixels(left, 76, 0, 960, 540, inked) == 0);
 }
 
 TEST_CASE("digital clock and label text scale with the tile")

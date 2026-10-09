@@ -195,6 +195,10 @@ char const* barsToString(BarsPosition pos)
         return "left";
     case BarsPosition::Overlay:
         return "overlay";
+    case BarsPosition::LeftBeside:
+        return "left-beside";
+    case BarsPosition::RightBeside:
+        return "right-beside";
     case BarsPosition::Right:
         return "right";
     }
@@ -214,6 +218,14 @@ std::optional<BarsPosition> barsFromString(std::string const& text)
     if (text == "overlay")
     {
         return BarsPosition::Overlay;
+    }
+    if (text == "left-beside")
+    {
+        return BarsPosition::LeftBeside;
+    }
+    if (text == "right-beside")
+    {
+        return BarsPosition::RightBeside;
     }
     return std::nullopt;
 }

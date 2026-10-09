@@ -229,9 +229,15 @@ function toggleMarker(marker) {
         </Field>
         <Field label="Position" id="tile-bars-pos">
           <select id="tile-bars-pos" v-model="tile.audio_bar_position" :disabled="!tile.audio_bars">
-            <option value="right">Right edge</option>
-            <option value="left">Left edge</option>
-            <option value="overlay">Centre, over picture</option>
+            <optgroup label="Over the picture">
+              <option value="right">Right edge</option>
+              <option value="left">Left edge</option>
+              <option value="overlay">Centre</option>
+            </optgroup>
+            <optgroup label="Beside the picture (it gets narrower)">
+              <option value="right-beside">Right of the picture</option>
+              <option value="left-beside">Left of the picture</option>
+            </optgroup>
           </select>
         </Field>
         <Field label="Show">
@@ -245,7 +251,10 @@ function toggleMarker(marker) {
           <input id="tile-zone-r" v-model.number="tile.zone_amber" type="number" min="-60" max="0" :disabled="!tile.audio_bars" />
         </Field>
       </div>
-      <p class="note">Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this input.</p>
+      <p class="note">
+        Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this
+        input. Beside the picture, the bars get a strip of the tile and the picture is scaled into the rest.
+      </p>
       <div class="actions" style="margin-top: 0.4rem">
         <button class="btn small secondary" :disabled="inputTiles.length < 2" @click="barsToAll">Apply to all {{ inputTiles.length }} input tiles</button>
       </div>

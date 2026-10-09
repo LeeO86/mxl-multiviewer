@@ -1507,7 +1507,8 @@ struct Engine::Impl
                 auto const px = rectToPixels(tile.rect, format.width, format.height);
                 Source source;
                 source.rect = px;
-                source.place = best != nullptr ? placeTile(px, best->width, best->height, tile.scale) : Placement{};
+                // Audio bars beside the picture take a strip of the tile (§6.2); both backends use this placement.
+                source.place = best != nullptr ? placeTile(pictureRect(px, tile, format.height), best->width, best->height, tile.scale) : Placement{};
                 if (best == nullptr)
                 {
                     source.place.dst = px;
