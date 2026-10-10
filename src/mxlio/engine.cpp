@@ -1837,7 +1837,17 @@ struct Engine::Impl
                     }
                     else
                     {
-                        scaleToNv12(canvas, region.w, region.h, previewTile.data());
+                        // In bands on the tile workers: one thread took about 30 ms for a 1080p head.
+                        std::vector<std::function<void()>> bands;
+                        int const rows = region.h / 2;
+                        int const step = std::max(1, (rows + 7) / 8);
+                        for (int row = 0; row < rows; row += step)
+                        {
+                            bands.emplace_back([&canvas, &previewTile, region, row, step] {
+                                scaleToNv12(canvas, region.w, region.h, previewTile.data(), row, row + step);
+                            });
+                        }
+                        tilePool.run(bands);
                     }
                     if (tile)
                     {

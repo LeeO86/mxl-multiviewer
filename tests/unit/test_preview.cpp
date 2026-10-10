@@ -204,6 +204,13 @@ TEST_CASE("mosaic pictures: scale to NV12 and place")
     CHECK(int(nv12[32 * 16]) == 128);
     CHECK(int(nv12[32 * 16 + 1]) == 128);
     CHECK(int(nv12[32 * 16 + 30]) == 240);
+    // Bands of block rows give the same picture as one call.
+    std::vector<std::uint8_t> banded(nv12.size(), 0);
+    for (int row = 0; row < 8; row += 3)
+    {
+        scaleToNv12(frame, 32, 16, banded.data(), row, row + 3);
+    }
+    CHECK(banded == nv12);
     // Full scale stays 255 (no wrap to 0); upscaling repeats samples.
     frame.fill(1023, 512, 512);
     std::vector<std::uint8_t> big(128 * 64 * 3 / 2);

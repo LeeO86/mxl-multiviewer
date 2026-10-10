@@ -94,3 +94,22 @@ What the 1.1.1 profile showed and what changed:
 5. The overlay was converted from RGBA in `double` over the whole canvas on every frame. The overlay thread now converts it once per drawing (`prepareOverlay`), and the compose thread blends only the visible spans with integers (the same samples as `blendStraightRgba`, unit test).
 
 With the CUDA backend (16 → 1080p50) frames and compose time are unchanged (1005 / 1000, 0 late, 2.4 ms) and process CPU went from 2.9 to 1.8 cores, from item 3.
+
+## Lab run 2026-10-10: WebRTC preview (1.4.0)
+
+Same host, one A16 GPU (shared with an mxl-replay container at about 45 % GPU), image built from this branch. Four heads 1080p50 (`MV_OUTPUTS=4`, layouts 2x2, 1, 2x2, 1), inputs 1–4 from mxl-test-player (1080p50), `MV_PREVIEW_FPS=5`, 20 s warm-up, 60 s measured. "Preview step" is `preview_seconds` (the head thread's preview work per picture), "GPU" is `compose_gpu_seconds{stage="preview"}` (tile kernel and its 0.8 MB download, CUDA events, queueing on the shared GPU included), "encode" is `preview_encode_seconds` (copy, encode and send of one 1920×1080 picture on the publisher thread).
+
+| Backend | Mode | Frames per head (3000 expected) | Late per head | Preview step per head | GPU per head | Encode per picture | Publisher thread CPU | Process CPU |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CUDA | jpeg | 3001–3002 | 0 | 11.4–12.2 ms | – | – | – | 3.64 cores |
+| CUDA | webrtc (NVENC) | 3011 | 0 | 1.8–4.4 ms | 1.1–3.7 ms | 11.1 ms (wall) | 19 ms/s (3.9 ms per picture) | 3.88 cores |
+| CUDA | webrtc, 25 fps | 1502 / 30 s | 0 | 2.3–4.7 ms | 1.8–4.1 ms | 6.5 ms | 64 ms/s (2.5 ms per picture) | 4.02 cores |
+| CPU | jpeg | 2140–2991 | 433–3001 | 8.0–8.4 ms | – | – | – | 8.49 cores |
+| CPU | webrtc (x264) | 2137–2985 | 442–3001 | 5.4–5.8 ms | – | 4.1 ms | 15 ms/s (3.1 ms per picture) | 8.78 cores |
+
+- On the CUDA backend the WebRTC preview takes the JPEG encode (about 12 ms of CPU per head and picture, on the head thread) off the heads: what is left there is the tile kernel and the download. NVENC ran one session at 4–5 pictures per second and reported 0–1 % encoder use; the mosaic is 4 Mbit/s CBR.
+- The CPU backend is over its budget with four 1080p50 heads in both modes (the `1` layouts compose in 24 ms); WebRTC changes nothing there. A first cut scaled the mosaic tile on the head thread alone (29 ms per picture); it now runs in bands on the head's tile workers.
+- With 16 inputs (four from the player, twelve lab writers) and these four heads, neither mode keeps real time on this shared A16 (CUDA compose 30–470 ms per frame in repeated runs; JPEG and WebRTC alike), so the comparison above uses four inputs.
+- Headless Edge (from the office network over the VPN) played the stream from the built-in MediaMTX: 1920×1080, `object-view-box` of each `/widget/head?head=<h>` page equal to the tile map, the centre of each region in that head's colour (each head showed a layout of one background colour), and the `<video>` box in the region's aspect, so no other head shows. A page on an origin listed in `WIDGET_FRAME_ANCESTORS` framed the widget and received `widget-ready` and `widget-size`; another origin was refused by the CSP. The tile-editor widget showed the four tiles of a 2x2 head and saved a caption change.
+- The built-in MediaMTX came back after `kill -9` (restarts 1) and the stream published again within 2 s.
+- The caption strip and the audio bar strip (§6.2, a full-canvas tile of a lab writer, caption at the bottom without overlay, two bars at the right without overlay) sampled the same on the CUDA and the CPU path: picture x 0–1843, y 3–1039; letterbox y 0–2 and 1040–1043; caption strip from y 1044; bar strip from x 1844.

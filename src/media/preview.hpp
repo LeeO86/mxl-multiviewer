@@ -48,8 +48,9 @@ std::string previewWhepUrl(Config const& cfg);
 std::string previewHlsUrl(Config const& cfg);
 
 // Scales a planar 10-bit 4:2:2 picture to width × height NV12 (8-bit 4:2:0: the luma rows, then
-// the interleaved CbCr rows), by area average. width and height are even.
-void scaleToNv12(Frame422 const& src, int width, int height, std::uint8_t* nv12);
+// the interleaved CbCr rows), by area average. width and height are even. Only the 2×2 block rows
+// [blockRowBegin, blockRowEnd) are written (the default: all), so bands can run in parallel.
+void scaleToNv12(Frame422 const& src, int width, int height, std::uint8_t* nv12, int blockRowBegin = 0, int blockRowEnd = -1);
 
 // The mosaic as NV12 in host memory. Head threads put their picture at the preview rate; the
 // encoder thread copies the whole canvas. Areas no head covers are black.

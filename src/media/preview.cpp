@@ -66,10 +66,11 @@ std::string previewHlsUrl(Config const& cfg)
     return base + "/" + previewPlan(cfg).path + "/index.m3u8";
 }
 
-void scaleToNv12(Frame422 const& src, int width, int height, std::uint8_t* nv12)
+void scaleToNv12(Frame422 const& src, int width, int height, std::uint8_t* nv12, int blockRowBegin, int blockRowEnd)
 {
     std::uint8_t* chroma = nv12 + static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    for (int by = 0; by < height / 2; ++by)
+    int const end = blockRowEnd < 0 ? height / 2 : std::min(blockRowEnd, height / 2);
+    for (int by = std::max(0, blockRowBegin); by < end; ++by)
     {
         for (int bx = 0; bx < width / 2; ++bx)
         {
