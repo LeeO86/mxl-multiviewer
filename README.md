@@ -184,7 +184,7 @@ docker run --gpus all --network host \
   -e MV_BACKEND=auto -e MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
   -e MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
   -v /Volumes/mxl:/Volumes/mxl -v mv-config:/config \
-  ghcr.io/leeo86/mxl-multiviewer:1.4.0
+  ghcr.io/leeo86/mxl-multiviewer:1.4.1
 ```
 
 The image sets `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` (video: NVENC for the WebRTC preview); a deployment that overrides it must keep `video`. `--network host` is the single-machine form. The platform Deployment uses the pod network and sets `NMOS_HOST_ADDRESS` from the pod IP.
@@ -207,7 +207,7 @@ The overlay draws audio bars on input tiles (built-in presets have them on): a P
 
 ### Preview
 
-`MV_PREVIEW_MODE=jpeg` (default) encodes a JPEG of each head at `MV_PREVIEW_FPS` and `MV_PREVIEW_WIDTH` (`/preview.jpg?head=<h>`) and publishes nothing. `MV_PREVIEW_MODE=webrtc` encodes no JPEG; instead every head is scaled into one 1920×1080 picture (one head fills it; two to four heads get a 960×540 quarter each, 2×2 in reading order) and that picture is encoded once as H.264, with NVENC on a GPU host (x264 only when NVENC cannot be opened, which is logged), 4 Mbit/s at `MV_PREVIEW_FPS`. On the CUDA backend the heads are scaled on the GPU in the compose path. `GET /api/v1/preview/map` gives each head's region; the UI plays the stream once (WHEP) and crops each head's `<video>` with CSS `object-view-box` (Chromium-based browsers; Firefox and Safari show the whole picture).
+`MV_PREVIEW_MODE=jpeg` (default) encodes a JPEG of each head at `MV_PREVIEW_FPS` and `MV_PREVIEW_WIDTH` (`/preview.jpg?head=<h>`) and publishes nothing. `MV_PREVIEW_MODE=webrtc` encodes no JPEG; instead every head is scaled into one 1920×1080 picture (one head fills it; two to four heads get a 960×540 quarter each, 2×2 in reading order) and that picture is encoded once as H.264, with NVENC on a GPU host (x264 only when NVENC cannot be opened, which is logged), 4 Mbit/s at `MV_PREVIEW_FPS`. On the CUDA backend the heads are scaled on the GPU in the compose path. `GET /api/v1/preview/map` gives each head's region; the UI plays the stream once (WHEP) and shows each head in a box of its region's aspect ratio, the `<video>` scaled and moved with a CSS transform so only that region shows (every browser).
 
 The stream is published over RTSP to MediaMTX, which serves WHEP and HLS (the preview contract shared with mxl-webrtc-monitor):
 

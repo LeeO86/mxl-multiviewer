@@ -1,6 +1,8 @@
 // The WebRTC preview (SPECIFICATION.md §8.4): one WHEP connection per page and one MediaStream of
-// the mosaic of every head. Each head view shows that same stream, cropped to its head with CSS
-// object-view-box from the tile map (/api/v1/preview/map).
+// the mosaic of every head. Each head view shows that same stream in a box of its head's aspect ratio
+// with overflow hidden; a CSS transform from the tile map (/api/v1/preview/map) scales and moves the
+// video so only the head's region is visible. That works in every browser (object-view-box is Chrome
+// and Edge only).
 import { reactive } from "vue";
 import { api, live } from "./api.js";
 
@@ -119,16 +121,18 @@ export function releasePreview() {
 }
 
 /**
- * CSS of head `head`'s <video>: object-view-box of its region of the mosaic, and the region's aspect
- * ratio (--ar), which sizes the video box so nothing of the neighbouring heads shows (empty until the map is loaded).
+ * How head `head` is shown: `box` for the element around its <video> (the region's aspect ratio, --ar) and
+ * `video` for the <video> filling that box: the whole mosaic stretched to the box, moved so the region is at
+ * the top left and scaled up so the region fills the box. Empty until the map is loaded (whole mosaic, 16:9).
  */
-export function headStyle(head) {
+export function headCrop(head) {
   const map = preview.map;
   const r = map?.heads?.find((h) => h.head === head);
-  if (!r) return {};
-  const pct = (v, total) => `${((v / total) * 100).toFixed(4)}%`;
+  if (!r) return { box: {}, video: {} };
   return {
-    objectViewBox: `inset(${pct(r.y, map.height)} ${pct(map.width - r.x - r.w, map.width)} ${pct(map.height - r.y - r.h, map.height)} ${pct(r.x, map.width)})`,
-    "--ar": (r.w / r.h).toFixed(6),
+    box: { "--ar": (r.w / r.h).toFixed(6) },
+    video: {
+      transform: `scale(${map.width / r.w}, ${map.height / r.h}) translate(${(-100 * r.x) / map.width}%, ${(-100 * r.y) / map.height}%)`,
+    },
   };
 }
