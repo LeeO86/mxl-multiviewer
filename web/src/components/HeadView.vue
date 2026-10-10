@@ -3,7 +3,7 @@
 // stream, cropped with object-view-box), or its JPEG at MV_PREVIEW_FPS. Emits `shown` at the first picture.
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { live } from "../api.js";
-import { headViewBox, loadMap, preview, releasePreview, usePreview } from "../preview.js";
+import { headStyle, loadMap, preview, releasePreview, usePreview } from "../preview.js";
 
 const props = defineProps({
   head: { type: Number, required: true },
@@ -21,7 +21,7 @@ let using = false;
 
 const fps = computed(() => live.info?.preview_fps || 5);
 const src = computed(() => `/preview.jpg?head=${props.head}&t=${stamp.value}`);
-const viewBox = computed(() => headViewBox(props.head));
+const videoStyle = computed(() => headStyle(props.head));
 const message = computed(() => {
   if (mode.value === "webrtc") {
     if (preview.state === "error") return `WebRTC preview unavailable (${preview.error}), retrying…`;
@@ -71,7 +71,7 @@ onUnmounted(() => {
     <video
       v-if="mode === 'webrtc'"
       ref="video"
-      :style="{ objectViewBox: viewBox }"
+      :style="videoStyle"
       :aria-label="`Output ${head} preview`"
       muted
       autoplay

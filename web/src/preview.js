@@ -118,11 +118,17 @@ export function releasePreview() {
   preview.state = "idle";
 }
 
-/** CSS object-view-box of head `head`: its region of the mosaic (empty until the map is loaded). */
-export function headViewBox(head) {
+/**
+ * CSS of head `head`'s <video>: object-view-box of its region of the mosaic, and the region's aspect
+ * ratio (--ar), which sizes the video box so nothing of the neighbouring heads shows (empty until the map is loaded).
+ */
+export function headStyle(head) {
   const map = preview.map;
   const r = map?.heads?.find((h) => h.head === head);
-  if (!r) return "";
+  if (!r) return {};
   const pct = (v, total) => `${((v / total) * 100).toFixed(4)}%`;
-  return `inset(${pct(r.y, map.height)} ${pct(map.width - r.x - r.w, map.width)} ${pct(map.height - r.y - r.h, map.height)} ${pct(r.x, map.width)})`;
+  return {
+    objectViewBox: `inset(${pct(r.y, map.height)} ${pct(map.width - r.x - r.w, map.width)} ${pct(map.height - r.y - r.h, map.height)} ${pct(r.x, map.width)})`,
+    "--ar": (r.w / r.h).toFixed(6),
+  };
 }
