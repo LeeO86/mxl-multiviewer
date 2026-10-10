@@ -116,7 +116,26 @@ const textHelp = computed(() => {
   return "Shown when the NMOS registry has no name for the routed sender.";
 });
 
-const BAR_KEYS = ["audio_bars", "audio_bar_channels", "audio_bar_first", "audio_bar_position", "audio_bar_rms", "audio_bar_scale", "zone_green", "zone_amber"];
+const BAR_KEYS = [
+  "audio_bars",
+  "audio_bar_channels",
+  "audio_bar_first",
+  "audio_bar_position",
+  "audio_bar_overlay",
+  "audio_bar_rms",
+  "audio_bar_scale",
+  "zone_green",
+  "zone_amber",
+];
+const UMD_SIDES = [
+  { id: "top", label: "Top" },
+  { id: "bottom", label: "Bottom" },
+];
+const BAR_SIDES = [
+  { id: "left", label: "Left" },
+  { id: "centre", label: "Centre" },
+  { id: "right", label: "Right" },
+];
 const inputTiles = computed(() => props.layout.tiles.filter((t) => t.content === "input"));
 
 /** Gives every input tile of the layout this tile's audio bar settings. */
@@ -246,25 +265,21 @@ function toggleMarker(marker) {
         <input id="tile-umd-text" v-model="tile.umd_text" maxlength="200" :disabled="!tile.umd" placeholder="e.g. CAM 1" />
       </Field>
       <div class="two">
-        <Field label="Position" id="tile-umd-pos">
-          <select id="tile-umd-pos" v-model="tile.umd_position" :disabled="!tile.umd">
-            <optgroup label="In the tile, over the picture">
-              <option value="bottom-inside">Bottom, over the picture</option>
-              <option value="top-inside">Top, over the picture</option>
-            </optgroup>
-            <optgroup label="Outside the tile">
-              <option value="bottom-outside">Below the tile</option>
-              <option value="top-outside">Above the tile</option>
-            </optgroup>
-          </select>
+        <Field label="Position">
+          <span class="seg" role="group" aria-label="Caption position">
+            <button v-for="p in UMD_SIDES" :key="p.id" type="button" :aria-pressed="tile.umd_position === p.id" :disabled="!tile.umd" @click="tile.umd_position = p.id">
+              {{ p.label }}
+            </button>
+          </span>
+          <label class="check"><input v-model="tile.umd_overlay" type="checkbox" :disabled="!tile.umd" /> Over the video</label>
         </Field>
         <Field label="Font size (px at 1080p)" id="tile-umd-font">
           <input id="tile-umd-font" v-model.number="tile.umd_font" type="number" min="8" max="200" :disabled="!tile.umd" />
         </Field>
       </div>
       <p class="note">
-        Over the picture: the bar covers the bottom or top of the picture, which keeps its full size. Below or above the tile: the bar is drawn on the
-        area next to the tile, so keep that area free in the layout.
+        The bar is always inside the tile. Over the video: it covers the top or bottom of the picture, which keeps its size. Off: the bar has its own strip
+        of the tile and the picture is scaled into the rest.
       </p>
       <Field label="Text alignment" help="Text longer than the bar is cut and ends with …">
         <span class="seg" role="group" aria-label="Caption text alignment">
@@ -291,18 +306,28 @@ function toggleMarker(marker) {
         <Field label="First channel" id="tile-first">
           <input id="tile-first" v-model.number="firstChannel" type="number" min="1" :max="17 - tile.audio_bar_channels" :disabled="!tile.audio_bars" />
         </Field>
-        <Field label="Position" id="tile-bars-pos">
-          <select id="tile-bars-pos" v-model="tile.audio_bar_position" :disabled="!tile.audio_bars">
-            <optgroup label="Over the picture">
-              <option value="right">Right edge</option>
-              <option value="left">Left edge</option>
-              <option value="overlay">Centre</option>
-            </optgroup>
-            <optgroup label="Beside the picture (it gets narrower)">
-              <option value="right-beside">Right of the picture</option>
-              <option value="left-beside">Left of the picture</option>
-            </optgroup>
-          </select>
+        <Field label="Position">
+          <span class="seg" role="group" aria-label="Audio bar position">
+            <button
+              v-for="p in BAR_SIDES"
+              :key="p.id"
+              type="button"
+              :aria-pressed="tile.audio_bar_position === p.id"
+              :disabled="!tile.audio_bars"
+              @click="tile.audio_bar_position = p.id"
+            >
+              {{ p.label }}
+            </button>
+          </span>
+          <label class="check" :title="tile.audio_bar_position === 'centre' ? 'Centred bars are always over the video' : ''">
+            <input
+              type="checkbox"
+              :checked="tile.audio_bar_overlay || tile.audio_bar_position === 'centre'"
+              :disabled="!tile.audio_bars || tile.audio_bar_position === 'centre'"
+              @change="tile.audio_bar_overlay = $event.target.checked"
+            />
+            Over the video
+          </label>
         </Field>
         <Field label="Show">
           <label class="check"><input v-model="tile.audio_bar_rms" type="checkbox" :disabled="!tile.audio_bars" /> RMS tick</label>
@@ -317,7 +342,7 @@ function toggleMarker(marker) {
       </div>
       <p class="note">
         Peak meter with a scale from 0 to −60 dBFS, a 2 s peak hold and a clip light, for channels 1 to 16. Dim bars with a cross: no audio is routed to this
-        input. Beside the picture, the bars get a strip of the tile and the picture is scaled into the rest.
+        input. Not over the video: the bars get a strip of the tile and the picture is scaled into the rest (with a caption strip too, into what is left).
       </p>
       <div class="actions" style="margin-top: 0.4rem">
         <button class="btn small secondary" :disabled="inputTiles.length < 2" @click="barsToAll">Apply to all {{ inputTiles.length }} input tiles</button>

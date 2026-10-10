@@ -81,10 +81,14 @@ function hand(degrees, length) {
         <div class="source">{{ source }}</div>
         <div class="state">{{ stateText(input?.video?.state) }}</div>
       </div>
-      <div v-if="tile.audio_bars" class="bars" :class="[tile.audio_bar_position, { off: !input?.audio?.enable }]">
+      <div
+        v-if="tile.audio_bars"
+        class="bars"
+        :class="[tile.audio_bar_position, { off: !input?.audio?.enable, strip: !tile.audio_bar_overlay && tile.audio_bar_position !== 'centre' }]"
+      >
         <span v-for="(ch, i) in channels" :key="i"><i :style="{ height: ch.pct + '%', background: ch.color }"></i></span>
       </div>
-      <div v-if="tile.umd" class="umd" :class="tile.umd_position" :style="{ background: rgba(tile.umd_bg), textAlign: { centre: 'center', right: 'right' }[tile.umd_align] || 'left' }">
+      <div v-if="tile.umd" class="umd" :class="[tile.umd_position, { strip: !tile.umd_overlay }]" :style="{ background: rgba(tile.umd_bg), textAlign: { centre: 'center', right: 'right' }[tile.umd_align] || 'left' }">
         {{ caption }}
       </div>
     </template>

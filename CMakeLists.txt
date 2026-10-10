@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(mxl-multiviewer VERSION 1.3.0 LANGUAGES CXX)
+project(mxl-multiviewer VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,9 @@ add_library(mv-core STATIC
     src/media/image.cpp
     src/media/imagestore.cpp
     src/app/runtime.cpp
+    src/media/preview.cpp
+    src/ops/child.cpp
+    src/ops/mediamtx.cpp
 )
 target_include_directories(mv-core PUBLIC src third_party)
 target_link_libraries(mv-core PUBLIC Threads::Threads CURL::libcurl PkgConfig::WEBP)
@@ -97,6 +100,7 @@ if(MV_BUILD_TESTS)
         tests/unit/test_media.cpp
         tests/unit/test_control.cpp
         tests/unit/test_image.cpp
+        tests/unit/test_preview.cpp
     )
     target_include_directories(unit-tests PRIVATE src third_party)
     target_link_libraries(unit-tests PRIVATE mv-core)
@@ -152,19 +156,23 @@ if(mxl_FOUND)
     else()
         set(MV_UI_SOURCE "")
     endif()
-    add_executable(mxl-multiviewer src/main.cpp src/mxlio/engine.cpp src/nmos/node.cpp ${MV_UI_SOURCE})
+    # The WebRTC preview's H.264 encoder and RTSP publisher (§8.4): the system FFmpeg.
+    pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil)
+    add_executable(mxl-multiviewer src/main.cpp src/mxlio/engine.cpp src/nmos/node.cpp src/media/publisher.cpp ${MV_UI_SOURCE})
     target_include_directories(mxl-multiviewer PRIVATE src third_party ${CMAKE_CURRENT_BINARY_DIR}/generated)
     if(MV_UI_SOURCE)
         target_compile_definitions(mv-core PUBLIC MV_HAS_UI=1)
         target_include_directories(mv-core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
         set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/ops/api.cpp PROPERTIES OBJECT_DEPENDS "${WEBUI_GENERATED}")
     endif()
-    target_link_libraries(mxl-multiviewer PRIVATE mv-core mxl::mxl)
+    target_link_libraries(mxl-multiviewer PRIVATE mv-core mxl::mxl PkgConfig::AV)
     target_compile_options(mxl-multiviewer PRIVATE -Wall -Wextra -Wno-unused-parameter)
     if(MV_CUDA_LANGUAGE)
         target_sources(mxl-multiviewer PRIVATE src/media/cuda_compose.cu)
         set_target_properties(mxl-multiviewer PROPERTIES CUDA_RUNTIME_LIBRARY Static CUDA_ARCHITECTURES "75;86;89")
         target_compile_definitions(mxl-multiviewer PRIVATE MV_WITH_CUDA=1)
+        # cuda.h for FFmpeg's CUDA device context (NVENC in the compositor's context); no libcuda link.
+        target_include_directories(mxl-multiviewer PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     else()
         target_sources(mxl-multiviewer PRIVATE src/media/cuda_stub.cpp)
     endif()

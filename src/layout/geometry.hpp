@@ -41,8 +41,15 @@ BarMetrics barMetrics(int tileWidth, int channels, int canvasHeight);
 // keeps v210 alignment); 0 when it would be more than half the tile, and then no bars are drawn.
 int barsStripWidth(int tileWidth, int channels, bool scale, int canvasHeight);
 
-// The part of the tile the picture is placed in: the tile, less the strip of audio bars
-// beside the picture (audio_bar_position left-beside or right-beside on an input tile).
+// The caption (UMD) font in pixels at this canvas height (`umd_font` is at 1080).
+int umdFontPx(int umdFont, int canvasHeight);
+// Height of the caption bar for that font in a tile of this height: the overlay draws the bar,
+// and without `umd_overlay` the picture leaves that strip free. Never more than the tile.
+int umdBandHeight(int fontPx, int tileHeight);
+
+// The part of the tile the picture is placed in (§6.2): the tile, less the caption strip at the top
+// or bottom (`umd` on, `umd_overlay` off) and less the strip of audio bars at the left or right
+// (`audio_bars` on, `audio_bar_overlay` off), on input tiles. Always inside the tile.
 PixelRect pictureRect(PixelRect const& tile, Tile const& options, int canvasHeight);
 Placement placeTile(PixelRect const& tile, int srcWidth, int srcHeight, ScaleMode mode);
 } // namespace mv

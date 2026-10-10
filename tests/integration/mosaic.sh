@@ -247,9 +247,10 @@ fi
 INPUTS="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/inputs")"
 python3 -c 'import json,sys; i=json.loads(sys.argv[1])["inputs"][0]; assert (i["tsl_lh"], i["tsl_rh"], i["tsl_text_tally"], i["tally"]) == (1, 2, 3, 3), i; assert i["tsl_text"] == "Kamera Zürich", i["tsl_text"]' "$INPUTS"
 
-# Image tile and audio bars beside the picture. Left tile: input 1 (Y 200) with bars right-beside,
-# so its 16:9 picture is 58 px wide (x 0..57, y 37..69) and x 58..95 is the black bar strip.
-# Right tile: an uploaded white PNG, fill (Y 940).
+# Image tile, and the caption and audio bars in their own strips of the tile (§6.2). Left tile: input 1
+# (Y 200) with bars in a strip at the right (the 1.3.0 value right-beside, still accepted) and the caption in
+# a 16 px strip at the bottom, so its 16:9 picture fits 58 × 92 px: x 0..57, y 29..61; x 58..95 is the bar
+# strip and y 62..91 letterbox. Right tile: an uploaded white PNG, fill (Y 940).
 python3 - "$WORK/white.png" <<'PY'
 import struct, sys, zlib
 w = h = 16
@@ -261,21 +262,21 @@ open(sys.argv[1], "wb").write(png)
 PY
 curl -sf -X PUT -H 'Content-Type: image/png' --data-binary @"$WORK/white.png" "http://127.0.0.1:${WEB_PORT}/api/v1/images/white.png" >/dev/null
 curl -sf -X PUT -H 'Content-Type: application/json' \
-  -d '{"version":1,"name":"pic","tiles":[{"id":"v","input":1,"umd":false,"format_label":false,"audio_bars":true,"audio_bar_position":"right-beside","rect":{"x":0,"y":0,"w":0.5,"h":1}},{"id":"i","content":"image","image_file":"white.png","scale":"fill","rect":{"x":0.5,"y":0,"w":0.5,"h":1}}]}' \
+  -d '{"version":1,"name":"pic","tiles":[{"id":"v","input":1,"umd":true,"umd_position":"bottom","umd_overlay":false,"format_label":false,"audio_bars":true,"audio_bar_position":"right-beside","rect":{"x":0,"y":0,"w":0.5,"h":1}},{"id":"i","content":"image","image_file":"white.png","scale":"fill","rect":{"x":0.5,"y":0,"w":0.5,"h":1}}]}' \
   "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/pic" >/dev/null
 curl -sf -X POST "http://127.0.0.1:${WEB_PORT}/api/v1/layouts/pic/activate" >/dev/null
 picture_ok=0
 for _ in $(seq 1 25); do
   sleep 0.2
-  PICTURE="$(sample 28 50)"; STRIP="$(sample 66 50)"; IMAGE="$(sample 144 50)"
-  if near "$PICTURE" 200 && (( STRIP < 80 )) && near "$IMAGE" 940; then
+  PICTURE="$(sample 28 50)"; TOP="$(sample 28 31)"; BELOW="$(sample 28 66)"; STRIP="$(sample 66 50)"; IMAGE="$(sample 144 50)"
+  if near "$PICTURE" 200 && near "$TOP" 200 && (( BELOW < 80 )) && (( STRIP < 80 )) && near "$IMAGE" 940; then
     picture_ok=1
     break
   fi
 done
-echo "picture=$PICTURE strip=$STRIP image=$IMAGE"
+echo "picture=$PICTURE top=$TOP below=$BELOW strip=$STRIP image=$IMAGE"
 if [[ "$picture_ok" != 1 ]]; then
-  echo "image tile or bars beside the picture are not on the output" >&2
+  echo "image tile, caption strip or bar strip are not on the output" >&2
   exit 1
 fi
 

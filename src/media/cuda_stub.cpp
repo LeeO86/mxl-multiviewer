@@ -47,4 +47,14 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const&)
 {
     return CudaComposeStatus::Unavailable;
 }
+
+bool cudaPreviewTile(int, int, std::uint8_t*, float*)
+{
+    return false;
+}
+
+bool cudaPreviewContext(void**, void**)
+{
+    return false;
+}
 } // namespace mv

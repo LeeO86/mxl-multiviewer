@@ -19,7 +19,8 @@ Tile legacyTile()
     tile.umd = true;
     tile.umdSource = UmdSource::Is04;
     tile.umdText.clear();
-    tile.umdPosition = UmdPosition::BottomInside;
+    tile.umdPosition = UmdPosition::Bottom;
+    tile.umdOverlay = true;
     tile.umdAlign = UmdAlign::Left;
     tile.umdFont = 28;
     tile.umdBg = "#000000c0";
@@ -32,6 +33,7 @@ Tile legacyTile()
     tile.audioBarChannels = 2;
     tile.audioBarFirst = 0;
     tile.audioBarPosition = BarsPosition::Right;
+    tile.audioBarOverlay = true;
     tile.zoneGreen = -18;
     tile.zoneAmber = -9;
     tile.alarmBorder = true;
@@ -201,10 +203,10 @@ bool sameLayout(Layout const& a, Layout const& b)
         auto const& y = b.tiles[i];
         bool const same = x.id == y.id && x.content == y.content && x.input == y.input && near(x.rect.x, y.rect.x) && near(x.rect.y, y.rect.y) &&
                           near(x.rect.w, y.rect.w) && near(x.rect.h, y.rect.h) && x.z == y.z && x.scale == y.scale && x.umd == y.umd &&
-                          x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdAlign == y.umdAlign && x.umdFont == y.umdFont &&
+                          x.umdSource == y.umdSource && x.umdText == y.umdText && x.umdPosition == y.umdPosition && x.umdOverlay == y.umdOverlay && x.umdAlign == y.umdAlign && x.umdFont == y.umdFont &&
                           x.umdBg == y.umdBg && x.tallyBorder == y.tallyBorder && x.tallyLamp == y.tallyLamp && x.tallyText == y.tallyText && x.audioBars == y.audioBars &&
                           x.audioBarRms == y.audioBarRms && x.audioBarScale == y.audioBarScale && x.audioBarChannels == y.audioBarChannels && x.audioBarFirst == y.audioBarFirst &&
-                          x.audioBarPosition == y.audioBarPosition && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&
+                          x.audioBarPosition == y.audioBarPosition && x.audioBarOverlay == y.audioBarOverlay && x.zoneGreen == y.zoneGreen && x.zoneAmber == y.zoneAmber &&
                           x.alarmBorder == y.alarmBorder && x.alarmLabels == y.alarmLabels && x.alarmLabelPosition == y.alarmLabelPosition &&
                           x.formatLabel == y.formatLabel && x.latency == y.latency && x.safeArea == y.safeArea && x.centre == y.centre &&
                           x.aspectMarkers == y.aspectMarkers && x.clockStyle == y.clockStyle && x.clockZone == y.clockZone &&

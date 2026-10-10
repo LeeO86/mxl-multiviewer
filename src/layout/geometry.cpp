@@ -67,19 +67,41 @@ int barsStripWidth(int tileWidth, int channels, bool scale, int canvasHeight)
     return even * 2 <= tileWidth ? even : 0;
 }
 
+int umdFontPx(int umdFont, int canvasHeight)
+{
+    return std::max(8, umdFont * canvasHeight / 1080);
+}
+
+int umdBandHeight(int fontPx, int tileHeight)
+{
+    return std::clamp(std::max(fontPx + 8, 16), 0, std::max(0, tileHeight));
+}
+
 PixelRect pictureRect(PixelRect const& tile, Tile const& options, int canvasHeight)
 {
-    bool const left = options.audioBarPosition == BarsPosition::LeftBeside;
-    if (options.content != TileContent::Input || !options.audioBars || (!left && options.audioBarPosition != BarsPosition::RightBeside))
-    {
-        return tile;
-    }
-    int const strip = barsStripWidth(tile.w, options.audioBarChannels, options.audioBarScale, canvasHeight);
     PixelRect picture = tile;
-    picture.w -= strip;
-    if (left)
+    if (options.content != TileContent::Input)
     {
-        picture.x += strip;
+        return picture;
+    }
+    if (options.umd && !options.umdOverlay)
+    {
+        // At least one line stays for the picture; the bar is drawn over it when the font fills the tile.
+        int const band = std::min(umdBandHeight(umdFontPx(options.umdFont, canvasHeight), tile.h), tile.h - 1);
+        picture.h = tile.h - band;
+        if (options.umdPosition == UmdPosition::Top)
+        {
+            picture.y += band;
+        }
+    }
+    if (options.audioBars && !options.audioBarOverlay && options.audioBarPosition != BarsPosition::Centre)
+    {
+        int const strip = barsStripWidth(tile.w, options.audioBarChannels, options.audioBarScale, canvasHeight);
+        picture.w -= strip;
+        if (options.audioBarPosition == BarsPosition::Left)
+        {
+            picture.x += strip;
+        }
     }
     return picture;
 }

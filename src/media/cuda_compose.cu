@@ -1,6 +1,8 @@
 #include "media/cuda_compose.hpp"
 #include "media/frame.hpp"
+#include "media/nv12scale.hpp"
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <cstring>
@@ -252,6 +254,19 @@ __global__ void fill422Kernel(unsigned short* y, unsigned short* cb, unsigned sh
         cb[row * (width / 2) + x / 2] = cbv;
         cr[row * (width / 2) + x / 2] = crv;
     }
+}
+
+// One thread per 2×2 block of the WebRTC preview tile (§8.4), from the composed canvas.
+__global__ void nv12TileKernel(unsigned short const* y, unsigned short const* cb, unsigned short const* cr, int srcW, int srcH, std::uint8_t* dst, int dstW,
+    int dstH)
+{
+    int const bx = blockIdx.x * blockDim.x + threadIdx.x;
+    int const by = blockIdx.y * blockDim.y + threadIdx.y;
+    if (bx >= dstW / 2 || by >= dstH / 2)
+    {
+        return;
+    }
+    nv12::block(y, cb, cr, srcW, srcH, dstW, dstH, bx, by, dst, dstW, dst + static_cast<std::size_t>(dstW) * static_cast<std::size_t>(dstH), dstW);
 }
 
 struct DevScale
@@ -855,6 +870,11 @@ struct Session
     bool used[2] = {};
     // Stage boundaries for CudaComposeTiming: start, background, tiles, overlay, pack, download.
     cudaEvent_t mark[6] = {};
+    // The canvas of the last composed frame stays on the device for the WebRTC preview tile.
+    int lastWidth = 0;
+    int lastHeight = 0;
+    Mem previewTile;
+    Mem previewPin;
 
     bool open()
     {
@@ -1236,7 +1256,70 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         cudaEventElapsedTime(&desc.timing->pack, gpu.mark[3], gpu.mark[4]);
         cudaEventElapsedTime(&desc.timing->download, gpu.mark[4], gpu.mark[5]);
     }
+    gpu.lastWidth = desc.width;
+    gpu.lastHeight = desc.height;
     return CudaComposeStatus::Ok;
+}
+
+bool cudaPreviewTile(int width, int height, std::uint8_t* nv12, float* gpuMs)
+{
+    auto& gpu = session();
+    if (!gpu.ready || gpu.lastWidth < 2 || gpu.lastHeight < 2 || width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || nv12 == nullptr)
+    {
+        return false;
+    }
+    std::size_t const bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3 / 2;
+    auto* tile = static_cast<std::uint8_t*>(gpu.previewTile.ensure(bytes, false));
+    auto* pin = static_cast<std::uint8_t*>(gpu.previewPin.ensure(bytes, true));
+    if (tile == nullptr || pin == nullptr)
+    {
+        return false;
+    }
+    // Compose has finished (it synchronises), so its stage events are free here.
+    cudaEventRecord(gpu.mark[0], gpu.compute);
+    nv12TileKernel<<<tiles2d(width / 2, height / 2), dim3(16, 16), 0, gpu.compute>>>(static_cast<unsigned short const*>(gpu.canvasY.ptr),
+        static_cast<unsigned short const*>(gpu.canvasCb.ptr), static_cast<unsigned short const*>(gpu.canvasCr.ptr), gpu.lastWidth, gpu.lastHeight, tile, width,
+        height);
+    if (cudaGetLastError() != cudaSuccess || cudaMemcpyAsync(pin, tile, bytes, cudaMemcpyDeviceToHost, gpu.compute) != cudaSuccess ||
+        cudaEventRecord(gpu.mark[1], gpu.compute) != cudaSuccess || cudaStreamSynchronize(gpu.compute) != cudaSuccess)
+    {
+        cudaGetLastError();
+        return false;
+    }
+    if (gpuMs != nullptr)
+    {
+        cudaEventElapsedTime(gpuMs, gpu.mark[0], gpu.mark[1]);
+    }
+    std::memcpy(nv12, pin, bytes);
+    return true;
+}
+
+bool cudaPreviewContext(void** context, void** stream)
+{
+    // cudaFree(nullptr) makes the runtime's primary context current on this thread.
+    if (context == nullptr || stream == nullptr || !cudaRuntimeAvailable() || cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
+    {
+        return false;
+    }
+    // The driver API without linking libcuda (it comes from the NVIDIA container toolkit at run time).
+    void* getCurrent = nullptr;
+    cudaDriverEntryPointQueryResult found{};
+    CUcontext current = nullptr;
+    if (cudaGetDriverEntryPointByVersion("cuCtxGetCurrent", &getCurrent, 12000, cudaEnableDefault, &found) != cudaSuccess || getCurrent == nullptr ||
+        reinterpret_cast<CUresult (*)(CUcontext*)>(getCurrent)(&current) != CUDA_SUCCESS || current == nullptr)
+    {
+        cudaGetLastError();
+        return false;
+    }
+    cudaStream_t created = nullptr;
+    if (cudaStreamCreateWithFlags(&created, cudaStreamNonBlocking) != cudaSuccess)
+    {
+        cudaGetLastError();
+        return false;
+    }
+    *context = current;
+    *stream = created;
+    return true;
 }
 
 std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v210RowBytes, std::uint8_t const* alpha10, int alphaRowBytes, int width,

@@ -61,6 +61,20 @@ struct Config
     int overlayHz = 25;
     int previewFps = 5;
     int previewWidth = 480;
+    // §8.4: "jpeg" (/preview.jpg per head) or "webrtc" (one H.264 mosaic of the heads). Never both.
+    std::string previewMode = "jpeg";
+    // Preview contract (§8.4): an empty publish URL runs the built-in MediaMTX ("own").
+    std::string previewPublishUrl;
+    std::string previewPathPrefix = "mxl-multiviewer";
+    std::string previewWhepUrl;
+    std::string previewHlsUrl;
+    // CSP frame-ancestors of the /widget routes (§8.5).
+    std::string widgetFrameAncestors = "'self'";
+    // The built-in MediaMTX: RTSP ingest on 127.0.0.1, WHEP, HLS, and ICE (UDP and TCP).
+    int mediamtxRtspPort = 8754;
+    int mediamtxWhepPort = 8789;
+    int mediamtxHlsPort = 8788;
+    int mediamtxIcePort = 8389;
     int grid = 24;
     int blackY = 32;
     double silenceDbfs = -60;

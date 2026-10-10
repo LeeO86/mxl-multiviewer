@@ -31,6 +31,11 @@ void plot(Overlay& overlay, int x, int y, Rgba color)
     {
         return;
     }
+    auto const& clip = overlay.clip;
+    if (clip.w > 0 && (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h))
+    {
+        return;
+    }
     auto* px = overlay.rgba.data() + (static_cast<std::size_t>(y) * static_cast<std::size_t>(overlay.width) + static_cast<std::size_t>(x)) * 4u;
     int const a = color.a;
     px[0] = static_cast<std::uint8_t>((color.r * a + px[0] * (255 - a) + 127) / 255);
@@ -240,7 +245,7 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     int const barW = m.barW;
     int const barsW = m.barsW;
     // Beside the picture the bars stay in the strip the composer left for them.
-    bool const beside = tile.barsPosition == BarsPosition::LeftBeside || tile.barsPosition == BarsPosition::RightBeside;
+    bool const beside = !tile.barsOverlay && tile.barsPosition != BarsPosition::Centre;
     if (beside && barsStripWidth(tile.rect.w, channels, tile.barScale, overlay.height) == 0)
     {
         return {};
@@ -269,12 +274,12 @@ PixelRect drawBars(Overlay& overlay, OverlayTile const& tile, int top, int botto
     int const scaleW = tile.audioRouted && tile.barScale ? tickW + labelW : 0;
     int const panelW = barsW + scaleW + 2 * gap;
     int barsX = tile.rect.x + tile.rect.w - margin - barsW;
-    bool const left = tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside;
+    bool const left = tile.barsPosition == BarsPosition::Left;
     if (left)
     {
         barsX = tile.rect.x + margin;
     }
-    else if (tile.barsPosition == BarsPosition::Overlay)
+    else if (tile.barsPosition == BarsPosition::Centre)
     {
         barsX = tile.rect.x + (tile.rect.w - barsW) / 2;
     }
@@ -710,6 +715,14 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
     for (auto const& tile : tiles)
     {
         PixelRect const& r = tile.rect;
+        overlay.clip = r;
+#ifdef MV_WITH_BLEND2D
+        if (overlay.blContext != nullptr)
+        {
+            ctx.restore_clipping();
+            ctx.clip_to_rect(BLRectI(r.x, r.y, r.w, r.h));
+        }
+#endif
         if (tile.image != nullptr && tile.imageFrame < tile.image->frames.size())
         {
             auto const& picture = *tile.image;
@@ -748,29 +761,18 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
         {
             drawAspect(overlay, r, marker);
         }
-        // The UMD band is drawn last; slates and bars keep clear of it when it is inside.
+        // The UMD band is drawn last, inside the tile at its top or bottom (over the picture, or on
+        // the strip the composer left free); slates, bars and labels keep clear of it.
         bool const umd = tile.umd && !tile.umdText.empty();
-        int const band = std::max(tile.umdFont + 8, 16);
-        int umdY = r.y;
-        if (tile.umdPosition == UmdPosition::BottomInside)
-        {
-            umdY = r.y + r.h - band;
-        }
-        else if (tile.umdPosition == UmdPosition::BottomOutside)
-        {
-            umdY = r.y + r.h;
-        }
-        else if (tile.umdPosition == UmdPosition::TopOutside)
-        {
-            umdY = r.y - band;
-        }
+        int const band = umdBandHeight(tile.umdFont, r.h);
+        int const umdY = tile.umdPosition == UmdPosition::Bottom ? r.y + r.h - band : r.y;
         int contentTop = r.y;
         int contentBottom = r.y + r.h;
-        if (umd && tile.umdPosition == UmdPosition::BottomInside)
+        if (umd && tile.umdPosition == UmdPosition::Bottom)
         {
             contentBottom = umdY;
         }
-        else if (umd && tile.umdPosition == UmdPosition::TopInside)
+        else if (umd)
         {
             contentTop = umdY + band;
         }
@@ -840,7 +842,7 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             }
         }
         int const caption = std::max(8, overlay.height * 16 / 1080);
-        int const captionX = (tile.barsPosition == BarsPosition::Left || tile.barsPosition == BarsPosition::LeftBeside) && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
+        int const captionX = tile.barsPosition == BarsPosition::Left && bars.w > 0 ? bars.x + bars.w + 4 : r.x + 4;
         if (!tile.formatText.empty())
         {
             overlay.text(captionX, contentTop + 4, tile.formatText, caption, {255, 255, 255, 220});
@@ -896,6 +898,7 @@ void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles)
             }
         }
     }
+    overlay.clip = {};
 #ifdef MV_WITH_BLEND2D
     if (overlay.blContext != nullptr)
     {

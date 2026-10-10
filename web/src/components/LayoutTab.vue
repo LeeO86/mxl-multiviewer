@@ -11,6 +11,7 @@ import {
   editor,
   freeRect,
   isDirty,
+  migrateTiles,
   layoutNames,
   loadBook,
   makeTile,
@@ -203,7 +204,7 @@ function submitImport() {
   }
   if (!Array.isArray(doc?.tiles)) return say("err", "Expected one layout (with tiles) or a layout book (with layouts).");
   const name = String(doc.name || "imported").trim();
-  editor.drafts[name] = { version: 1, background: "#101010", ...clone(doc), name };
+  editor.drafts[name] = migrateTiles({ version: 1, background: "#101010", ...clone(doc), name });
   editor.current = name;
   editor.selectedId = "";
   form.value = "";

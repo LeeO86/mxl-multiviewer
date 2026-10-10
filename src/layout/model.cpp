@@ -110,37 +110,29 @@ std::optional<UmdSource> umdSourceFromString(std::string const& text)
 
 char const* umdPosToString(UmdPosition pos)
 {
-    switch (pos)
-    {
-    case UmdPosition::TopInside:
-        return "top-inside";
-    case UmdPosition::TopOutside:
-        return "top-outside";
-    case UmdPosition::BottomOutside:
-        return "bottom-outside";
-    case UmdPosition::BottomInside:
-        return "bottom-inside";
-    }
-    return "bottom-inside";
+    return pos == UmdPosition::Top ? "top" : "bottom";
 }
 
-std::optional<UmdPosition> umdPosFromString(std::string const& text)
+// A position and, for the values of 1.3.0 and before, whether it lies over the picture:
+// `-inside` was over the picture, `-outside` (drawn outside the tile then) is now a strip inside it.
+struct Placed
 {
-    if (text == "top-inside")
+    int position = 0;
+    std::optional<bool> overlay;
+};
+
+std::optional<Placed> umdPosFromString(std::string const& text)
+{
+    std::pair<char const*, Placed> const names[] = {{"top", {static_cast<int>(UmdPosition::Top), std::nullopt}},
+        {"bottom", {static_cast<int>(UmdPosition::Bottom), std::nullopt}}, {"top-inside", {static_cast<int>(UmdPosition::Top), true}},
+        {"bottom-inside", {static_cast<int>(UmdPosition::Bottom), true}}, {"top-outside", {static_cast<int>(UmdPosition::Top), false}},
+        {"bottom-outside", {static_cast<int>(UmdPosition::Bottom), false}}};
+    for (auto const& [name, placed] : names)
     {
-        return UmdPosition::TopInside;
-    }
-    if (text == "top-outside")
-    {
-        return UmdPosition::TopOutside;
-    }
-    if (text == "bottom-inside")
-    {
-        return UmdPosition::BottomInside;
-    }
-    if (text == "bottom-outside")
-    {
-        return UmdPosition::BottomOutside;
+        if (text == name)
+        {
+            return placed;
+        }
     }
     return std::nullopt;
 }
@@ -197,43 +189,22 @@ std::optional<AlarmLabelPosition> alarmLabelPositionFromString(std::string const
 
 char const* barsToString(BarsPosition pos)
 {
-    switch (pos)
-    {
-    case BarsPosition::Left:
-        return "left";
-    case BarsPosition::Overlay:
-        return "overlay";
-    case BarsPosition::LeftBeside:
-        return "left-beside";
-    case BarsPosition::RightBeside:
-        return "right-beside";
-    case BarsPosition::Right:
-        return "right";
-    }
-    return "right";
+    return pos == BarsPosition::Left ? "left" : pos == BarsPosition::Centre ? "centre" : "right";
 }
 
-std::optional<BarsPosition> barsFromString(std::string const& text)
+// As umdPosFromString: `overlay` (1.3.0's centre) is centre, `-beside` is the strip.
+std::optional<Placed> barsFromString(std::string const& text)
 {
-    if (text == "left")
+    std::pair<char const*, Placed> const names[] = {{"left", {static_cast<int>(BarsPosition::Left), std::nullopt}},
+        {"right", {static_cast<int>(BarsPosition::Right), std::nullopt}}, {"centre", {static_cast<int>(BarsPosition::Centre), true}},
+        {"overlay", {static_cast<int>(BarsPosition::Centre), true}}, {"left-beside", {static_cast<int>(BarsPosition::Left), false}},
+        {"right-beside", {static_cast<int>(BarsPosition::Right), false}}};
+    for (auto const& [name, placed] : names)
     {
-        return BarsPosition::Left;
-    }
-    if (text == "right")
-    {
-        return BarsPosition::Right;
-    }
-    if (text == "overlay")
-    {
-        return BarsPosition::Overlay;
-    }
-    if (text == "left-beside")
-    {
-        return BarsPosition::LeftBeside;
-    }
-    if (text == "right-beside")
-    {
-        return BarsPosition::RightBeside;
+        if (text == name)
+        {
+            return placed;
+        }
     }
     return std::nullopt;
 }
@@ -622,12 +593,19 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         }
         tile.umdSource = *source;
         tile.umdText = str(tileObj, "umd_text");
-        auto const pos = umdPosFromString(str(tileObj, "umd_position", "bottom-inside"));
+        auto const umdName = str(tileObj, "umd_position", "bottom");
+        auto const pos = umdPosFromString(umdName);
         if (!pos)
         {
             return "umd_position is invalid";
         }
-        tile.umdPosition = *pos;
+        tile.umdPosition = static_cast<UmdPosition>(pos->position);
+        tile.umdOverlay = pos->overlay.value_or(flag(tileObj, "umd_overlay", true));
+        if (pos->overlay && repairs != nullptr)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": umd_position " + umdName + " is now " + umdPosToString(tile.umdPosition) +
+                               (tile.umdOverlay ? " over the picture" : " in a strip of the tile"));
+        }
         auto const align = umdAlignFromString(str(tileObj, "umd_align", "left"));
         if (!align)
         {
@@ -656,12 +634,20 @@ std::optional<std::string> parseLayout(std::string const& body, Layout& out, int
         tile.audioBarScale = flag(tileObj, "audio_bar_scale", true);
         tile.audioBarChannels = static_cast<int>(num(tileObj, "audio_bar_channels", 2));
         tile.audioBarFirst = static_cast<int>(num(tileObj, "audio_bar_first", 0));
-        auto const bars = barsFromString(str(tileObj, "audio_bar_position", "right"));
+        auto const barsName = str(tileObj, "audio_bar_position", "right");
+        auto const bars = barsFromString(barsName);
         if (!bars)
         {
             return "audio_bar_position is invalid";
         }
-        tile.audioBarPosition = *bars;
+        tile.audioBarPosition = static_cast<BarsPosition>(bars->position);
+        // Centred bars always lie over the picture.
+        tile.audioBarOverlay = tile.audioBarPosition == BarsPosition::Centre || bars->overlay.value_or(flag(tileObj, "audio_bar_overlay", true));
+        if (barsName != "left" && barsName != "right" && barsName != "centre" && repairs != nullptr)
+        {
+            repairs->push_back("layout " + layout.name + " tile " + tile.id + ": audio_bar_position " + barsName + " is now " +
+                               barsToString(tile.audioBarPosition) + (tile.audioBarOverlay ? " over the picture" : " in a strip of the tile"));
+        }
         tile.zoneGreen = num(tileObj, "zone_green", -18);
         tile.zoneAmber = num(tileObj, "zone_amber", -9);
         if (repairs != nullptr)
@@ -756,12 +742,12 @@ std::string layoutToJson(Layout const& layout)
             << ",\"rect\":{\"x\":" << tile.rect.x << ",\"y\":" << tile.rect.y << ",\"w\":" << tile.rect.w << ",\"h\":" << tile.rect.h << "}"
             << ",\"scale\":\"" << scaleToString(tile.scale) << "\",\"umd\":" << (tile.umd ? "true" : "false") << ",\"umd_source\":\""
             << umdSourceToString(tile.umdSource) << "\",\"umd_text\":" << quoted(tile.umdText) << ",\"umd_position\":\"" << umdPosToString(tile.umdPosition)
-            << "\",\"umd_align\":\"" << umdAlignToString(tile.umdAlign) << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
+            << "\",\"umd_overlay\":" << (tile.umdOverlay ? "true" : "false") << ",\"umd_align\":\"" << umdAlignToString(tile.umdAlign) << "\",\"umd_font\":" << tile.umdFont << ",\"umd_bg\":" << quoted(tile.umdBg) << ",\"tally_border\":" << (tile.tallyBorder ? "true" : "false")
             << ",\"tally_lamp\":" << (tile.tallyLamp ? "true" : "false") << ",\"tally_text\":" << (!tile.tallyText ? "null" : *tile.tallyText ? "true" : "false")
             << ",\"audio_bars\":" << (tile.audioBars ? "true" : "false")
             << ",\"audio_bar_rms\":" << (tile.audioBarRms ? "true" : "false") << ",\"audio_bar_scale\":" << (tile.audioBarScale ? "true" : "false")
             << ",\"audio_bar_channels\":" << tile.audioBarChannels << ",\"audio_bar_first\":" << tile.audioBarFirst << ",\"audio_bar_position\":\""
-            << barsToString(tile.audioBarPosition) << "\",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber
+            << barsToString(tile.audioBarPosition) << "\",\"audio_bar_overlay\":" << (tile.audioBarOverlay ? "true" : "false") << ",\"zone_green\":" << tile.zoneGreen << ",\"zone_amber\":" << tile.zoneAmber
             << ",\"alarm_border\":" << (tile.alarmBorder ? "true" : "false") << ",\"alarm_labels\":" << (tile.alarmLabels ? "true" : "false")
             << ",\"alarm_label_position\":\"" << alarmLabelPositionToString(tile.alarmLabelPosition) << '"'
             << ",\"format_label\":" << (tile.formatLabel ? "true" : "false") << ",\"latency\":" << (tile.latency ? "true" : "false")

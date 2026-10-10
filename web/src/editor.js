@@ -104,7 +104,8 @@ export function makeTile(content, id, rect, z) {
     umd: input,
     umd_source: "is04",
     umd_text: "",
-    umd_position: "bottom-inside",
+    umd_position: "bottom",
+    umd_overlay: true,
     umd_align: "left",
     umd_font: 28,
     umd_bg: "#000000c0",
@@ -117,6 +118,7 @@ export function makeTile(content, id, rect, z) {
     audio_bar_channels: 2,
     audio_bar_first: 0,
     audio_bar_position: "right",
+    audio_bar_overlay: true,
     zone_green: -18,
     zone_amber: -9,
     alarm_border: true,
@@ -134,6 +136,21 @@ export function makeTile(content, id, rect, z) {
     image_url: "",
     image_file: "",
   };
+}
+
+// 1.3.0 values of an imported layout as the two options each (the server does the same on save).
+const OLD_UMD = { "top-inside": ["top", true], "bottom-inside": ["bottom", true], "top-outside": ["top", false], "bottom-outside": ["bottom", false] };
+const OLD_BARS = { overlay: ["centre", true], "left-beside": ["left", false], "right-beside": ["right", false] };
+
+/** Tiles of an imported layout with the caption and bar options of this release. */
+export function migrateTiles(layout) {
+  for (const tile of layout.tiles || []) {
+    if (OLD_UMD[tile.umd_position]) [tile.umd_position, tile.umd_overlay] = OLD_UMD[tile.umd_position];
+    if (OLD_BARS[tile.audio_bar_position]) [tile.audio_bar_position, tile.audio_bar_overlay] = OLD_BARS[tile.audio_bar_position];
+    tile.umd_overlay ??= true;
+    tile.audio_bar_overlay ??= true;
+  }
+  return layout;
 }
 
 export function nextTileId(layout) {

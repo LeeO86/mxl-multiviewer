@@ -173,6 +173,59 @@ void validateMap(std::string const& text, int maxInputs)
     }
 }
 
+// Empty, or an absolute URL of one of `schemes` with a host, an optional port, and no path other
+// than "/", no credentials, query, or fragment. A trailing slash is removed.
+std::string normalizeBaseUrl(std::string const& key, std::string const& value, std::vector<std::string> const& schemes)
+{
+    if (value.empty())
+    {
+        return {};
+    }
+    std::string names;
+    for (auto const& name : schemes)
+    {
+        names += (names.empty() ? "" : " or ") + name;
+    }
+    auto const sep = value.find("://");
+    auto const scheme = sep == std::string::npos ? std::string{} : lower(value.substr(0, sep));
+    if (std::find(schemes.begin(), schemes.end(), scheme) == schemes.end())
+    {
+        throw ConfigError(key + " must be an absolute " + names + " URL");
+    }
+    auto rest = value.substr(sep + 3);
+    if (!rest.empty() && rest.back() == '/')
+    {
+        rest.pop_back();
+    }
+    if (rest.empty() || rest.find_first_of("/@?# ") != std::string::npos)
+    {
+        throw ConfigError(key + " must be an absolute " + names + " URL with a host and no path");
+    }
+    return scheme + "://" + rest;
+}
+
+// PREVIEW_PATH_PREFIX: MediaMTX path segments joined by '/'; outer slashes are dropped, empty is the default.
+std::string normalizePathPrefix(std::string const& value)
+{
+    auto const first = value.find_first_not_of('/');
+    if (first == std::string::npos)
+    {
+        return Config{}.previewPathPrefix;
+    }
+    auto const prefix = value.substr(first, value.find_last_not_of('/') - first + 1);
+    std::stringstream stream(prefix);
+    std::string segment;
+    while (std::getline(stream, segment, '/'))
+    {
+        if (segment.empty() || segment == "." || segment == ".." ||
+            segment.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-") != std::string::npos)
+        {
+            throw ConfigError("PREVIEW_PATH_PREFIX must be path segments of letters, digits, '.', '_', '~' and '-' joined by '/'");
+        }
+    }
+    return prefix;
+}
+
 void checkPorts(Config const& cfg)
 {
     std::vector<std::pair<std::string, int>> ports{{"WEB_PORT", cfg.webPort}};
@@ -185,6 +238,13 @@ void checkPorts(Config const& cfg)
     {
         ports.push_back({"TSL_UDP_PORT", cfg.tslUdpPort});
         ports.push_back({"TSL_TCP_PORT", cfg.tslTcpPort});
+    }
+    if (cfg.previewMode == "webrtc" && cfg.previewPublishUrl.empty())
+    {
+        ports.push_back({"MEDIAMTX_RTSP_PORT", cfg.mediamtxRtspPort});
+        ports.push_back({"MEDIAMTX_WHEP_PORT", cfg.mediamtxWhepPort});
+        ports.push_back({"MEDIAMTX_HLS_PORT", cfg.mediamtxHlsPort});
+        ports.push_back({"MEDIAMTX_ICE_UDP_PORT", cfg.mediamtxIcePort});
     }
     for (std::size_t i = 0; i < ports.size(); ++i)
     {
@@ -304,6 +364,16 @@ std::vector<SettingDef> const& settingSchema()
         {"MV_OVERLAY_HZ", "25", false},
         {"MV_PREVIEW_FPS", "5", false},
         {"MV_PREVIEW_WIDTH", "480", false},
+        {"MV_PREVIEW_MODE", "jpeg", true},
+        {"PREVIEW_PUBLISH_URL", "", true},
+        {"PREVIEW_PATH_PREFIX", "mxl-multiviewer", true},
+        {"PREVIEW_WHEP_URL", "", true},
+        {"PREVIEW_HLS_URL", "", true},
+        {"WIDGET_FRAME_ANCESTORS", "'self'", true},
+        {"MEDIAMTX_RTSP_PORT", "8754", true},
+        {"MEDIAMTX_WHEP_PORT", "8789", true},
+        {"MEDIAMTX_HLS_PORT", "8788", true},
+        {"MEDIAMTX_ICE_UDP_PORT", "8389", true},
         {"MV_GRID", "24", false},
         {"MV_BLACK_Y", "32", false},
         {"MV_SILENCE_DBFS", "-60", false},
@@ -348,6 +418,10 @@ std::vector<SettingDef> const& settingSchema()
         {"MV_OUT3_LAYOUT", "", false},
         {"MV_OUT3_AUDIO_FOLLOW", "", false},
         {"MV_OUT3_AUDIO_CHANNELS", "", false},
+        {"MV_OUT4_FORMAT", "", false},
+        {"MV_OUT4_LAYOUT", "", false},
+        {"MV_OUT4_AUDIO_FOLLOW", "", false},
+        {"MV_OUT4_AUDIO_CHANNELS", "", false},
     };
     return schema;
 }
@@ -585,7 +659,7 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     cfg.backend = lower(raw("MV_BACKEND"));
     requireEnum("MV_BACKEND", cfg.backend, {"auto", "cuda", "cpu"});
     cfg.maxInputs = requireInt("MV_MAX_INPUTS", raw("MV_MAX_INPUTS"), 1, 32);
-    cfg.outputs = requireInt("MV_OUTPUTS", raw("MV_OUTPUTS"), 1, 3);
+    cfg.outputs = requireInt("MV_OUTPUTS", raw("MV_OUTPUTS"), 1, 4);
     cfg.outputFormat = parseVideoFormat(raw("MV_OUTPUT_FORMAT"));
     cfg.inputOffsetGrains = requireInt("MV_INPUT_OFFSET_GRAINS", raw("MV_INPUT_OFFSET_GRAINS"), 0, 30);
     cfg.holdMs = requireInt("MV_HOLD_MS", raw("MV_HOLD_MS"), 0, 60000);
@@ -610,6 +684,29 @@ Config loadConfig(std::map<std::string, std::string> const& env, std::map<std::s
     cfg.overlayHz = requireInt("MV_OVERLAY_HZ", raw("MV_OVERLAY_HZ"), 1, 60);
     cfg.previewFps = requireInt("MV_PREVIEW_FPS", raw("MV_PREVIEW_FPS"), 1, 30);
     cfg.previewWidth = requireInt("MV_PREVIEW_WIDTH", raw("MV_PREVIEW_WIDTH"), 160, 1920);
+    cfg.previewMode = lower(raw("MV_PREVIEW_MODE"));
+    requireEnum("MV_PREVIEW_MODE", cfg.previewMode, {"jpeg", "webrtc"});
+    cfg.previewPublishUrl = normalizeBaseUrl("PREVIEW_PUBLISH_URL", raw("PREVIEW_PUBLISH_URL"), {"rtsp", "rtsps"});
+    cfg.previewPathPrefix = normalizePathPrefix(raw("PREVIEW_PATH_PREFIX"));
+    cfg.previewWhepUrl = normalizeBaseUrl("PREVIEW_WHEP_URL", raw("PREVIEW_WHEP_URL"), {"http", "https"});
+    cfg.previewHlsUrl = normalizeBaseUrl("PREVIEW_HLS_URL", raw("PREVIEW_HLS_URL"), {"http", "https"});
+    cfg.widgetFrameAncestors = raw("WIDGET_FRAME_ANCESTORS");
+    if (cfg.widgetFrameAncestors.empty())
+    {
+        cfg.widgetFrameAncestors = Config{}.widgetFrameAncestors;
+    }
+    // One CSP directive's source list: a ';' or ',' would start another directive or policy.
+    for (unsigned char const c : cfg.widgetFrameAncestors)
+    {
+        if (c < 0x20 || c == 0x7f || c == ';' || c == ',')
+        {
+            throw ConfigError("WIDGET_FRAME_ANCESTORS must be a CSP source list, e.g. 'self' https://designer.example");
+        }
+    }
+    cfg.mediamtxRtspPort = requireInt("MEDIAMTX_RTSP_PORT", raw("MEDIAMTX_RTSP_PORT"), 1, 65535);
+    cfg.mediamtxWhepPort = requireInt("MEDIAMTX_WHEP_PORT", raw("MEDIAMTX_WHEP_PORT"), 1, 65535);
+    cfg.mediamtxHlsPort = requireInt("MEDIAMTX_HLS_PORT", raw("MEDIAMTX_HLS_PORT"), 1, 65535);
+    cfg.mediamtxIcePort = requireInt("MEDIAMTX_ICE_UDP_PORT", raw("MEDIAMTX_ICE_UDP_PORT"), 1, 65535);
     cfg.grid = requireInt("MV_GRID", raw("MV_GRID"), 1, 96);
     cfg.blackY = requireInt("MV_BLACK_Y", raw("MV_BLACK_Y"), 0, 1023);
     if (!parseDouble(raw("MV_SILENCE_DBFS"), cfg.silenceDbfs) || cfg.silenceDbfs > 0 || cfg.silenceDbfs < -120)
