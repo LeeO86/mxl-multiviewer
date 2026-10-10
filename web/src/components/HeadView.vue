@@ -1,9 +1,10 @@
 <script setup>
 // One head's preview (§8.4), by MV_PREVIEW_MODE: its region of the WebRTC mosaic (the page's one
-// stream, cropped with object-view-box), or its JPEG at MV_PREVIEW_FPS. Emits `shown` at the first picture.
+// stream in a box of the region's aspect, cropped with a CSS transform), or its JPEG at MV_PREVIEW_FPS.
+// Emits `shown` at the first picture.
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { live } from "../api.js";
-import { headStyle, loadMap, preview, releasePreview, usePreview } from "../preview.js";
+import { headCrop, loadMap, preview, releasePreview, usePreview } from "../preview.js";
 
 const props = defineProps({
   head: { type: Number, required: true },
@@ -21,7 +22,7 @@ let using = false;
 
 const fps = computed(() => live.info?.preview_fps || 5);
 const src = computed(() => `/preview.jpg?head=${props.head}&t=${stamp.value}`);
-const videoStyle = computed(() => headStyle(props.head));
+const crop = computed(() => headCrop(props.head));
 const message = computed(() => {
   if (mode.value === "webrtc") {
     if (preview.state === "error") return `WebRTC preview unavailable (${preview.error}), retrying…`;
@@ -68,16 +69,17 @@ onUnmounted(() => {
 
 <template>
   <div class="preview-frame" :class="{ fill }">
-    <video
-      v-if="mode === 'webrtc'"
-      ref="video"
-      :style="videoStyle"
-      :aria-label="`Output ${head} preview`"
-      muted
-      autoplay
-      playsinline
-      @loadeddata="emit('shown')"
-    ></video>
+    <div v-if="mode === 'webrtc'" class="head-box" :style="crop.box">
+      <video
+        ref="video"
+        :style="crop.video"
+        :aria-label="`Output ${head} preview`"
+        muted
+        autoplay
+        playsinline
+        @loadeddata="emit('shown')"
+      ></video>
+    </div>
     <img
       v-else-if="mode === 'jpeg'"
       v-show="!failed"

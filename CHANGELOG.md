@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1
+
+Follow-up to 1.4.0.
+
+- The WebRTC head views (Preview tab and the `head` widget) are cropped in every browser. 1.4.0 cropped them with CSS `object-view-box`, which only Chrome and Edge support, so Firefox and Safari showed the whole mosaic in every view. Each view is now a box of its region's aspect ratio with `overflow: hidden`; the page's one `MediaStream` plays in a `<video>` stretched to that box and scaled and moved with a CSS transform, so only the region shows (as mxl-replay 1.4.0).
+- `tests/integration/preview.sh`: in own mode the built-in MediaMTX is killed; the test expects the supervisor to start it again (`restarts` 1) and the stream to be `publishing` again, as shared mode already did with its separate MediaMTX. A comment on `statusz` says why `"a, b"` compares against a tuple: the expression is printed in parentheses, so it prints `(a, b)`.
+
 ## 1.4.0
 
 WebRTC previews of the heads as one stream, the platform's preview contract (platform spec §11.5, D-185; as mxl-webrtc-monitor 1.3.0), and operator-screen widgets. Without new settings the multiviewer behaves as 1.3.0 (JPEG previews).

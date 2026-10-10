@@ -143,11 +143,13 @@ a { color: var(--accent); }
 .preview-grid .preview-frame { width: min(100%, calc((100vh - 230px) * 16 / 9)); margin: 0 auto; }
 .preview-frame { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 4px; overflow: hidden; container-type: size; }
 .preview-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-/* WebRTC: the box has the head's aspect (--ar), centred, so the view box fills it and no other head shows. */
-.preview-frame video {
-  position: absolute; inset: 0; margin: auto; object-fit: contain;
+/* WebRTC: a box of the head's aspect (--ar), centred, overflow hidden; the video fills it and its transform
+   (headCrop) shows only the head's region, so no other head shows. */
+.preview-frame .head-box {
+  position: absolute; inset: 0; margin: auto; overflow: hidden;
   width: min(100cqw, 100cqh * var(--ar, 1.777778)); height: min(100cqh, 100cqw / var(--ar, 1.777778));
 }
+.preview-frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; transform-origin: 0 0; }
 .preview-frame.fill { aspect-ratio: auto; width: 100%; height: 100%; border-radius: 0; }
 .preview-frame .stage-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #8496a8; font-size: .85rem; }
 

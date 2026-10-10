@@ -2,7 +2,8 @@
 # Preview integration (§8.4, §8.5), CPU backend, no NMOS:
 #  1. MV_PREVIEW_MODE unset: JPEG per head, no MediaMTX started, nothing published.
 #  2. webrtc, own mode: the built-in MediaMTX (from PATH) gets the H.264 mosaic of two heads (RTSP DESCRIBE
-#     and HLS), /preview.jpg is refused, the tile map, /widgets and the widget page's CSP; SIGTERM stops MediaMTX.
+#     and HLS), /preview.jpg is refused, the tile map, /widgets and the widget page's CSP; the MediaMTX is
+#     killed, started again by the supervisor and published to again; SIGTERM stops MediaMTX.
 #  3. webrtc, shared mode: a separate MediaMTX gets <prefix>/heads, none is started here; that MediaMTX
 #     goes away (error) and comes back (publishing).
 set -euo pipefail
@@ -69,6 +70,7 @@ stop_mv() {
   if [[ "$code" != 143 ]]; then echo "exit code $code, expected 143" >&2; exit 1; fi
 }
 
+# The expression is printed in parentheses: "a, b" prints the tuple "(a, b)", e.g. "('own', True, True)".
 statusz() { # <python expression on the preview object `p`>
   curl -sf "http://127.0.0.1:${WEB_PORT}/statusz" | python3 -c "import json,sys; p=json.load(sys.stdin)['preview']; print(($1))"
 }
@@ -156,6 +158,12 @@ METRICS="$(curl -sf "http://127.0.0.1:${WEB_PORT}/metrics")"
 for line in 'preview_mode{mode="webrtc"} 1' 'preview_publish_mode{mode="own"} 1' 'preview_publish_state{state="publishing"} 1'; do
   grep -qF "mxl_multiviewer_${line}" <<<"$METRICS" || { echo "own: metric $line" >&2; exit 1; }
 done
+# The built-in MediaMTX dies: the supervisor starts it again and the stream is published again.
+kill -KILL "$(pgrep -P "$MV_PID" -x mediamtx)"
+wait_state error 15
+wait_state publishing 30
+wait_describe "$RTSP_PORT" mxl-multiviewer/heads 10
+[[ "$(statusz "p['mediamtx']['running'], p['mediamtx']['restarts']")" == "(True, 1)" ]] || { echo "own: statusz after the restart $(statusz p)" >&2; exit 1; }
 stop_mv
 sleep 0.5
 closed "$RTSP_PORT" || { echo "own: MediaMTX still runs after SIGTERM" >&2; exit 1; }
