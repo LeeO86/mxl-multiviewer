@@ -8,6 +8,7 @@
 #include "version.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -107,6 +108,67 @@ HttpResponse jsonResponse(int status, std::string body)
     response.body = std::move(body);
     return response;
 }
+
+// GET /widgets (§8.5): the operator-screen widgets and their parameters as a JSON schema.
+std::string widgetsJson(Config const& config)
+{
+    auto const params = R"("params":{"type":"object","properties":{"head":{"type":"integer","minimum":1,"maximum":)" + std::to_string(config.outputs) +
+                        R"(,"title":"Head"}},"required":["head"]})";
+    std::ostringstream out;
+    out << R"([{"id":"head","title":"Multiviewer head",)" << params << R"(,"min_size":{"w":480,"h":270},"version":")" << MV_VERSION << R"("},)"
+        << R"({"id":"tile-editor","title":"Multiviewer tile editor",)" << params << R"(,"min_size":{"w":600,"h":400},"version":")" << MV_VERSION
+        << R"("}])";
+    return out.str();
+}
+
+// The query of /widget/<id>: head 1..MV_OUTPUTS and an optional theme. Empty when valid.
+std::string widgetError(Config const& config, std::string const& query)
+{
+    auto const head = queryValue(query, "head");
+    if (head.empty() || head.size() > 2 || head.find_first_not_of("0123456789") != std::string::npos || std::stoi(head) < 1 ||
+        std::stoi(head) > config.outputs)
+    {
+        return "head must be an output head 1.." + std::to_string(config.outputs);
+    }
+    auto const theme = queryValue(query, "theme");
+    if (!theme.empty() && theme != "dark" && theme != "light" && theme != "transparent")
+    {
+        return "theme must be dark, light or transparent";
+    }
+    return {};
+}
+
+// True when WIDGET_FRAME_ANCESTORS lists this Origin exactly (or holds `*`): /widgets then answers
+// it with CORS, so a designer page on that origin can read the list itself (§8.5).
+bool listedOrigin(std::string const& sources, std::string origin)
+{
+    auto const normal = [](std::string text) {
+        for (char& c : text)
+        {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        while (!text.empty() && text.back() == '/')
+        {
+            text.pop_back();
+        }
+        return text;
+    };
+    origin = normal(origin);
+    if (origin.empty() || origin == "null")
+    {
+        return false;
+    }
+    std::istringstream tokens(sources);
+    std::string token;
+    while (tokens >> token)
+    {
+        if (token == "*" || normal(token) == origin)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 
 Api::Api(Config config, ConfigStore& store, LayoutBookStore& layouts, RuntimeModel& runtime, Metrics& metrics)
@@ -128,13 +190,44 @@ void Api::setImages(ImageStore& images)
     images_ = &images;
 }
 
+void Api::setIndexPage(std::string page)
+{
+    indexPage_ = std::move(page);
+}
+
+void Api::setPreviewStatus(std::function<PreviewStatus()> status)
+{
+    previewStatus_ = std::move(status);
+}
+
+std::string Api::previewJson() const
+{
+    auto const plan = previewPlan(config_);
+    std::ostringstream out;
+    out << "{\"mode\":" << quote(plan.webrtc ? "webrtc" : "jpeg");
+    if (plan.webrtc)
+    {
+        auto const status = previewStatus_ ? previewStatus_() : PreviewStatus{};
+        auto const base = plan.publishUrl.substr(0, plan.publishUrl.size() - plan.path.size() - 1);
+        out << ",\"publish\":" << quote(plan.ownMediamtx ? "own" : "shared") << ",\"publish_url\":" << quote(base)
+            << ",\"path_prefix\":" << quote(config_.previewPathPrefix) << ",\"path\":" << quote(plan.path) << ",\"state\":" << quote(status.state)
+            << ",\"error\":" << quote(status.error) << ",\"encoder\":" << quote(status.encoder) << ",\"frames\":" << status.frames;
+        if (plan.ownMediamtx)
+        {
+            out << ",\"mediamtx\":{\"running\":" << (status.mediamtxRunning ? "true" : "false") << ",\"restarts\":" << status.mediamtxRestarts << "}";
+        }
+    }
+    out << "}";
+    return out.str();
+}
+
 HttpResponse Api::handle(HttpRequest const& request)
 {
     auto const& path = request.path;
     if (!config_.webEnable)
     {
         bool const mutating = request.method == "POST" || request.method == "PUT" || request.method == "PATCH" || request.method == "DELETE";
-        if (mutating || path == "/preview.jpg")
+        if (mutating || path == "/preview.jpg" || path.rfind("/widget/", 0) == 0)
         {
             return jsonResponse(404, "{\"error\":\"web ui disabled\"}");
         }
@@ -143,6 +236,52 @@ HttpResponse Api::handle(HttpRequest const& request)
     {
         HttpResponse response;
         response.websocket = true;
+        return response;
+    }
+    if (path == "/preview.jpg" && request.method == "GET" && config_.previewMode == "webrtc")
+    {
+        // Never both (§8.4): with WebRTC no JPEG is encoded.
+        return jsonResponse(404, "{\"error\":\"the preview is WebRTC (MV_PREVIEW_MODE=webrtc), see /api/v1/preview/map\"}");
+    }
+    if (path == "/api/v1/preview/map" && request.method == "GET")
+    {
+        std::ostringstream out;
+        out << "{\"mode\":" << quote(config_.previewMode) << ",\"width\":" << kMosaicWidth << ",\"height\":" << kMosaicHeight << ",\"heads\":[";
+        for (int head = 1; head <= config_.outputs; ++head)
+        {
+            auto const region = mosaicRegion(head, config_.outputs, runtime_.headFormat(head));
+            out << (head != 1 ? "," : "") << "{\"head\":" << head << ",\"x\":" << region.x << ",\"y\":" << region.y << ",\"w\":" << region.w
+                << ",\"h\":" << region.h << "}";
+        }
+        out << "]}";
+        return jsonResponse(200, out.str());
+    }
+    if (path == "/widgets" && request.method == "GET")
+    {
+        auto response = jsonResponse(200, widgetsJson(config_));
+        auto const origin = request.headers.find("origin");
+        if (origin != request.headers.end() && listedOrigin(config_.widgetFrameAncestors, origin->second))
+        {
+            response.headers.emplace_back("Access-Control-Allow-Origin", origin->second);
+        }
+        response.headers.emplace_back("Vary", "Origin");
+        return response;
+    }
+    if (path.rfind("/widget/", 0) == 0 && request.method == "GET")
+    {
+        if (path != "/widget/head" && path != "/widget/tile-editor")
+        {
+            return jsonResponse(404, "{\"error\":\"widget not found\"}");
+        }
+        if (auto const problem = widgetError(config_, request.query); !problem.empty())
+        {
+            return jsonResponse(400, "{\"error\":" + quote(problem) + "}");
+        }
+        // The page picks the widget from its URL. Only these routes may be framed, by WIDGET_FRAME_ANCESTORS.
+        HttpResponse response;
+        response.contentType = "text/html; charset=utf-8";
+        response.body = indexPage_.empty() ? std::string("<!doctype html><title>mxl-multiviewer</title><p>UI was not embedded.</p>") : indexPage_;
+        response.headers.emplace_back("Content-Security-Policy", "frame-ancestors " + config_.widgetFrameAncestors);
         return response;
     }
     if (path == "/preview.jpg" && request.method == "GET")
@@ -167,7 +306,10 @@ HttpResponse Api::handle(HttpRequest const& request)
             << quote(config_.nmosLabel.empty() ? config_.hostId : config_.nmosLabel) << ",\"backend\":\"" << config_.backend
             << "\",\"cuda_compiled\":" << (runtime_.cudaCompiled() ? "true" : "false") << ",\"cuda_devices\":" << runtime_.cudaDevices()
             << ",\"max_inputs\":" << config_.maxInputs << ",\"outputs\":" << config_.outputs << ",\"grid\":" << config_.grid << ",\"preview_fps\":"
-            << config_.previewFps << ",\"hold_ms\":" << config_.holdMs << ",\"timezone\":" << quote(localZoneName()) << ",\"utc_offset_s\":" << utcOffsetSeconds()
+            << config_.previewFps << ",\"preview_mode\":" << quote(config_.previewMode) << ",\"preview\":{\"path\":" << quote(previewPlan(config_).path)
+            << ",\"whep\":" << quote(previewWhepUrl(config_)) << ",\"hls\":" << quote(previewHlsUrl(config_)) << ",\"public\":{\"whep\":"
+            << (config_.previewWhepUrl.empty() ? "false" : "true") << ",\"hls\":" << (config_.previewHlsUrl.empty() ? "false" : "true") << "}}"
+            << ",\"hold_ms\":" << config_.holdMs << ",\"timezone\":" << quote(localZoneName()) << ",\"utc_offset_s\":" << utcOffsetSeconds()
             << ",\"node_id\":\"" << ids.node << "\",\"device_id\":\""
             << ids.device << "\",\"domain_id\":\"" << (config_.outputDomainId.empty() ? ids.domain : config_.outputDomainId) << "\",\"overlay_blend2d\":"
             << (overlayUsesBlend2d() ? "true" : "false") << ",\"receivers\":[";
@@ -724,7 +866,11 @@ HttpResponse Api::handle(HttpRequest const& request)
     }
     if (path == "/statusz")
     {
-        return handle(HttpRequest{"GET", "/api/v1/inputs", {}, {}, {}});
+        // The inputs, and the preview mode and publish state (§8.3, §8.4).
+        auto response = handle(HttpRequest{"GET", "/api/v1/inputs", {}, {}, {}});
+        response.body.pop_back();
+        response.body += ",\"preview\":" + previewJson() + "}";
+        return response;
     }
     if (path == "/metrics")
     {

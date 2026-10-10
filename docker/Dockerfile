@@ -9,6 +9,10 @@
 # This ARG must precede the first FROM. An ARG placed after the webui stage is
 # scoped to that stage, and BuildKit then expands the next FROM to a blank name.
 ARG CUDA_IMAGE=nvidia/cuda:12.8.2-devel-ubuntu24.04
+# The built-in MediaMTX of the WebRTC preview (own mode) is the official image's static binary (MIT).
+ARG MEDIAMTX_VERSION=1.20.1
+
+FROM bluenviron/mediamtx:${MEDIAMTX_VERSION} AS mediamtx
 
 FROM node:22-bookworm AS webui
 WORKDIR /web
@@ -29,6 +33,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         libboost-filesystem-dev libcpprest-dev nlohmann-json3-dev \
         libssl-dev uuid-dev libavahi-compat-libdnssd-dev tzdata \
         libcurl4-openssl-dev libwebp-dev \
+        libavcodec-dev libavformat-dev libavutil-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg \
@@ -72,6 +77,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         libcpprest2.10 libboost-chrono1.83.0t64 libboost-thread1.83.0 \
         libssl3t64 libavahi-compat-libdnssd1 tzdata \
         libcurl4t64 libwebp7 libwebpdemux2 \
+        libavcodec60 libavformat60 libavutil58 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/mxl/lib/ /usr/local/lib/
 COPY --from=build /tmp/mxl/build/vcpkg_installed/x64-linux/lib/ /usr/local/lib/
@@ -79,11 +85,16 @@ COPY --from=build /src/build/mxl-multiviewer /usr/local/bin/mxl-multiviewer
 COPY --from=build /src/build/mxl-mv-writer /usr/local/bin/mxl-mv-writer
 COPY --from=build /src/build/mxl-mv-sample /usr/local/bin/mxl-mv-sample
 COPY tests/integration/fake_registry.py /usr/local/share/mxl-multiviewer/fake_registry.py
+COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
+COPY --from=mediamtx /LICENSE /usr/share/doc/mediamtx/LICENSE
 LABEL io.dmf.mxl.revision="${MXL_REF}"
 RUN ldconfig \
     && if ! getent passwd 1000 >/dev/null; then \
          useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin mxl; \
        fi
 USER 1000:1000
-EXPOSE 8110 3262 3263
+# NVENC (WebRTC preview) needs the driver's video libraries next to CUDA.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+# Web, NMOS; the built-in MediaMTX (MV_PREVIEW_MODE=webrtc, own mode): WHEP, HLS, ICE.
+EXPOSE 8110 3262 3263 8789 8788 8389/tcp 8389/udp
 ENTRYPOINT ["/usr/local/bin/mxl-multiviewer"]

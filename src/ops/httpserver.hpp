@@ -3,6 +3,8 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace mv
 {
@@ -21,6 +23,8 @@ struct HttpResponse
     std::string contentType = "text/plain";
     std::string body;
     bool websocket = false;
+    // Extra response headers (CSP of the widget routes, CORS of /widgets).
+    std::vector<std::pair<std::string, std::string>> headers{};
 };
 
 using HttpHandler = std::function<HttpResponse(HttpRequest const&)>;

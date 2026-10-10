@@ -10,6 +10,7 @@
 #include "media/jpeg.hpp"
 #include "media/overlay.hpp"
 #include "media/ppm.hpp"
+#include "media/preview.hpp"
 #include "media/scale.hpp"
 #include "media/timebase.hpp"
 #include "nmos/ids.hpp"
@@ -292,6 +293,8 @@ struct Engine::Impl
     };
     std::vector<std::shared_ptr<OverlayFrame const>> overlays;
     std::mutex overlayMu;
+    // MV_PREVIEW_MODE=webrtc: the mosaic the heads draw into (§8.4); null in JPEG mode.
+    PreviewMosaic* mosaic = nullptr;
 
     explicit Impl(Config cfg, RuntimeModel& runtimeIn, LayoutBookStore& layoutsIn, Metrics& metricsIn, ImageStore& imagesIn)
         : config(std::move(cfg))
@@ -1426,6 +1429,8 @@ struct Engine::Impl
         std::vector<std::uint8_t> packedOut;
         int cudaFailures = 0;
         int previewDiv = 0;
+        // WebRTC mode: this head's picture at its mosaic size (NV12).
+        std::vector<std::uint8_t> previewTile;
         // CPU backend: tile workers, their images (reused), and the overlay in YCbCr.
         TaskPool tilePool(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 16u));
         std::vector<Frame422> tileImages;
@@ -1812,10 +1817,42 @@ struct Engine::Impl
             if (++previewDiv >= std::max(1, format.rateNum / std::max(1, format.rateDen) / std::max(1, config.previewFps)))
             {
                 previewDiv = 0;
-                // CUDA: sample the written grain at preview size; a full unpack of the
-                // output on this thread made frames late.
-                runtime.setPreview(head, cudaFrame ? encodePreviewJpeg(out, static_cast<int>(v210RowBytes(format.width)), format.width, format.height, config.previewWidth, 60)
-                                                   : encodePreviewJpeg(canvas, config.previewWidth, 60));
+                auto const previewStart = std::chrono::steady_clock::now();
+                if (mosaic != nullptr)
+                {
+                    // WebRTC (§8.4): the head scaled into its place of the mosaic, on the GPU when it
+                    // composed there; the publisher thread encodes the mosaic. No JPEG.
+                    auto const region = mosaicRegion(head, config.outputs, format);
+                    previewTile.resize(static_cast<std::size_t>(region.w) * static_cast<std::size_t>(region.h) * 3 / 2);
+                    bool tile = !cudaFrame;
+                    if (cudaFrame)
+                    {
+                        float gpuMs = 0;
+                        tile = cudaPreviewTile(region.w, region.h, previewTile.data(), &gpuMs);
+                        if (tile)
+                        {
+                            metrics.observe("compose_gpu_seconds", {{"head", std::to_string(head)}, {"stage", "preview"}}, gpuMs / 1000.0);
+                        }
+                    }
+                    else
+                    {
+                        scaleToNv12(canvas, region.w, region.h, previewTile.data());
+                    }
+                    if (tile)
+                    {
+                        mosaic->put(head, format, previewTile.data());
+                    }
+                }
+                else
+                {
+                    // CUDA: sample the written grain at preview size; a full unpack of the
+                    // output on this thread made frames late.
+                    runtime.setPreview(head, cudaFrame ? encodePreviewJpeg(out, static_cast<int>(v210RowBytes(format.width)), format.width, format.height,
+                                                             config.previewWidth, 60)
+                                                       : encodePreviewJpeg(canvas, config.previewWidth, 60));
+                }
+                metrics.observe("preview_seconds", {{"head", std::to_string(head)}},
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - previewStart).count());
             }
             ++index;
         }
@@ -2247,5 +2284,15 @@ std::string Engine::domainId() const
 void Engine::setFlowCallback(std::function<void(int, std::string const&, std::string const&, VideoFormat const&)> callback)
 {
     impl_->onFlow = std::move(callback);
+}
+
+void Engine::setPreviewMosaic(PreviewMosaic* mosaic)
+{
+    impl_->mosaic = mosaic;
+}
+
+bool Engine::usesCuda() const
+{
+    return impl_->useCuda.load();
 }
 } // namespace mv

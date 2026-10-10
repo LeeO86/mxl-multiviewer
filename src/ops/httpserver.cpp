@@ -252,8 +252,12 @@ struct HttpServer::Impl
                     continue;
                 }
                 std::string message = "HTTP/1.1 " + std::to_string(response.status) + " " + statusText(response.status) + "\r\nContent-Type: " +
-                                      response.contentType + "\r\nContent-Length: " + std::to_string(response.body.size()) + "\r\nConnection: close\r\n\r\n" +
-                                      response.body;
+                                      response.contentType + "\r\nContent-Length: " + std::to_string(response.body.size()) + "\r\n";
+                for (auto const& [name, value] : response.headers)
+                {
+                    message += name + ": " + value + "\r\n";
+                }
+                message += "Connection: close\r\n\r\n" + response.body;
                 sendAll(job.fd, message.data(), message.size());
                 drop.push_back(job.fd);
             }

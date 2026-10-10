@@ -13,8 +13,9 @@
   --chip: #233041;
   font-size: 15px;
 }
+/* A widget's theme=dark|light|transparent (data-theme) overrides the browser's; transparent keeps the dark colours. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #f3f5f8;
     --panel: #ffffff;
     --panel2: #eef1f5;
@@ -28,6 +29,22 @@
     --chip: #e6ebf1;
   }
 }
+:root[data-theme="light"] {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel2: #eef1f5;
+  --border: #d4dbe3;
+  --text: #1b2430;
+  --muted: #5d6b7a;
+  --accent: #1f6fd1;
+  --ok: #1f8f47;
+  --warn: #a86d00;
+  --bad: #c23b2f;
+  --chip: #e6ebf1;
+  color-scheme: light;
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="transparent"] { --bg: transparent; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; align-items: center; gap: .4rem 1rem; padding: .7rem 1.2rem; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -125,8 +142,21 @@ a { color: var(--accent); }
 /* The picture fits the window height below the header and the tabs. */
 .preview-grid .preview-frame { width: min(100%, calc((100vh - 230px) * 16 / 9)); margin: 0 auto; }
 .preview-frame { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 4px; overflow: hidden; }
-.preview-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.preview-frame img, .preview-frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.preview-frame.fill { aspect-ratio: auto; width: 100%; height: 100%; border-radius: 0; }
 .preview-frame .stage-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #8496a8; font-size: .85rem; }
+
+/* Widgets (/widget/head, /widget/tile-editor): no app chrome, the frame is the page */
+.widget-root { height: 100vh; overflow: auto; }
+.widget-empty { padding: .6rem; color: var(--muted); font-size: .85rem; }
+.widget-editor { padding: .5rem; }
+.widget-editor .toolbar { gap: .5rem; margin-bottom: .5rem; }
+.widget-editor-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: .6rem; align-items: start; }
+.widget-editor .canvas { width: 100%; }
+.widget-editor .inspector { max-height: calc(100vh - 70px); }
+@media (max-width: 720px) {
+  .widget-editor-body { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Layout editor */
 .editor { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: .9rem; align-items: start; }

@@ -7,6 +7,10 @@
 #include "ops/api.hpp"
 #include "ops/httpserver.hpp"
 #include "media/cuda_compose.hpp"
+#include "media/preview.hpp"
+#include "media/publisher.hpp"
+#include "ops/child.hpp"
+#include "ops/mediamtx.hpp"
 #include "ops/metrics.hpp"
 #include "util/logging.hpp"
 #include "version.hpp"
@@ -22,8 +26,10 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <thread>
 #include <unistd.h>
 
@@ -118,6 +124,10 @@ int main(int argc, char** argv)
         mv::Metrics metrics;
         // Pictures of image tiles: stored under the state folder, URLs fetched off the render path.
         mv::ImageStore images(config.stateDir + "/images");
+        // Preview (§8.4): JPEG per head, or one WebRTC mosaic of the heads. Never both. The mosaic
+        // outlives the engine, whose head threads draw into it.
+        auto const preview = mv::previewPlan(config);
+        auto const mosaic = preview.webrtc ? std::make_unique<mv::PreviewMosaic>(config.outputs) : nullptr;
         mv::Engine engine(config, runtime, layouts, metrics, images);
         mv::NmosNode node(config, [&](int input, bool video, bool enable, std::string domain, std::string flow, std::string sender) {
             engine.setRoute(input, video, enable, std::move(domain), std::move(flow), std::move(sender));
@@ -127,6 +137,39 @@ int main(int argc, char** argv)
         });
         mv::Api api(config, store, layouts, runtime, metrics);
         api.setImages(images);
+#ifdef MV_HAS_UI
+        api.setIndexPage(std::string(mv::webui::indexHtml()));
+#endif
+        metrics.set("preview_mode", {{"mode", "jpeg"}}, preview.jpeg ? 1 : 0);
+        metrics.set("preview_mode", {{"mode", "webrtc"}}, preview.webrtc ? 1 : 0);
+        std::unique_ptr<mv::PreviewPublisher> publisher;
+        mv::ChildProcess mediamtx("mediamtx");
+        if (preview.webrtc)
+        {
+            engine.setPreviewMosaic(mosaic.get());
+            metrics.set("preview_publish_mode", {{"mode", "own"}}, preview.ownMediamtx ? 1 : 0);
+            metrics.set("preview_publish_mode", {{"mode", "shared"}}, preview.ownMediamtx ? 0 : 1);
+            mv::logInfo("preview", {{"mode", "webrtc"}, {"publish", preview.ownMediamtx ? "own" : "shared"}, {"url", preview.publishUrl}});
+        }
+        if (preview.ownMediamtx)
+        {
+            // Own mode: the image's MediaMTX runs as a supervised child with the generated config.
+            auto const path = config.stateDir + "/mediamtx.yml";
+            std::ofstream yml(path, std::ios::binary | std::ios::trunc);
+            yml << mv::renderMediamtxConfig(config);
+            if (!yml.flush())
+            {
+                mv::logError("mediamtx_config_failed", {{"path", path}});
+                return 75;
+            }
+            mediamtx.start({"mediamtx", path});
+        }
+        api.setPreviewStatus([&] {
+            auto status = publisher ? publisher->status() : mv::PreviewStatus{};
+            status.mediamtxRunning = mediamtx.running();
+            status.mediamtxRestarts = mediamtx.restarts();
+            return status;
+        });
         mv::HttpServer http;
         try
         {
@@ -160,6 +203,12 @@ int main(int argc, char** argv)
                 }
                 return api.handle(request);
             });
+            if (preview.webrtc)
+            {
+                // NVENC in the compositor's CUDA context on the CUDA backend.
+                publisher = std::make_unique<mv::PreviewPublisher>(*mosaic, preview.publishUrl, config.previewFps, engine.usesCuda());
+                publisher->start([&metrics](double seconds) { metrics.observe("preview_encode_seconds", {}, seconds); });
+            }
         }
         catch (mv::ConfigError const& ex)
         {
@@ -180,6 +229,19 @@ int main(int argc, char** argv)
         {
             runtime.setNmosUp(node.registered());
             metrics.set("nmos_registry_up", {}, runtime.nmosUp() ? 1 : 0);
+            if (publisher)
+            {
+                auto const status = publisher->status();
+                for (char const* state : {"connecting", "publishing", "error"})
+                {
+                    metrics.set("preview_publish_state", {{"state", state}}, status.state == state ? 1 : 0);
+                }
+                for (char const* encoder : {"nvenc", "x264"})
+                {
+                    metrics.set("preview_encoder", {{"encoder", encoder}}, status.encoder == encoder ? 1 : 0);
+                }
+                metrics.set("preview_frames_total", {}, static_cast<double>(status.frames));
+            }
             auto const now = std::chrono::steady_clock::now();
             if (now >= nextEvents)
             {
@@ -200,8 +262,13 @@ int main(int argc, char** argv)
             }
         });
         http.stop();
+        if (publisher)
+        {
+            publisher->stop();
+        }
         engine.stop();
         node.stop();
+        mediamtx.stop();
         if (config.cleanupOnExit)
         {
             engine.removeOwnDomain();

@@ -125,4 +125,15 @@ void cudaReleaseHostMemory();
 
 // Scale, composite, blend, and pack on the device. `v210Out` receives one packed frame.
 CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc);
+
+// WebRTC preview (§8.4): the frame the calling thread composed last, scaled on the device to
+// width × height NV12 (nv12scale.hpp) and copied into `nv12` (host: the luma rows, then the
+// interleaved CbCr rows). `gpuMs` gets the kernel and copy time. False when this thread has not
+// composed a frame or CUDA failed.
+bool cudaPreviewTile(int width, int height, std::uint8_t* nv12, float* gpuMs);
+
+// The CUDA context of this process's device (the runtime's primary context) and a non-blocking
+// stream in it, as CUcontext and CUstream, for the H.264 encoder: NVENC then works in the same
+// context as the compositor. False without CUDA.
+bool cudaPreviewContext(void** context, void** stream);
 } // namespace mv

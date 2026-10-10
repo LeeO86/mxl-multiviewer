@@ -14,7 +14,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119
 
 `mxl-multiviewer` is a media function that composites up to 32 MXL inputs into one or more uncompressed MXL outputs. Each input is a real NMOS receiver, so `mxl-fabrics-agent` replicates a remote flow when the receiver subscribes to it. The output is an NMOS sender. A controller (the Qvest NMOS crosspoint) routes senders to the multiviewer with ordinary IS-05. The multiviewer output can be routed to `mxl-decklink` for an SDI monitor wall or to `mxl-webrtc-monitor` for a browser.
 
-The multiviewer does no encoding and no WebRTC. The admin UI gets a low-rate JPEG preview only.
+The outputs are uncompressed. Browsers get a low-rate preview only: a JPEG of each head, or (`MV_PREVIEW_MODE=webrtc`, since 1.4.0) one H.264 stream of all heads over WebRTC (§8.4).
 
 Design principles:
 
@@ -46,14 +46,16 @@ Out of scope: compressed outputs, recording, IS-07, IS-08, IS-12, authentication
 │    audio-follow of one selected input → audio/float32 writer      │
 │  overlay: RGBA bitmap, redrawn on change or at MV_OVERLAY_HZ     │
 │  TSL 5.0 (UDP and TCP DLE/STX), optional TSL 3.1                  │
-│  web: Vue 3 UI, REST, WebSocket, JPEG preview, /metrics           │
+│  web: Vue 3 UI, REST, WebSocket, JPEG preview, widgets, /metrics  │
+│  webrtc preview: heads → 1920×1080 NV12 mosaic → H.264 (NVENC,     │
+│    else x264) → RTSP → MediaMTX (own child process, or shared)    │
 └───────────────────────────────────────────────────────────────────┘
         │ one video/v210 flow (+ optional audio/float32)
         ▼
  mxl-decklink  or  mxl-webrtc-monitor
 ```
 
-One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), each with its own raster, layout, and optional audio-follow flow. Heads share the input receivers.
+One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 4), each with its own raster, layout, and optional audio-follow flow. Heads share the input receivers.
 
 ---
 
@@ -66,6 +68,7 @@ One process. One NMOS node. Up to `MV_OUTPUTS` heads (default 1, maximum 3), eac
 - CUDA backend: compiled when the CUDA toolkit is present. Each input thread uploads its grains on its own stream straight from page-locked MXL memory; frames stay packed v210 on the device and the scale kernel decodes the samples it needs. Kernels scale, blend the overlay and pack v210; the result goes by DMA into the MXL output grain.
 - CPU backend: the same pipeline, planar 10-bit in 16-bit, tile thread pool, SSE2 clear/blend on x86_64. Sized for about 4–9 tiles at 1080p50.
 - JPEG preview and background images: stb (public domain), bundled. No runtime download.
+- WebRTC preview (§8.4): the system FFmpeg (`libavcodec` `h264_nvenc`, else `libx264`; `libavformat` for RTSP). The image carries the MediaMTX binary of the official `bluenviron/mediamtx` image, exact version pinned (1.20.1), with its MIT licence.
 - Image tiles: PNG, JPEG, and GIF through stb; WebP through the system `libwebp` (BSD-3-Clause); http(s) through the system `libcurl` (curl licence, MIT-style).
 - Web UI: Vue 3 built to one HTML file and embedded. No CDN.
 - Base image: Ubuntu 24.04 with `tzdata`. The image MUST start without a GPU (`MV_BACKEND=auto` selects CPU).
@@ -334,7 +337,7 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 
 ### 8.1 Pages
 
-- **Preview.** JPEG of one head at `MV_PREVIEW_FPS` (default 5) and `MV_PREVIEW_WIDTH` (default 480), a head selector when `MV_OUTPUTS` > 1, the head's layout with Activate, and its counters from the WebSocket.
+- **Preview.** One head: its JPEG at `MV_PREVIEW_FPS` (default 5) and `MV_PREVIEW_WIDTH` (default 480), or with `MV_PREVIEW_MODE=webrtc` its region of the WebRTC mosaic (§8.4); a head selector when `MV_OUTPUTS` > 1, the head's layout with Activate, and its counters from the WebSocket.
 - **Layout.** Canvas editor. Drag and resize with snapping to a grid of `MV_GRID` (default 24), arrow keys move, Shift + arrows resize. Add input, clock, label, and empty tiles, duplicate, delete, and change the drawing order. Assign content and the options in §6.2. Save, save as a named layout, delete (not the built-in presets or the active layout), activate. Import and export one layout or the book. Unsaved edits stay in the page until they are saved or discarded.
 - **Inputs.** For each input: video and audio state, source label, flow ids, format, audio channel count, live PPM bars, alarms, and the receiver ids. No source picker.
 - **Alarms.** Active alarms with severity and the time they became active.
@@ -359,7 +362,10 @@ Vue 3, embedded, no CDN. Unauthenticated, same posture as the siblings: protecte
 | PUT | `/api/v1/images/{name}` | store a picture: the body is the file, `Content-Type` its type; 201 with `width`, `height`, `frames`; 400 when the name, type, magic bytes, size, or decoding fail. Names are 1–100 letters, digits, `.`, `_`, `-`, not starting with `.` |
 | DELETE | `/api/v1/images/{name}` | delete a stored picture; 409 while an image tile of a layout shows it |
 | GET | `/api/v1/events` | WebSocket: inputs, meters (at overlay rate), alarms, outputs |
-| GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head |
+| GET | `/preview.jpg` | latest JPEG of head 1; `?head=<h>` for another head. 404 with `MV_PREVIEW_MODE=webrtc` |
+| GET | `/api/v1/preview/map` | the WebRTC mosaic's tile map (§8.4) |
+| GET | `/widgets` | the operator-screen widgets (§8.5) |
+| GET | `/widget/{id}` | one widget page (§8.5) |
 | GET/PUT | `/api/v1/config` | flat key update; `restart_required` when a global key changes |
 | GET | `/api/v1/config/export` | one JSON document: `version`, `secrets`, `settings`, `layouts`, `routes` |
 | POST | `/api/v1/config/import` | restore that document. Settings and layouts apply immediately. Routes are written to `routes.json` and apply on the next start (`routes_restart`). Settings set by the environment are skipped and listed in `skipped`; heads moved to the active layout are listed in `heads_moved` |
@@ -375,8 +381,35 @@ On `WEB_PORT` (default 8110):
 
 - `/livez` — 200 while the heartbeat is younger than 5 s.
 - `/readyz` — 200 when the composer heartbeat is fresh and, if `NMOS_ENABLE=true` and a registry address is set, the Query API currently returns the node. Otherwise 503 with a JSON reason. Inputs in `waiting` do not by themselves fail readiness: the wall is producing slates and the output flow exists.
-- `/statusz` — 200, JSON snapshot.
+- `/statusz` — 200, JSON snapshot: `inputs` (as `GET /api/v1/inputs`) and `preview` (§8.4).
 - `/metrics` — Prometheus text, prefix `mxl_multiviewer_`.
+
+### 8.4 WebRTC preview (1.4.0)
+
+`MV_PREVIEW_MODE` is `jpeg` (default) or `webrtc`. Never both: with `jpeg` every head encodes its JPEG and nothing is published; with `webrtc` no JPEG is encoded (`/preview.jpg` is 404) and the heads go into one stream.
+
+- **Mosaic.** One 1920×1080 canvas: with one head the head fills it; with 2–4 heads each head has a quarter, 960×540, tiled 2×2 in reading order. A raster that is not 16:9 keeps its aspect, centred in its quarter (even values); the rest is black. At every `MV_PREVIEW_FPS` tick of a head, its composed frame is scaled into its place by area average to 8-bit NV12: on the GPU in the compose path when the frame was composed there (one 0.8 MB download per head), on the CPU otherwise. Both backends run the same per-pixel code.
+- **Encode.** One thread copies the canvas at `MV_PREVIEW_FPS` and encodes it once: H.264 with NVENC (`h264_nvenc`, in the compositor's CUDA context on the CUDA backend), or with x264 only when NVENC cannot be opened (no GPU, no NVENC driver library); the fallback is logged (`preview_nvenc_unavailable`). 4 Mbit/s CBR, one-second GOP, no B-frames, BT.709 limited range.
+- **Tile map.** `GET /api/v1/preview/map` → `{"mode", "width": 1920, "height": 1080, "heads": [{"head", "x", "y", "w", "h"}]}`, from each head's current raster. The UI shows a head as the page's one WebRTC stream in a `<video>` cropped with CSS `object-view-box: inset(…)` to that region (Chromium-based browsers; others show the whole mosaic).
+- **Preview contract** (platform §11.5 / D-185, as mxl-webrtc-monitor 1.3.0):
+  - `PREVIEW_PUBLISH_URL`: an `rtsp://` or `rtsps://` base without path or credentials. Set: **shared mode**, the stream is published there over RTSP/TCP and no MediaMTX is started. Empty: **own mode**, the process starts the image's MediaMTX (`mediamtx` from `PATH`) as a supervised child: config `<MV_STATE_DIR>/mediamtx.yml`, own process group, SIGTERM when the multiviewer dies, restart after an exit after 1 s doubling to 10 s (1 s again after 10 s of running), stopped on shutdown (SIGTERM, SIGKILL after 3 s). It ingests RTSP on `127.0.0.1:MEDIAMTX_RTSP_PORT` (TCP only) and serves WHEP on `MEDIAMTX_WHEP_PORT`, ICE on `MEDIAMTX_ICE_UDP_PORT` (UDP and TCP, `NMOS_HOST_ADDRESS` as the ICE host) and low-latency HLS on `MEDIAMTX_HLS_PORT`; its API and metrics are off.
+  - `PREVIEW_PATH_PREFIX`: MediaMTX path segments (`[A-Za-z0-9._~-]`, joined by `/`, outer slashes dropped), default `mxl-multiviewer`. The stream is `<prefix>/heads`.
+  - `PREVIEW_WHEP_URL` / `PREVIEW_HLS_URL`: the public bases the page plays from, `<base>/<prefix>/heads/whep` and `.../index.m3u8`. Empty: the own MediaMTX on `NMOS_HOST_ADDRESS` and its ports, with the host name replaced by the page's.
+  - The built-in MediaMTX's port block misses mxl-webrtc-monitor (8554, 8889, 8888, 8189, 9997, 9998) and the FlowXer engine (8654, 8989, 8988, 8289, 9897): RTSP 8754, WHEP 8789, HLS 8788, ICE 8389.
+- **Publish state**: `connecting` until MediaMTX took ANNOUNCE, SETUP and RECORD and the first packets went out, `publishing` while they go out, `error` after a failure (with the error) until it publishes again. The publisher reconnects every 2 s and starts every new connection with an IDR picture.
+- `GET /api/v1/info` carries `preview_mode` and `preview` (`path`, `whep`, `hls`, `public: {whep, hls}`). `/statusz` carries `preview`: `mode` (`jpeg` or `webrtc`), and with `webrtc` also `publish` (`own` or `shared`), `publish_url` (the RTSP base), `path_prefix`, `path`, `state`, `error`, `encoder` (`nvenc`, `x264`), `frames`, and in own mode `mediamtx` (`running`, `restarts`). The metrics are in §10.
+- The preview is not part of readiness: `/readyz` does not wait for MediaMTX or the publish.
+
+### 8.5 Widgets (1.4.0, operator screens)
+
+The contract is agreed with the platform's production designer; mxl-webrtc-monitor 1.3.0 is the reference.
+
+- `GET /widgets` answers `[{id, title, params, min_size: {w, h}, version}]`; `params` is a JSON schema of the widget's query parameters, `version` the multiviewer version. When the request's `Origin` is listed exactly in `WIDGET_FRAME_ANCESTORS` (or that list holds `*`), the answer carries `Access-Control-Allow-Origin` with it (GET only), so a designer page on that origin can read the list itself; host wildcards and scheme sources apply to framing only. Every answer has `Vary: Origin`.
+- `head`: `params` `head` (integer 1..`MV_OUTPUTS`, required), `min_size` 480×270. One head's preview, filling the frame: its WebRTC region or its JPEG, by `MV_PREVIEW_MODE`.
+- `tile-editor`: `params` `head`, `min_size` 600×400. The tiles of the layout the head shows (click one) and the layout editor's tile inspector, with Save and Discard; a save changes that layout wherever it is on air.
+- `GET /widget/<id>?head=<h>[&theme=dark|light|transparent]` is the embedded page without app chrome, using this multiviewer's API on its own origin. `theme` forces dark or light colours, or dark colours on a transparent background; without it the page follows the browser. An invalid parameter answers 400, an unknown widget 404. `WEB_ENABLE=false` answers 404.
+- The `/widget` routes carry `Content-Security-Policy: frame-ancestors <WIDGET_FRAME_ANCESTORS>` (default `'self'`) and no `X-Frame-Options`. The value is a CSP source list; `;`, `,` and control characters exit 78.
+- The page posts `{type: "widget-ready"}` at its first picture (tile editor: when the layout is loaded), and `{type: "widget-size", w, h}` then and on every resize, to `window.parent`.
 
 ---
 
@@ -394,7 +427,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MXL_CLEANUP_ON_EXIT` | false | yes | remove the output domain directory after SIGTERM |
 | `MV_BACKEND` | `auto` | yes | `auto`, `cuda`, `cpu` |
 | `MV_MAX_INPUTS` | 16 | yes | 1–32 |
-| `MV_OUTPUTS` | 1 | yes | 1–3 |
+| `MV_OUTPUTS` | 1 | yes | 1–4 |
 | `MV_OUTPUT_FORMAT` | `1920x1080p50` | no | head 1 raster and rate; progressive |
 | `MV_INPUT_OFFSET_GRAINS` | 2 | no | 0–30 |
 | `MV_HOLD_MS` | 1000 | no | slate delay |
@@ -404,8 +437,18 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `MV_AUDIO_CHANNELS` | 2 | no | `0`, `2`, or `16`; 0 disables audio flows |
 | `MV_AUDIO_FOLLOW` | 1 | no | input number whose audio is copied; 0 disables |
 | `MV_OVERLAY_HZ` | 25 | no | cap |
-| `MV_PREVIEW_FPS` | 5 | no | JPEG rate |
+| `MV_PREVIEW_FPS` | 5 | no | preview rate (JPEG, or the WebRTC mosaic) |
 | `MV_PREVIEW_WIDTH` | 480 | no | JPEG width |
+| `MV_PREVIEW_MODE` | `jpeg` | yes | `jpeg` or `webrtc` (§8.4) |
+| `PREVIEW_PUBLISH_URL` | empty | yes | RTSP base of a shared MediaMTX; empty runs the built-in one (§8.4) |
+| `PREVIEW_PATH_PREFIX` | `mxl-multiviewer` | yes | MediaMTX path prefix; the stream is `<prefix>/heads` |
+| `PREVIEW_WHEP_URL` | empty | yes | public WHEP base, no path; empty is the own MediaMTX |
+| `PREVIEW_HLS_URL` | empty | yes | public HLS base, no path; empty is the own MediaMTX |
+| `WIDGET_FRAME_ANCESTORS` | `'self'` | yes | CSP `frame-ancestors` of the `/widget` routes; listed origins get CORS on `/widgets` (§8.5) |
+| `MEDIAMTX_RTSP_PORT` | 8754 | yes | built-in MediaMTX: RTSP ingest on 127.0.0.1 |
+| `MEDIAMTX_WHEP_PORT` | 8789 | yes | built-in MediaMTX: WHEP |
+| `MEDIAMTX_HLS_PORT` | 8788 | yes | built-in MediaMTX: HLS |
+| `MEDIAMTX_ICE_UDP_PORT` | 8389 | yes | built-in MediaMTX: WebRTC ICE, UDP and TCP |
 | `MV_GRID` | 24 | no | editor snap divisor |
 | `MV_BLACK_Y` | 32 | no | 10-bit |
 | `MV_SILENCE_DBFS` | −60 | no | |
@@ -439,7 +482,7 @@ Precedence: environment > `MV_CONFIG_FILE` JSON (flat object, keys are the varia
 | `LOG_FORMAT` | `json` | yes | `json` or `text` |
 | `SHUTDOWN_TIMEOUT_S` | 10 | yes | SIGTERM budget. The clean path exits 143 inside this budget; past it the process `_exit`s 143 |
 
-Per head `h` ≥ 2 (head 1 uses the unscoped keys):
+Per head `h` from 2 to 4 (head 1 uses the unscoped keys):
 
 | Key | Meaning |
 | --- | --- |
@@ -452,7 +495,7 @@ Per head `h` ≥ 2 (head 1 uses the unscoped keys):
 
 Format token: `<width>x<height>p<rate>` with rate `24`, `25`, `30`, `50`, `60`, `2398`, `2997`, `5994`, or `N/D`. `2398` → 24000/1001, `2997` → 30000/1001, `5994` → 60000/1001. Interlaced output tokens are rejected. Width and height even, width ≤ 3840, height ≤ 2160, width multiple of 2. 3840×2160 is supported; the CUDA backend is the one sized for 16×1080p50 into 2160p50.
 
-Ports MUST NOT collide with each other. Defaults are chosen to miss 8080, 3212/3213, 8090, 8095, 3232/3233, 23500–23599, 8100, 3242/3243, 8554, 8888, 8889, 8189, 9997, 9998, 9610, 9620, 3252/3253, and 9100.
+Ports MUST NOT collide with each other (the `MEDIAMTX_*` ports count when the built-in MediaMTX runs). Defaults are chosen to miss 8080, 3212/3213, 8090, 8095, 3232/3233, 23500–23599, 8100, 3242/3243, 8554, 8888, 8889, 8189, 9997, 9998, 9610, 9620, 3252/3253, and 9100.
 
 Runtime changes of restart-flagged keys are persisted and reported as `restart_required`. They do not apply until the next process start.
 
@@ -469,7 +512,7 @@ Prefix `mxl_multiviewer_`.
 | `output_frames_late_total` | counter | `head` |
 | `output_frames_missed_total` | counter | `head` |
 | `compose_seconds` | histogram | `head`, `backend` |
-| `compose_gpu_seconds` | histogram (CUDA only) | `head`, `stage` (`background`, `tiles`, `overlay`, `pack`, `download`) |
+| `compose_gpu_seconds` | histogram (CUDA only) | `head`, `stage` (`background`, `tiles`, `overlay`, `pack`, `download`, `preview`: the mosaic tile with its download) |
 | `gpu_memory_bytes` | gauge | |
 | `input_state` | gauge 1 for the current state | `input`, `kind` (`video`/`audio`), `state` |
 | `input_late_grains_total` | counter | `input` |
@@ -479,6 +522,13 @@ Prefix `mxl_multiviewer_`.
 | `tsl_messages_total` | counter | `transport` (`udp`/`tcp`) |
 | `nmos_registry_up` | gauge 0/1 | |
 | `nmos_activations_total` | counter | `input`, `kind` |
+| `preview_mode` | gauge 1 for the mode | `mode` (`jpeg`, `webrtc`) |
+| `preview_seconds` | histogram | `head`: the preview step on the head thread (JPEG encode, or the mosaic tile) |
+| `preview_publish_mode` | gauge 1 for the mode (webrtc) | `mode` (`own`, `shared`) |
+| `preview_publish_state` | gauge 1 for the state (webrtc) | `state` (`connecting`, `publishing`, `error`) |
+| `preview_encoder` | gauge 1 for the encoder (webrtc) | `encoder` (`nvenc`, `x264`) |
+| `preview_frames_total` | counter (webrtc) | pictures published |
+| `preview_encode_seconds` | histogram (webrtc) | copy, encode and send of one mosaic picture |
 
 Histogram buckets for compose time: 1, 2, 5, 10, 20, 40, 80 ms.
 
@@ -488,11 +538,11 @@ Histogram buckets for compose time: 1, 2, 5, 10, 20, 40, 80 ms.
 
 ## 11. Process lifecycle
 
-Startup: validate config (else 78) → create the state directory → create the output domain (else 78 if the path is a mirror or cannot be created) → bind web, NMOS, and TSL (else 75) → restore routes → start readers and composers → register the node. A TCP or UDP port that cannot be bound exits 75. Card-level hardware does not apply.
+Startup: validate config (else 78) → create the state directory → own preview mode: write `mediamtx.yml` (else 75) and start MediaMTX → create the output domain (else 78 if the path is a mirror or cannot be created) → bind web, NMOS, and TSL (else 75) → restore routes → start readers and composers → register the node. A TCP or UDP port that cannot be bound exits 75. Card-level hardware does not apply.
 
 The addresses this process announces are IP literals taken from `NMOS_HOST_ADDRESS`. The HTTP and NMOS sockets listen on the wildcard address; the announced host is separate. This process does not write SDP, ICE candidates, or SRT addresses.
 
-SIGTERM and SIGINT, within `SHUTDOWN_TIMEOUT_S`: stop HTTP, stop composers and release MXL readers and writers, tombstone the node's IS-04 resources so nmos-cpp sends DELETEs, then if `MXL_CLEANUP_ON_EXIT=true` remove this process's output domain directory, then exit 143. Child work is stopped with the threads. If the budget expires first, the process exits 143 without waiting.
+SIGTERM and SIGINT, within `SHUTDOWN_TIMEOUT_S`: stop HTTP, stop the preview publisher (RTSP TEARDOWN), stop composers and release MXL readers and writers, tombstone the node's IS-04 resources so nmos-cpp sends DELETEs, stop the built-in MediaMTX, then if `MXL_CLEANUP_ON_EXIT=true` remove this process's output domain directory, then exit 143. Child work is stopped with the threads. If the budget expires first, the process exits 143 without waiting.
 
 | Code | Meaning |
 | --- | --- |
@@ -507,8 +557,8 @@ The container runs as uid/gid 1000.
 
 ## 12. Deployment and CI
 
-- Image `ghcr.io/leeo86/mxl-multiviewer`, public. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`. Those version tags are not moved. Branch `main`: `nightly-dev` and `git-<sha>`. There is no `latest` tag. OCI labels include `org.opencontainers.image.source`, `org.opencontainers.image.revision` (the git commit), `org.opencontainers.image.licenses`, and `io.dmf.mxl.revision` (the MXL pin `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`). The runtime user is uid 1000. Root is not used.
-- CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration test, container build. The `ci.yaml` job does not install nvcc, so that binary is CPU-only. The container build compiles the CUDA compositor. A GPU is not required to build or to start the image.
+- Image `ghcr.io/leeo86/mxl-multiviewer`, public. Tags on `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`. Those version tags are not moved. Branch `main`: `nightly-dev` and `git-<sha>`. There is no `latest` tag. OCI labels include `org.opencontainers.image.source`, `org.opencontainers.image.revision` (the git commit), `org.opencontainers.image.licenses`, and `io.dmf.mxl.revision` (the MXL pin `218ddaa0a08c12ffe75fc475ae65aa3d9eef16d7`). The runtime user is uid 1000. Root is not used. The image carries MediaMTX (`/usr/local/bin/mediamtx`, licence in `/usr/share/doc/mediamtx/`) and Ubuntu's FFmpeg libraries, and sets `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` so the NVIDIA container toolkit also injects the NVENC library.
+- CI: build MXL and nmos-cpp, build the project, unit tests, CPU integration tests (`mosaic.sh`, `preview.sh` with the MediaMTX 1.20.1 release binary), container build. The `ci.yaml` job does not install nvcc, so that binary is CPU-only. The container build compiles the CUDA compositor. A GPU is not required to build or to start the image.
 - `docker/docker-compose.demo.yaml`: registry stand-in, pattern writers, the multiviewer, and a note for attaching `mxl-webrtc-monitor` to the output flow. `docker/docker-compose.host.yaml`: host network, MXL root bind, ports 8110 and 3262/3263. `docker/docker-compose.gpu.yaml`: overlay that requests one NVIDIA GPU so the container toolkit injects the driver.
 - `deploy/mxl-multiviewer.yaml`: pod network, no `hostNetwork` and no `hostIPC`, uid 1000 with `supplementalGroups: [1000]`, MXL root `hostPath` at `/Volumes/mxl`, a writable `/config` volume, probes on `/livez` and `/readyz`, `terminationGracePeriodSeconds` greater than `SHUTDOWN_TIMEOUT_S`, and the standard environment names. `deploy/mxl-multiviewer-gpu.yaml` is that Deployment plus `runtimeClassName: nvidia` and `nvidia.com/gpu: 1`. The example `/config` volume is an emptyDir; a platform that must keep state across reschedule replaces it with a persistent volume. The image tag in those files is `1.0.0`.
 - `tests/nmos/amwa.sh`: runs the AMWA NMOS Testing tool suites IS-04-01, IS-05-01, and IS-05-02 against `NMOS_PORT`. Not part of the default CI job (the harness image is large and the suite is long). It is the supported way to run those tests.
@@ -532,6 +582,7 @@ Measured on hardware, not in CI. Results are recorded in `docs/performance.md` w
 
 - Unit: layout validation and presets, tile geometry (fit, fill, even snap), v210 pack/unpack bit-exact including a short row and the v210a key plane, scaler against a bilinear reference (tolerance), PPM attack and 24 dB / 2.8 s decay, alarm debounce, freeze timing (a repeated-grain cadence and small motion are not frozen, a still picture is after `MV_FREEZE_MS`), TSL 5.0 including DLE stuffing, the three tally fields and UTF-16 labels, and a TSL 3.1 datagram, tally lamps, border, and `tally_text` in the overlay, alarm labels and border, caption alignment, bars beside the picture, image tiles (type by magic bytes and Content-Type, limits before decoding, GIF frames, scaling, fetch with timeout and size cap, the worker that keeps fetching off the render path, the images API), start layouts, the time zone of local clocks, config precedence and exit-78 validation, UUIDv5 ids, domain scan with a mirror domain and unknown JSON fields, TAI index rounding against the MXL test vectors.
 - Integration (CI, CPU, real MXL in a temp root): pattern writers; registry stand-in; a persisted route is restored and is the receiver's IS-05 active state; `/readyz` becomes 200; IS-05 activation of a missing flow → `waiting` → writer starts → `running`; output `flow_def.json` matches the raster; sampled pixels carry the tile colours; a layout switch does not reset the flow id and applies on a later frame; a TSL 5.0 datagram puts the LH and RH lamps and the text tally background on the output and its fields into `GET /api/v1/inputs`; an uploaded PNG on an image tile and an input tile with bars beside the picture are on the output; `/metrics` exposes `mxl_multiviewer_output_frames_total`; `GET /api/v1/config/export` returns the document; SIGTERM exits 143, the Query API no longer has the node, and `MXL_CLEANUP_ON_EXIT=true` removes the output domain.
+- Preview (1.4.0): unit tests for the preview settings (precedence, validation, mode selection, never both), the tile map, the NV12 scaler and the mosaic, `/api/v1/info`, `/statusz`, `/widgets` (JSON and CORS), the widget pages (parameters, CSP, no `X-Frame-Options`), the MediaMTX config and the child supervisor. `tests/integration/preview.sh` (CI, CPU, x264): JPEG mode publishes nothing and starts no MediaMTX; own mode publishes `<prefix>/heads` to the built-in MediaMTX (RTSP DESCRIBE and HLS), refuses `/preview.jpg`, serves the map, `/widgets` with CORS and the widget page with its CSP, and stops MediaMTX on SIGTERM; shared mode publishes to a separate MediaMTX, starts none, and goes `error` and back to `publishing` when that MediaMTX stops and starts.
 - NMOS: `tests/nmos/amwa.sh`.
 - Hardware: §13, not in CI.
 

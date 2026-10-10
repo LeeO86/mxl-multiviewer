@@ -1,12 +1,12 @@
 <script setup>
-// Preview (§8.1): the JPEG of one output head at MV_PREVIEW_FPS, its layout and counters.
+// Preview (§8.1): one output head (WebRTC or JPEG, §8.4), its layout and counters.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api, live, shortId } from "../api.js";
+import HeadView from "./HeadView.vue";
 import Pill from "./Pill.vue";
 
 const head = ref(1);
 const stamp = ref(Date.now());
-const failed = ref(false);
 const names = ref([]);
 const chosen = ref("");
 const msg = ref({ kind: "", text: "" });
@@ -17,7 +17,7 @@ let timer = 0;
 const heads = computed(() => live.info?.outputs || 1);
 const fps = computed(() => live.info?.preview_fps || 5);
 const output = computed(() => live.outputs.find((o) => o.index === head.value));
-const src = computed(() => `/preview.jpg?head=${head.value}&t=${stamp.value}`);
+const webrtc = computed(() => live.info?.preview_mode === "webrtc");
 const lateNow = computed(() => stamp.value - lateAt.value < 5000);
 
 watch(
@@ -34,7 +34,6 @@ watch(
   { immediate: true },
 );
 watch(head, () => {
-  failed.value = false;
   chosen.value = output.value?.layout || "";
   msg.value = { kind: "", text: "" };
 });
@@ -78,11 +77,12 @@ onUnmounted(() => clearInterval(timer));
           <button v-for="h in heads" :key="h" :aria-pressed="head === h" @click="head = h">Head {{ h }}</button>
         </span>
       </h3>
-      <div class="preview-frame">
-        <img v-show="!failed" :src="src" :alt="`Output ${head} preview`" @load="failed = false" @error="failed = true" />
-        <div v-if="failed" class="stage-empty">No preview yet: the output has not produced a frame.</div>
-      </div>
-      <p class="note">Picture of the output at {{ fps }} frames per second (MV_PREVIEW_FPS, MV_PREVIEW_WIDTH). Audio is not previewed.</p>
+      <HeadView :head="head" />
+      <p v-if="webrtc" class="note">
+        WebRTC picture of the output at {{ fps }} frames per second: every head is in one H.264 stream (MV_PREVIEW_MODE, MV_PREVIEW_FPS). Audio is not
+        previewed.
+      </p>
+      <p v-else class="note">Picture of the output at {{ fps }} frames per second (MV_PREVIEW_FPS, MV_PREVIEW_WIDTH). Audio is not previewed.</p>
     </div>
     <div>
       <div class="panel">
