@@ -1179,7 +1179,7 @@ struct Engine::Impl
             }
             item.umdPosition = tile.umdPosition;
             item.umdAlign = tile.umdAlign;
-            item.umdFont = std::max(8, tile.umdFont * format.height / 1080);
+            item.umdFont = umdFontPx(tile.umdFont, format.height);
             item.umdBg = parseHexColor(tile.umdBg, {0, 0, 0, 192});
             item.tally = viewIn.tally;
             item.lhTally = viewIn.tslLh;
@@ -1195,6 +1195,7 @@ struct Engine::Impl
             item.barScale = tile.audioBarScale;
             item.barChannels = tile.audioBarChannels;
             item.barsPosition = tile.audioBarPosition;
+            item.barsOverlay = tile.audioBarOverlay;
             item.zoneGreen = tile.zoneGreen;
             item.zoneAmber = tile.zoneAmber;
             if (sound != nullptr)

@@ -37,6 +37,8 @@ struct Overlay
     int width = 0;
     int height = 0;
     std::vector<std::uint8_t> rgba;
+    // While it has a size, nothing is drawn outside this rectangle (renderOverlay: the tile's).
+    PixelRect clip{};
 
     void resize(int w, int h);
     void clear();
@@ -87,7 +89,8 @@ struct OverlayTile
     PixelRect rect;
     bool umd = false;
     std::string umdText;
-    UmdPosition umdPosition = UmdPosition::BottomInside;
+    // The bar is always inside the tile, at its top or bottom (§6.2).
+    UmdPosition umdPosition = UmdPosition::Bottom;
     UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     Rgba umdBg{0, 0, 0, 192};
@@ -115,6 +118,8 @@ struct OverlayTile
     std::array<double, 16> rmsDbfs = silentMeters();
     std::array<bool, 16> clip{};
     BarsPosition barsPosition = BarsPosition::Right;
+    // False: the bars are in the strip the picture leaves free (pictureRect).
+    bool barsOverlay = true;
     double zoneGreen = -18;
     double zoneAmber = -9;
     std::string formatText;
@@ -164,6 +169,7 @@ void showAlarms(OverlayTile& item, Tile const& tile, ActiveAlarms const& alarms)
 inline constexpr std::array<int, 8> kPpmMarks{0, -6, -12, -18, -24, -36, -48, -60};
 inline constexpr double kMeterFloorDbfs = -60.0;
 
+// Draws every tile clipped to its rectangle: nothing of a tile lies outside it (§6.2).
 void renderOverlay(Overlay& overlay, std::vector<OverlayTile> const& tiles);
 
 // True when this binary rasterises the overlay with Blend2D. The 8×8 path remains for MV_WITH_BLEND2D=OFF.

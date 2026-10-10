@@ -394,7 +394,7 @@ TEST_CASE("layout json round trip and rejection")
     CHECK(parseLayout("{\"version\":1,\"name\":\"x\",\"tiles\":[{\"id\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"w\":1.2,\"h\":1}}]}", bad, 4).has_value());
 }
 
-TEST_CASE("audio bars beside the picture take a strip of the tile; over the picture they do not")
+TEST_CASE("audio bars without overlay take a strip of the tile; over the picture they do not")
 {
     // 1080 canvas, 960 px tile, 2 channels: margins 6 + 6, bars 2 × 14 + 2, gap 2, tick 4, labels 28.
     CHECK(barsStripWidth(960, 2, true, 1080) == 76);
@@ -408,13 +408,14 @@ TEST_CASE("audio bars beside the picture take a strip of the tile; over the pict
     }
     Tile tile;
     tile.audioBars = true;
-    tile.audioBarPosition = BarsPosition::RightBeside;
+    tile.audioBarPosition = BarsPosition::Right;
+    tile.audioBarOverlay = false;
     PixelRect const px{960, 0, 960, 540};
     auto const right = pictureRect(px, tile, 1080);
     CHECK(right.x == 960);
     CHECK(right.w == 884);
     CHECK(right.h == 540);
-    tile.audioBarPosition = BarsPosition::LeftBeside;
+    tile.audioBarPosition = BarsPosition::Left;
     auto const left = pictureRect(px, tile, 1080);
     CHECK(left.x == 1036);
     CHECK(left.w == 884);
@@ -424,13 +425,16 @@ TEST_CASE("audio bars beside the picture take a strip of the tile; over the pict
     CHECK(placed.dst.x % 2 == 0);
     CHECK(placed.dst.w == 884);
     CHECK(placed.dst.h == 497);
-    // Over the picture, bars off, other content, or a tile too narrow for the strip: the whole tile.
-    for (auto const position : {BarsPosition::Left, BarsPosition::Right, BarsPosition::Overlay})
+    // Over the picture, centred (always over it), bars off, other content, or a tile too narrow for the strip: the whole tile.
+    tile.audioBarOverlay = true;
+    for (auto const position : {BarsPosition::Left, BarsPosition::Right, BarsPosition::Centre})
     {
         tile.audioBarPosition = position;
         CHECK(pictureRect(px, tile, 1080).w == 960);
     }
-    tile.audioBarPosition = BarsPosition::RightBeside;
+    tile.audioBarOverlay = false;
+    CHECK(pictureRect(px, tile, 1080).w == 960);
+    tile.audioBarPosition = BarsPosition::Right;
     tile.audioBars = false;
     CHECK(pictureRect(px, tile, 1080).w == 960);
     tile.audioBars = true;
@@ -440,13 +444,141 @@ TEST_CASE("audio bars beside the picture take a strip of the tile; over the pict
     CHECK(barsStripWidth(100, 2, true, 1080) == 0);
     CHECK(pictureRect(PixelRect{0, 0, 100, 56}, tile, 1080).w == 100);
 
-    // The positions parse and round-trip; older layouts keep left, right, and overlay.
+    // The positions parse and round-trip.
     Layout layout;
-    REQUIRE_FALSE(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"left-beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4)
-                      .has_value());
-    CHECK(layout.tiles[0].audioBarPosition == BarsPosition::LeftBeside);
-    CHECK(layoutToJson(layout).find("\"audio_bar_position\":\"left-beside\"") != std::string::npos);
+    REQUIRE_FALSE(
+        parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"left","audio_bar_overlay":false,"rect":{"x":0,"y":0,"w":1,"h":1}}]})",
+            layout, 4)
+            .has_value());
+    CHECK(layout.tiles[0].audioBarPosition == BarsPosition::Left);
+    CHECK_FALSE(layout.tiles[0].audioBarOverlay);
+    CHECK(layoutToJson(layout).find("\"audio_bar_position\":\"left\",\"audio_bar_overlay\":false") != std::string::npos);
     CHECK(parseLayout(R"({"version":1,"name":"b","tiles":[{"id":"a","input":1,"audio_bar_position":"beside","rect":{"x":0,"y":0,"w":1,"h":1}}]})", layout, 4).has_value());
+}
+
+namespace
+{
+Layout oneTile(std::string const& fields, std::vector<std::string>* repairs = nullptr)
+{
+    Layout layout;
+    auto const problem =
+        parseLayout(R"({"version":1,"name":"m","tiles":[{"id":"a","input":1,"rect":{"x":0,"y":0,"w":1,"h":1})" + fields + "}]}", layout, 4, repairs);
+    REQUIRE_FALSE(problem.has_value());
+    return layout;
+}
+} // namespace
+
+TEST_CASE("caption and audio bar positions: two options each, the 1.3.0 values migrate")
+{
+    // Defaults: caption at the bottom over the picture, bars at the right over the picture.
+    auto const plain = oneTile("").tiles[0];
+    CHECK(plain.umdPosition == UmdPosition::Bottom);
+    CHECK(plain.umdOverlay);
+    CHECK(plain.audioBarPosition == BarsPosition::Right);
+    CHECK(plain.audioBarOverlay);
+    auto const json = layoutToJson(oneTile(""));
+    CHECK(json.find("\"umd_position\":\"bottom\",\"umd_overlay\":true") != std::string::npos);
+    CHECK(json.find("\"audio_bar_position\":\"right\",\"audio_bar_overlay\":true") != std::string::npos);
+    // New values with their overlay flag.
+    auto const strip = oneTile(R"(,"umd_position":"top","umd_overlay":false,"audio_bar_position":"right","audio_bar_overlay":false)").tiles[0];
+    CHECK(strip.umdPosition == UmdPosition::Top);
+    CHECK_FALSE(strip.umdOverlay);
+    CHECK(strip.audioBarPosition == BarsPosition::Right);
+    CHECK_FALSE(strip.audioBarOverlay);
+    // Centred bars are always over the picture.
+    CHECK(oneTile(R"(,"audio_bar_position":"centre","audio_bar_overlay":false)").tiles[0].audioBarOverlay);
+    // The 1.3.0 values set both options (and win over a stray overlay flag); a layout file logs each one.
+    struct Old
+    {
+        char const* field;
+        char const* value;
+        int position;
+        bool overlay;
+    };
+    Old const olds[] = {{"umd_position", "top-inside", static_cast<int>(UmdPosition::Top), true},
+        {"umd_position", "bottom-inside", static_cast<int>(UmdPosition::Bottom), true}, {"umd_position", "top-outside", static_cast<int>(UmdPosition::Top), false},
+        {"umd_position", "bottom-outside", static_cast<int>(UmdPosition::Bottom), false},
+        {"audio_bar_position", "overlay", static_cast<int>(BarsPosition::Centre), true},
+        {"audio_bar_position", "left-beside", static_cast<int>(BarsPosition::Left), false},
+        {"audio_bar_position", "right-beside", static_cast<int>(BarsPosition::Right), false}};
+    for (auto const& old : olds)
+    {
+        bool const umd = std::string(old.field) == "umd_position";
+        std::string const stray = umd ? R"(,"umd_overlay":)" : R"(,"audio_bar_overlay":)";
+        std::vector<std::string> repairs;
+        auto const tile = oneTile(std::string(",\"") + old.field + "\":\"" + old.value + "\"" + stray + (old.overlay ? "false" : "true"), &repairs).tiles[0];
+        CAPTURE(old.value);
+        CHECK((umd ? static_cast<int>(tile.umdPosition) : static_cast<int>(tile.audioBarPosition)) == old.position);
+        CHECK((umd ? tile.umdOverlay : tile.audioBarOverlay) == old.overlay);
+        REQUIRE(repairs.size() == 1);
+        CHECK(repairs[0].find(old.value) != std::string::npos);
+        // The API takes them too, without a repair note; saved, they use the new names.
+        auto const api = oneTile(std::string(",\"") + old.field + "\":\"" + old.value + "\"");
+        CHECK(layoutToJson(api).find(std::string(":\"") + old.value + "\"") == std::string::npos);
+    }
+    std::vector<std::string> none;
+    oneTile(R"(,"umd_position":"top","audio_bar_position":"left","audio_bar_overlay":false)", &none);
+    CHECK(none.empty());
+    Layout bad;
+    CHECK(parseLayout(R"({"version":1,"name":"m","tiles":[{"id":"a","input":1,"umd_position":"middle","rect":{"x":0,"y":0,"w":1,"h":1}}]})", bad, 4).has_value());
+}
+
+TEST_CASE("the tile rectangle bounds the picture, the caption strip and the audio bar strip")
+{
+    auto const inside = [](PixelRect const& inner, PixelRect const& outer) {
+        return inner.w > 0 && inner.h > 0 && inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w &&
+               inner.y + inner.h <= outer.y + outer.h;
+    };
+    std::pair<int, int> const sources[] = {{1920, 1080}, {720, 576}, {1080, 1920}, {3840, 2160}};
+    NormRect const rects[] = {{0, 0, 1, 1}, {0.25, 0.5, 0.25, 0.25}, {0.5, 0, 0.0625, 0.1}, {0.9, 0.9, 0.1, 0.1}, {0.1, 0.1, 0.02, 0.03}};
+    int checked = 0;
+    for (int const height : {540, 1080, 2160})
+    {
+        int const width = height * 16 / 9;
+        for (auto const& norm : rects)
+        {
+            auto const px = rectToPixels(norm, width, height);
+            for (int mask = 0; mask < 64; ++mask)
+            {
+                Tile tile;
+                tile.umd = (mask & 1) != 0;
+                tile.umdPosition = (mask & 2) != 0 ? UmdPosition::Top : UmdPosition::Bottom;
+                tile.umdOverlay = (mask & 4) != 0;
+                tile.audioBars = (mask & 8) != 0;
+                tile.audioBarPosition = (mask & 16) != 0 ? BarsPosition::Left : BarsPosition::Right;
+                tile.audioBarOverlay = (mask & 32) != 0;
+                auto const picture = pictureRect(px, tile, height);
+                CHECK(inside(picture, px));
+                // Exactly the strips are taken: the caption's from the top or bottom, the bars' from the side.
+                int const band = tile.umd && !tile.umdOverlay ? std::min(umdBandHeight(umdFontPx(tile.umdFont, height), px.h), px.h - 1) : 0;
+                int const strip = tile.audioBars && !tile.audioBarOverlay ? barsStripWidth(px.w, tile.audioBarChannels, tile.audioBarScale, height) : 0;
+                CHECK(picture.h == px.h - band);
+                CHECK(picture.w == px.w - strip);
+                CHECK(picture.y == (tile.umdPosition == UmdPosition::Top ? px.y + band : px.y));
+                CHECK(picture.x == (tile.audioBarPosition == BarsPosition::Left ? px.x + strip : px.x));
+                for (auto const& [sw, sh] : sources)
+                {
+                    for (auto const mode : {ScaleMode::Fit, ScaleMode::Fill})
+                    {
+                        auto const placed = placeTile(picture, sw, sh, mode);
+                        CHECK(inside(placed.dst, picture));
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    CHECK(checked == 3 * 5 * 64 * 4 * 2);
+    // 1080 canvas, default caption (28 px): a 36 px strip; with a 76 px bar strip the picture keeps the rest.
+    Tile both;
+    both.umdOverlay = false;
+    both.audioBars = true;
+    both.audioBarOverlay = false;
+    auto const rest = pictureRect(PixelRect{960, 0, 960, 540}, both, 1080);
+    CHECK((rest.x == 960 && rest.y == 0 && rest.w == 884 && rest.h == 504));
+    // Fit then works on that rest exactly as on a whole tile: 884 × 497, centred in 504 lines.
+    auto const fit = placeTile(rest, 1920, 1080, ScaleMode::Fit);
+    CHECK((fit.dst.x == 960 && fit.dst.y == 3 && fit.dst.w == 884 && fit.dst.h == 497));
 }
 
 TEST_CASE("tile geometry snaps to even pixels and letterboxes")

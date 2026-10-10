@@ -739,20 +739,90 @@ TEST_CASE("audio bars draw zones, PPM scale, peak hold, and clip")
     // Beside the picture: the same bars, the scale inside the 76 px strip the picture leaves.
     auto const label = [](std::uint8_t const* px) { return px[3] > 100 && px[0] > 150; };
     tile.barScale = true;
-    tile.barsPosition = BarsPosition::RightBeside;
+    tile.barsPosition = BarsPosition::Right;
+    tile.barsOverlay = false;
     Overlay right;
     right.resize(1920, 1080);
     renderOverlay(right, {tile});
     CHECK(red(pixel(right, 930, 80)));
     CHECK(countPixels(right, 884, 10, 917, 540, label) > 40);
     CHECK(countPixels(right, 0, 0, 884, 540, inked) == 0);
-    tile.barsPosition = BarsPosition::LeftBeside;
+    tile.barsPosition = BarsPosition::Left;
     Overlay left;
     left.resize(1920, 1080);
     renderOverlay(left, {tile});
     CHECK(red(pixel(left, 12, 80)));
     CHECK(countPixels(left, 42, 10, 76, 540, label) > 40);
     CHECK(countPixels(left, 76, 0, 960, 540, inked) == 0);
+}
+
+TEST_CASE("nothing of a tile is drawn outside its rectangle: caption bar, lamps, bars, borders, labels")
+{
+    // A tile in the middle of a 1080 canvas with everything on, the caption at the top or bottom.
+    PixelRect const r{480, 270, 480, 270};
+    auto const outside = [&](Overlay const& overlay) {
+        return countPixels(overlay, 0, 0, 1920, r.y, inked) + countPixels(overlay, 0, r.y + r.h, 1920, 1080, inked) +
+               countPixels(overlay, 0, r.y, r.x, r.y + r.h, inked) + countPixels(overlay, r.x + r.w, r.y, 1920, r.y + r.h, inked);
+    };
+    auto const band = [](std::uint8_t const* px) { return px[3] > 150 && px[0] < 40 && px[1] < 40 && px[2] < 40; };
+    for (auto const position : {UmdPosition::Top, UmdPosition::Bottom})
+    {
+        for (auto const bars : {BarsPosition::Left, BarsPosition::Right, BarsPosition::Centre})
+        {
+            for (bool const overlayBars : {true, false})
+            {
+                OverlayTile tile;
+                tile.rect = r;
+                tile.umd = true;
+                tile.umdText = "A caption much too long for the bar of this tile, cut with an ellipsis";
+                tile.umdFont = 28;
+                tile.umdPosition = position;
+                tile.lhTally = 1;
+                tile.rhTally = 2;
+                tile.tally = 1;
+                tile.tallyBorder = true;
+                tile.tallyLamp = true;
+                tile.bars = true;
+                tile.barChannels = 16;
+                tile.barsPosition = bars;
+                tile.barsOverlay = overlayBars;
+                tile.ppmDbfs.fill(-3);
+                tile.alarm = AlarmLevel::Red;
+                tile.badges = {{"NO SIGNAL", AlarmLevel::Red}, {"FREEZE", AlarmLevel::Red}, {"SILENCE", AlarmLevel::Amber}};
+                tile.formatText = "1920x1080p5994 and a long latency caption";
+                tile.latencyText = "latency 123.4 ms";
+                tile.safeArea = true;
+                tile.centre = true;
+                tile.aspectMarkers = {"4:3", "9:16"};
+                Overlay overlay;
+                overlay.resize(1920, 1080);
+                renderOverlay(overlay, {tile});
+                CAPTURE(static_cast<int>(position));
+                CAPTURE(static_cast<int>(bars));
+                CHECK(outside(overlay) == 0);
+                // The 36 px bar lies inside the tile at its edge (the 8 px tally border is over its ends).
+                int const y = position == UmdPosition::Top ? r.y + 18 : r.y + r.h - 18;
+                CHECK(countPixels(overlay, r.x + 40, y, r.x + 60, y + 1, band) + countPixels(overlay, r.x + 40, y, r.x + 60, y + 1, inked) > 0);
+                CHECK(inked(pixel(overlay, r.x + 9, position == UmdPosition::Top ? r.y + 9 : r.y + r.h - 10)));
+            }
+        }
+    }
+    // A tile far too small for its caption and text: still nothing outside.
+    OverlayTile tiny;
+    tiny.rect = {100, 100, 40, 20};
+    tiny.umd = true;
+    tiny.umdText = "CAM 1";
+    tiny.umdFont = 40;
+    tiny.formatText = "1080p50";
+    tiny.slate = "NO SIGNAL";
+    tiny.slateLabel = "MV In 1";
+    tiny.tallyBorder = true;
+    tiny.tally = 2;
+    Overlay small;
+    small.resize(320, 240);
+    renderOverlay(small, {tiny});
+    CHECK(countPixels(small, 0, 0, 320, 240, inked) == countPixels(small, 100, 100, 140, 120, inked));
+    CHECK(countPixels(small, 100, 100, 140, 120, inked) > 0);
 }
 
 TEST_CASE("digital clock and label text scale with the tile")

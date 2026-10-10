@@ -34,12 +34,12 @@ enum class UmdSource
     Manual,
     Tsl
 };
+// The caption (UMD) bar lies at the top or bottom edge, always inside the tile's rectangle;
+// `umd_overlay` says whether it lies over the picture or has its own strip (§6.2).
 enum class UmdPosition
 {
-    TopInside,
-    TopOutside,
-    BottomInside,
-    BottomOutside
+    Top,
+    Bottom
 };
 enum class UmdAlign
 {
@@ -57,15 +57,13 @@ enum class AlarmLabelPosition
     Bottom,
     BottomRight
 };
-// Left, Right, and Overlay (centre) lie over the picture; LeftBeside and RightBeside take a
-// strip of the tile and the picture is placed in the rest (§6.2).
+// Audio bars at the left or right edge (over the picture, or in their own strip with
+// `audio_bar_overlay` off), or centred over the picture (§6.2).
 enum class BarsPosition
 {
     Left,
     Right,
-    Overlay,
-    LeftBeside,
-    RightBeside
+    Centre
 };
 enum class ClockStyle
 {
@@ -90,7 +88,9 @@ struct Tile
     bool umd = true;
     UmdSource umdSource = UmdSource::Is04;
     std::string umdText;
-    UmdPosition umdPosition = UmdPosition::BottomInside;
+    UmdPosition umdPosition = UmdPosition::Bottom;
+    // Over the picture (true), or a strip of the tile the picture leaves free (false).
+    bool umdOverlay = true;
     UmdAlign umdAlign = UmdAlign::Left;
     int umdFont = 28;
     std::string umdBg = "#000000c0";
@@ -105,6 +105,8 @@ struct Tile
     int audioBarChannels = 2;
     int audioBarFirst = 0;
     BarsPosition audioBarPosition = BarsPosition::Right;
+    // Over the picture (true), or a strip of the tile beside it (false; not for Centre).
+    bool audioBarOverlay = true;
     double zoneGreen = -18;
     double zoneAmber = -9;
     // Alarm display (§6.3): the alarm border, and a label per active alarm.

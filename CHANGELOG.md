@@ -12,6 +12,15 @@ WebRTC previews of the heads as one stream, the platform's preview contract (pla
 - The publish state (`connecting`, `publishing`, `error` with the error), the encoder, the mode and the built-in MediaMTX are in `/statusz` (`preview`) and the metrics `mxl_multiviewer_preview_mode{mode}`, `preview_publish_mode{mode}`, `preview_publish_state{state}`, `preview_encoder{encoder}`, `preview_frames_total`, `preview_encode_seconds`, `preview_seconds{head}` and `compose_gpu_seconds{stage="preview"}`. `GET /api/v1/info` has `preview_mode` and the playback URLs (`preview`). Readiness does not depend on the preview.
 - `MV_OUTPUTS` goes up to 4 (`MV_OUT4_*`), so four heads fill the 2×2 mosaic.
 
+### Tile rectangle (correction of the layout options)
+
+- A tile's rectangle is its hard boundary: nothing of the tile is drawn outside it (picture, caption bar, audio bars, lamps, borders, alarm labels). The overlay clips every tile to its rectangle.
+- Caption (UMD): `umd_position` is `top` or `bottom` (default `bottom`), and the new `umd_overlay` (default true) says whether the bar lies over the picture or has its own strip of the tile, the picture scaled into the rest. The 1.3.0 values are accepted and migrated: `top-inside`/`bottom-inside` are that edge over the picture; `top-outside`/`bottom-outside`, which drew the bar outside the tile, are now that edge in a strip inside the tile. There is no position outside the tile any more.
+- Audio bars: `audio_bar_position` is `left`, `right` (default) or `centre`, and the new `audio_bar_overlay` (default true) says whether they lie over the picture or have their own strip (left and right only; centred bars are always over the picture). The 1.3.0 values are accepted and migrated: `left-beside`/`right-beside` are that side in a strip, `overlay` is `centre`.
+- With a caption strip and a bar strip the picture's area is the tile less both; fit and fill work on that area as before. CPU and CUDA place the picture the same way.
+- A layout file with 1.3.0 values is read as before; each value is logged (`layout_repaired`) and the file uses the new names from the next save, which 1.3.0 cannot read.
+- Layout editor: "Position" (Top, Bottom; Left, Centre, Right) and "Over the video" replace the long lists; the canvas shows a strip with a dashed edge. Imported layouts with 1.3.0 values open with the new options.
+
 ### Widgets
 
 - `GET /widgets` lists the operator-screen widgets: `head` (`{head}`, one head's preview, WebRTC region or JPEG, at least 480×270) and `tile-editor` (`{head}`, the tiles of the layout the head shows and the layout editor's tile inspector with Save, at least 600×400). Origins listed in `WIDGET_FRAME_ANCESTORS` get `Access-Control-Allow-Origin` on it (GET).
