@@ -124,3 +124,15 @@ Same host, GPU 2, image built from this branch, CUDA backend. Four heads, no inp
 - Own mode: after `kill -9` of the built-in MediaMTX the state was `error` (`rtsp write: Broken pipe`) within 0.5 s, the supervisor started it after 1 s, and the stream was `publishing` again at 1.6 s (`restarts` 1). An open widget page in Edge connected again by itself and played on.
 - Shared mode: a separate MediaMTX 1.20.1 stopped for 10 s: `error` (connection refused, retried every 2 s), `publishing` 2 s after it was started again. The widget page (WHEP from that MediaMTX, `PREVIEW_WHEP_URL`) lost the picture and played again.
 - `tests/integration/preview.sh` passed in the image (plus python3 and procps, loopback only). With one expected value changed (the own-mode encoder, `restarts`, `mediamtx` in shared mode) it failed at that check each time.
+
+## Lab run 2026-10-13: alarms on the GPU (1.4.2)
+
+8 × 1080p50 inputs (4 test player outputs, moving; 4 flat writers, one black), layout 3x3, CUDA backend on an A16, multiviewer pinned to 8 CPUs of a Xeon Gold 6136, 30 s after 20 s warm-up (`~/mxl-lab/bin/mv2-bench`):
+
+| Image | Process CPU | Reader threads | Output frames, late, missed | Alarms |
+| --- | --- | --- | --- | --- |
+| 1.4.1 | 204 % of a core | 15–20 % each | 1512 / 0 / 0 | black on the black writer, freeze on the flat ones |
+| 1.4.2 | 83 % of a core | 3–4 % each | 1514 / 0 / 0 | the same |
+
+With `MV_CUDA_ALARM_VERIFY=1`: 408 device results compared with the CPU's, all equal. `mxl-mv-cuda-alarm-check` on the A16: 8 of 8 cases equal.
+
