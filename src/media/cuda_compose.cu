@@ -474,6 +474,81 @@ __global__ void packV210Kernel(unsigned short const* y, unsigned short const* cb
     out[3] = words[3];
 }
 
+// Black and freeze alarms on the device (1.4.2): the same numbers as the CPU's v210LumaSum and
+// lumaHash (src/media/v210.cpp). Every term is an unsigned integer and integer addition does not
+// depend on order, so the atomic sums equal the CPU's sequential ones bit for bit.
+constexpr int kAlarmGridX = 32;
+constexpr int kAlarmGridY = 18;
+constexpr int kAlarmRowStep = 2;
+constexpr int kAlarmCells = kAlarmGridX * kAlarmGridY;
+
+__device__ unsigned int alarmSample(std::uint8_t const* line, int x)
+{
+    int const kWord[6] = {0, 1, 1, 2, 3, 3};
+    int const kShift[6] = {10, 0, 20, 10, 0, 20};
+    unsigned int const word = reinterpret_cast<unsigned int const*>(line + (x / 6) * 16)[kWord[x % 6]];
+    return (word >> kShift[x % 6]) & 0x3ffu;
+}
+
+// One block per hashed line (every second one), one thread per 6-pixel group: the GridHash
+// block sums of src/media/v210.cpp, gathered per block in shared memory first.
+__global__ void alarmHashKernel(std::uint8_t const* v210, int rowBytes, int width, int height, unsigned int* sums)
+{
+    __shared__ unsigned int local[kAlarmGridX];
+    int const row = blockIdx.y * kAlarmRowStep;
+    for (int i = threadIdx.x; i < kAlarmGridX; i += blockDim.x)
+    {
+        local[i] = 0;
+    }
+    __syncthreads();
+    int const groups = (width + 5) / 6;
+    for (int group = blockIdx.x * blockDim.x + threadIdx.x; group < groups; group += gridDim.x * blockDim.x)
+    {
+        std::uint8_t const* line = v210 + static_cast<std::size_t>(row) * rowBytes;
+        int const count = min(6, width - group * 6);
+        unsigned int sum = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            sum += alarmSample(line, group * 6 + i);
+        }
+        int const bx = min(kAlarmGridX - 1, group * 6 * kAlarmGridX / width);
+        unsigned int const weight = 1u + static_cast<unsigned int>(group & 7) + 8u * static_cast<unsigned int>((row / kAlarmRowStep) & 7);
+        atomicAdd(&local[bx], sum * weight);
+    }
+    __syncthreads();
+    int const by = min(kAlarmGridY - 1, row * kAlarmGridY / height);
+    for (int i = threadIdx.x; i < kAlarmGridX; i += blockDim.x)
+    {
+        if (local[i] != 0)
+        {
+            atomicAdd(&sums[by * kAlarmGridX + i], local[i]);
+        }
+    }
+}
+
+// The luma of every `step`-th pixel in raster order (the black alarm's mean).
+__global__ void alarmSumKernel(std::uint8_t const* v210, int rowBytes, int width, int height, int step, unsigned long long* total)
+{
+    __shared__ unsigned long long local;
+    if (threadIdx.x == 0)
+    {
+        local = 0;
+    }
+    __syncthreads();
+    long long const i = (static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x) * step;
+    if (i < static_cast<long long>(width) * height)
+    {
+        int const row = static_cast<int>(i / width);
+        int const x = static_cast<int>(i % width);
+        atomicAdd(&local, static_cast<unsigned long long>(alarmSample(v210 + static_cast<std::size_t>(row) * rowBytes, x)));
+    }
+    __syncthreads();
+    if (threadIdx.x == 0 && local != 0)
+    {
+        atomicAdd(total, local);
+    }
+}
+
 struct Mem
 {
     void* ptr = nullptr;
@@ -817,6 +892,14 @@ struct Uploader
     cudaStream_t stream = nullptr;
     Mem staging;
     Mem stagingAlpha;
+    // Alarm scans: device sums and two pinned result slots, read back without waiting.
+    Mem alarmDevice;
+    Mem alarmHost[2];
+    cudaEvent_t alarmDone[2] = {};
+    bool alarmPending[2] = {};
+    int alarmCount[2] = {};
+    std::uint64_t alarmTag[2] = {};
+    int alarmNext = 0;
 
     bool open()
     {
@@ -1354,6 +1437,85 @@ std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v
         return nullptr;
     }
     return frame;
+}
+
+struct AlarmResult
+{
+    unsigned int sums[kAlarmCells];
+    unsigned long long total;
+};
+
+bool cudaAlarmScan(CudaFrame const& frame, int sumStep, std::uint64_t tag)
+{
+    auto& up = uploader();
+    if (!up.ready || frame.v210 == nullptr || sumStep < 1)
+    {
+        return false;
+    }
+    int const slot = up.alarmNext;
+    if (up.alarmPending[slot])
+    {
+        return false; // both slots wait for the host: skip this grain's scan
+    }
+    if (up.alarmDone[slot] == nullptr && cudaEventCreateWithFlags(&up.alarmDone[slot], cudaEventDisableTiming) != cudaSuccess)
+    {
+        return false;
+    }
+    auto* device = static_cast<AlarmResult*>(up.alarmDevice.ensure(sizeof(AlarmResult), false));
+    auto* host = up.alarmHost[slot].ensure(sizeof(AlarmResult), true);
+    if (device == nullptr || host == nullptr || cudaMemsetAsync(device, 0, sizeof(AlarmResult), up.stream) != cudaSuccess)
+    {
+        return false;
+    }
+    int const groups = (frame.width + 5) / 6;
+    dim3 const hashGrid((groups + 255) / 256, (frame.height + kAlarmRowStep - 1) / kAlarmRowStep);
+    alarmHashKernel<<<hashGrid, 256, 0, up.stream>>>(frame.v210, frame.v210RowBytes, frame.width, frame.height, device->sums);
+    long long const samples = (static_cast<long long>(frame.width) * frame.height + sumStep - 1) / sumStep;
+    alarmSumKernel<<<static_cast<unsigned int>((samples + 255) / 256), 256, 0, up.stream>>>(frame.v210, frame.v210RowBytes, frame.width, frame.height, sumStep,
+        &device->total);
+    if (cudaGetLastError() != cudaSuccess || cudaMemcpyAsync(host, device, sizeof(AlarmResult), cudaMemcpyDeviceToHost, up.stream) != cudaSuccess ||
+        cudaEventRecord(up.alarmDone[slot], up.stream) != cudaSuccess)
+    {
+        return false;
+    }
+    up.alarmPending[slot] = true;
+    up.alarmCount[slot] = static_cast<int>(samples);
+    up.alarmTag[slot] = tag;
+    up.alarmNext = 1 - slot;
+    return true;
+}
+
+bool cudaAlarmTake(CudaAlarmScan& out)
+{
+    auto& up = uploader();
+    // The older pending slot first: results come out in grain order.
+    for (int k = 0; k < 2; ++k)
+    {
+        int const slot = (up.alarmNext + k) % 2;
+        if (!up.alarmPending[slot])
+        {
+            continue;
+        }
+        if (cudaEventQuery(up.alarmDone[slot]) != cudaSuccess)
+        {
+            cudaGetLastError(); // cudaErrorNotReady is not an error here
+            return false;
+        }
+        auto const* r = static_cast<AlarmResult const*>(up.alarmHost[slot].ptr);
+        out.sum = r->total;
+        out.count = up.alarmCount[slot];
+        std::uint64_t hash = 14695981039346656037ull; // FNV-1a over the block sums, as GridHash::hash
+        for (auto const sum : r->sums)
+        {
+            hash ^= sum;
+            hash *= 1099511628211ull;
+        }
+        out.hash = hash;
+        out.tag = up.alarmTag[slot];
+        up.alarmPending[slot] = false;
+        return true;
+    }
+    return false;
 }
 
 std::shared_ptr<CudaOverlay const> cudaUploadOverlay(std::shared_ptr<CudaOverlay const> const& previous, std::uint8_t const* rgba, int width, int height,

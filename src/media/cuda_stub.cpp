@@ -39,6 +39,16 @@ std::shared_ptr<CudaOverlay const> cudaUploadOverlay(std::shared_ptr<CudaOverlay
     return nullptr;
 }
 
+bool cudaAlarmScan(CudaFrame const&, int, std::uint64_t)
+{
+    return false;
+}
+
+bool cudaAlarmTake(CudaAlarmScan&)
+{
+    return false;
+}
+
 void cudaReleaseHostMemory()
 {
 }
