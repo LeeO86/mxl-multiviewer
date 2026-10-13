@@ -36,9 +36,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -444,6 +446,9 @@ struct Engine::Impl
         AlarmSet alarms;
         // CPU backend: buffers for copies of the packed grains (see SavedGrain::v210).
         std::vector<std::shared_ptr<std::vector<std::uint8_t>>> grainPool;
+        // MV_CUDA_ALARM_VERIFY=1: CPU alarm numbers by grain index, to compare with the device's.
+        bool const verifyGpuAlarms = std::getenv("MV_CUDA_ALARM_VERIFY") != nullptr && std::string(std::getenv("MV_CUDA_ALARM_VERIFY")) == "1";
+        std::map<std::uint64_t, V210Scan> verifyRefs;
         std::string prevState;
         std::uint64_t const holdNs = static_cast<std::uint64_t>(config.holdMs) * 1000000ull;
         auto const bump = [&](std::shared_ptr<Snap> const& snap, char const* name, AlarmIndex index, Debounce& debounce, bool raw, bool& flag) {
@@ -687,10 +692,30 @@ struct Engine::Impl
             SavedGrain saved;
             V210Scan scan;
             bool scanned = false;
+            bool gpuAlarms = false; // the black and freeze numbers come from the device (1.4.2)
             if (useCuda.load())
             {
                 // Straight from the MXL grain to the GPU; the CPU neither copies nor unpacks it.
                 saved.gpu = cudaUploadFrame(payload, rowBytes, alphaKey, static_cast<int>(alpha10RowBytes(width)), width, height);
+                // The alarms read the grain on the GPU too: on the CPU they were two more passes
+                // over every grain, most of a reader thread's CPU (platform: 36-42 % of a core per
+                // 1080p50 input). The result comes back one grain later, without waiting.
+                gpuAlarms = saved.gpu != nullptr;
+                if (gpuAlarms && !cudaAlarmScan(*saved.gpu, 32, grain.index))
+                {
+                    metrics.inc("cuda_alarm_scans_skipped_total", {{"input", std::to_string(input)}}); // two scans still pending
+                }
+                if (gpuAlarms && verifyGpuAlarms && grain.index % 50 == 0 && verifyRefs.size() < 4)
+                {
+                    // MV_CUDA_ALARM_VERIFY=1 (lab): the CPU numbers of every 50th grain, compared
+                    // with the device's when its result comes back.
+                    V210Scan ref;
+                    int n = 0;
+                    ref.sum = v210LumaSum(payload, rowBytes, width, height, 32, &n);
+                    ref.count = n;
+                    ref.hash = lumaHash(payload, rowBytes, width, height);
+                    verifyRefs[grain.index] = ref;
+                }
             }
             if (saved.gpu == nullptr && !useCuda.load() && alphaKey == nullptr)
             {
@@ -758,9 +783,39 @@ struct Engine::Impl
             next->senderId = route.senderId;
             double sum = 0;
             int samples = 0;
+            CudaAlarmScan gpuScan;
+            bool gpuScanned = false;
+            if (gpuAlarms)
+            {
+                // Every finished device scan, oldest first; the alarms take the newest.
+                for (CudaAlarmScan r; cudaAlarmTake(r);)
+                {
+                    if (auto const ref = verifyRefs.find(r.tag); ref != verifyRefs.end())
+                    {
+                        bool const same = r.sum == ref->second.sum && r.count == ref->second.count && r.hash == ref->second.hash;
+                        metrics.inc("cuda_alarm_verify_total", {{"input", std::to_string(input)}, {"result", same ? "equal" : "different"}});
+                        verifyRefs.erase(ref);
+                    }
+                    gpuScan = r;
+                    gpuScanned = true;
+                }
+                // A reference whose scan was skipped never comes back.
+                std::erase_if(verifyRefs, [&](auto const& entry) { return gpuScanned && entry.first < gpuScan.tag; });
+                if (!gpuScanned)
+                {
+                    // Not back yet: the alarms keep their state for this grain.
+                    publishState(next);
+                    continue;
+                }
+            }
             // Without an unpacked frame (CUDA, and the CPU backend's packed copy) the same luma
             // samples are read from the packed grain in one pass.
-            if (scanned)
+            if (gpuScanned)
+            {
+                sum = static_cast<double>(gpuScan.sum);
+                samples = gpuScan.count;
+            }
+            else if (scanned)
             {
                 sum = static_cast<double>(scan.sum);
                 samples = scan.count;
@@ -778,7 +833,7 @@ struct Engine::Impl
                 sum = static_cast<double>(v210LumaSum(payload, rowBytes, width, height, 32, &samples));
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
-            auto const hash = scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
+            auto const hash = gpuScanned ? gpuScan.hash : scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
             bool const freeze = alarms.picture.update(hash, steadyMs(), config.freezeMs);
             bool const formatBad = width > 3840 || height > 2160 || !allowedRate(meta.rateNum, meta.rateDen) ||
                                    (meta.mediaType != "video/v210" && meta.mediaType != "video/v210a" && !meta.mediaType.empty());

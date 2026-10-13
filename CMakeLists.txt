@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(mxl-multiviewer VERSION 1.4.1 LANGUAGES CXX)
+project(mxl-multiviewer VERSION 1.4.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -169,6 +169,12 @@ if(mxl_FOUND)
     target_compile_options(mxl-multiviewer PRIVATE -Wall -Wextra -Wno-unused-parameter)
     if(MV_CUDA_LANGUAGE)
         target_sources(mxl-multiviewer PRIVATE src/media/cuda_compose.cu)
+        # GPU alarm numbers against the CPU's (1.4.2); exit 77 without a GPU.
+        add_executable(mxl-mv-cuda-alarm-check tests/tools/cuda_alarm_check.cpp src/media/cuda_compose.cu)
+        target_include_directories(mxl-mv-cuda-alarm-check PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+        target_link_libraries(mxl-mv-cuda-alarm-check PRIVATE mv-core)
+        set_target_properties(mxl-mv-cuda-alarm-check PROPERTIES CUDA_RUNTIME_LIBRARY Static CUDA_ARCHITECTURES "75;86;89")
+        target_compile_definitions(mxl-mv-cuda-alarm-check PRIVATE MV_WITH_CUDA=1)
         set_target_properties(mxl-multiviewer PROPERTIES CUDA_RUNTIME_LIBRARY Static CUDA_ARCHITECTURES "75;86;89")
         target_compile_definitions(mxl-multiviewer PRIVATE MV_WITH_CUDA=1)
         # cuda.h for FFmpeg's CUDA device context (NVENC in the compositor's context); no libcuda link.

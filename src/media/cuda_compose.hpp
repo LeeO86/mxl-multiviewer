@@ -112,6 +112,24 @@ void cudaDeviceMemory(std::uint64_t* freeBytes, std::uint64_t* totalBytes);
 std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v210RowBytes, std::uint8_t const* alpha10, int alphaRowBytes, int width,
     int height);
 
+// Black and freeze alarm numbers of an uploaded grain, computed on the device (1.4.2): the same
+// values as v210LumaSum (sum, count) and lumaHash (hash) on the CPU, bit for bit.
+struct CudaAlarmScan
+{
+    std::uint64_t sum = 0;
+    int count = 0;
+    std::uint64_t hash = 0;
+    std::uint64_t tag = 0; // what the caller passed to cudaAlarmScan (the grain index)
+};
+
+// Queues the scan of `frame` (just uploaded by this thread) on the thread's upload stream.
+// False when it was not queued (no CUDA, or two scans still wait for cudaAlarmTake).
+bool cudaAlarmScan(CudaFrame const& frame, int sumStep, std::uint64_t tag);
+
+// The oldest finished scan of this thread, without waiting; false when none is ready yet.
+// Each scan is returned once, in grain order.
+bool cudaAlarmTake(CudaAlarmScan& out);
+
 // The device copy of a new overlay version, made on the calling thread's stream so
 // compose never waits for overlay copies: `previous` (the device copy of the version
 // before) is copied on the device and only `changes` are uploaded; without `previous`

@@ -84,6 +84,7 @@ COPY --from=build /tmp/mxl/build/vcpkg_installed/x64-linux/lib/ /usr/local/lib/
 COPY --from=build /src/build/mxl-multiviewer /usr/local/bin/mxl-multiviewer
 COPY --from=build /src/build/mxl-mv-writer /usr/local/bin/mxl-mv-writer
 COPY --from=build /src/build/mxl-mv-sample /usr/local/bin/mxl-mv-sample
+COPY --from=build /src/build/mxl-mv-cuda-alarm-check /usr/local/bin/mxl-mv-cuda-alarm-check
 COPY tests/integration/fake_registry.py /usr/local/share/mxl-multiviewer/fake_registry.py
 COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
 COPY --from=mediamtx /LICENSE /usr/share/doc/mediamtx/LICENSE

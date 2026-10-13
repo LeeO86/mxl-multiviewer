@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2
+
+CPU fix for the CUDA backend (platform bug: test-all's multiviewer, 8 × 1080p50 on an RTX A4000, sat at its 4-core limit, 48.5 fps and 14 % late frames; each input's reader thread used 36–42 % of a core).
+
+- The black and freeze alarms read every grain on the GPU. After the upload the reader made two CPU passes over each grain: `v210LumaSum` (black, every 32nd luma sample) and `lumaHash` (freeze, every second line in full). Two small kernels on the reader's own upload stream now compute the same numbers; they are unsigned integer sums, so they equal the CPU's bit for bit. The reader takes the result back one grain later without waiting (the alarms are 20 ms later at 50 Hz). The picture path is unchanged.
+- Lab, 8 × 1080p50 on the CUDA backend (A16, Xeon Gold 6136; 4 moving and 4 flat inputs): the process went from 204 % to 83 % of a core; a reader thread from 15–20 % to 3–4 %; 0 late, 0 missed. Black and freeze fire on the same inputs as before.
+- `MV_CUDA_ALARM_VERIFY=1` (lab, diagnostics): every 50th grain's device numbers are compared with the CPU's, `mxl_multiviewer_cuda_alarm_verify_total{input,result}` (lab: 408 of 408 equal). `cuda_alarm_scans_skipped_total{input}` counts grains whose scan could not be queued (two still pending).
+- `mxl-mv-cuda-alarm-check` (in the image): device against CPU numbers on random, black, full-scale and odd-sized frames (720×576 to 3840×2160, 1922×1081, 6×2); exit 77 without a GPU.
+
 ## 1.4.1
 
 Follow-up to 1.4.0.
