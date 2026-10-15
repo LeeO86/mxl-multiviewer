@@ -44,6 +44,9 @@ public:
     void setPreviewMosaic(PreviewMosaic* mosaic);
     // True after start() when the heads compose on the GPU.
     [[nodiscard]] bool usesCuda() const;
+    // Updates gpu_memory_bytes (cudaMemGetInfo). The caller rate-limits it (main loop: every 30 s);
+    // start() samples once. No-op on the CPU backend.
+    void sampleGpuMemory();
 
 private:
     struct Impl;

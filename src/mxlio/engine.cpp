@@ -1855,13 +1855,6 @@ struct Engine::Impl
             view.backend = cudaFrame ? "cuda" : "cpu";
             view.composeMs = std::chrono::duration<double, std::milli>(elapsed).count();
             metrics.observe("compose_seconds", {{"head", std::to_string(head)}, {"backend", view.backend}}, std::chrono::duration<double>(elapsed).count());
-            if (cudaFrame)
-            {
-                std::uint64_t freeBytes = 0;
-                std::uint64_t totalBytes = 0;
-                cudaDeviceMemory(&freeBytes, &totalBytes);
-                metrics.set("gpu_memory_bytes", {}, totalBytes >= freeBytes ? static_cast<double>(totalBytes - freeBytes) : 0);
-            }
             auto const after = mxlGetTime();
             if (after > mxlIndexToTimestamp(&rate, index + 1))
             {
@@ -2230,13 +2223,8 @@ void Engine::start()
     }
     impl_->runtime.setGpu(cudaSupportCompiled(), cudaDeviceCount());
     impl_->metrics.set("info", {{"version", MV_VERSION}, {"mxl_revision", MV_MXL_REVISION}, {"backend", impl_->useCuda ? "cuda" : "cpu"}}, 1);
-    std::uint64_t freeBytes = 0;
-    std::uint64_t totalBytes = 0;
-    if (impl_->useCuda)
-    {
-        cudaDeviceMemory(&freeBytes, &totalBytes);
-    }
-    impl_->metrics.set("gpu_memory_bytes", {}, totalBytes >= freeBytes ? static_cast<double>(totalBytes - freeBytes) : 0);
+    impl_->metrics.set("gpu_memory_bytes", {}, 0);
+    sampleGpuMemory();
     impl_->run.store(true);
     impl_->runtime.touch();
     for (int input = 1; input <= impl_->config.maxInputs; ++input)
@@ -2360,5 +2348,19 @@ void Engine::setPreviewMosaic(PreviewMosaic* mosaic)
 bool Engine::usesCuda() const
 {
     return impl_->useCuda.load();
+}
+
+void Engine::sampleGpuMemory()
+{
+    if (!impl_->useCuda.load())
+    {
+        return;
+    }
+    // cudaMemGetInfo is an RM control (NV2080_CTRL_CMD_FB_GET_INFO_V2) that takes the driver's
+    // API and GPU locks; behind a stuck GSP RPC it blocks for seconds. Never on a head thread.
+    std::uint64_t freeBytes = 0;
+    std::uint64_t totalBytes = 0;
+    cudaDeviceMemory(&freeBytes, &totalBytes);
+    impl_->metrics.set("gpu_memory_bytes", {}, totalBytes >= freeBytes ? static_cast<double>(totalBytes - freeBytes) : 0);
 }
 } // namespace mv

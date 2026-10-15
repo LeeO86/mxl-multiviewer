@@ -224,6 +224,9 @@ int main(int argc, char** argv)
         std::signal(SIGTERM, onSignal);
         mv::logInfo("ready", {{"web", std::to_string(config.webPort)}, {"nmos", std::to_string(config.nmosPort)}});
         auto nextEvents = std::chrono::steady_clock::now();
+        // gpu_memory_bytes: one RM control every 30 s instead of one per composed frame (1.4.2: 50/s per head).
+        constexpr auto kGpuMemorySample = std::chrono::seconds(30);
+        auto nextGpuMemory = std::chrono::steady_clock::now() + kGpuMemorySample;
         int const eventMs = std::max(20, 1000 / std::max(1, config.overlayHz));
         while (!gStop.load())
         {
@@ -243,6 +246,11 @@ int main(int argc, char** argv)
                 metrics.set("preview_frames_total", {}, static_cast<double>(status.frames));
             }
             auto const now = std::chrono::steady_clock::now();
+            if (now >= nextGpuMemory)
+            {
+                engine.sampleGpuMemory();
+                nextGpuMemory = now + kGpuMemorySample;
+            }
             if (now >= nextEvents)
             {
                 http.broadcast(api.eventsJson());

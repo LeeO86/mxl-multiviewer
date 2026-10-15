@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.3
+
+GPU driver calls (platform D-234: Xid 119 GSP RPC timeouts and Xid 154 on host-03's RTX A4000, R595).
+
+- `mxl_multiviewer_gpu_memory_bytes` is sampled every 30 s by the main thread instead of once per composed frame by each head thread. Each sample is `cudaMemGetInfo`, one RM control (`NV2080_CTRL_CMD_FB_GET_INFO_V2`, 0x20801303) that takes the driver's API and GPU locks. 1.4.2 issued 50 per second per head, which made it the process's only steady RM traffic, and a head blocked behind any other client holding those locks. Name, labels and meaning of the metric are unchanged; it now lags by up to 30 s.
+- Lab (A16, R595.99.02, 4 × 1080p50, one head, WebRTC preview on NVENC; an `ioctl` counter on `/dev/nvidia*`, cross-checked with strace): 1.4.2 issues 50.2 RM controls per second (50.1 `FB_GET_INFO_V2` from the head thread, 0.1 NVENC `TIMER_GET_GPU_CPU_TIME_CORRELATION_INFO`); this build 0.14 per second. 0 late, 0 missed.
+- In steady state neither version maps, unmaps or frees GPU memory. Start, stop, and an input flow being opened again (about ten grain registrations and ten unregistrations per input) do; those are the operations after which the kernel driver sends the GSP a sysmembar (`NV2080_CTRL_CMD_INTERNAL_BUS_FLUSH_WITH_SYSMEMBAR`, 0x20800a70, the control in the D-234 Xid). No user-space call sends that control directly.
+
 ## 1.4.2
 
 CPU fix for the CUDA backend (platform bug: test-all's multiviewer, 8 × 1080p50 on an RTX A4000, sat at its 4-core limit, 48.5 fps and 14 % late frames; each input's reader thread used 36–42 % of a core).
