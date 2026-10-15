@@ -518,7 +518,7 @@ Prefix `mxl_multiviewer_`.
 | `output_frames_missed_total` | counter | `head` |
 | `compose_seconds` | histogram | `head`, `backend` |
 | `compose_gpu_seconds` | histogram (CUDA only) | `head`, `stage` (`background`, `tiles`, `overlay`, `pack`, `download`, `preview`: the mosaic tile with its download) |
-| `gpu_memory_bytes` | gauge | |
+| `gpu_memory_bytes` | gauge (device used bytes, sampled every 30 s) | |
 | `input_state` | gauge 1 for the current state | `input`, `kind` (`video`/`audio`), `state` |
 | `input_late_grains_total` | counter | `input` |
 | `input_resyncs_total` | counter | `input` |
