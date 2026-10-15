@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.3
 
 GPU driver calls (platform D-234: Xid 119 GSP RPC timeouts and Xid 154 on host-03's RTX A4000, R595).
 
