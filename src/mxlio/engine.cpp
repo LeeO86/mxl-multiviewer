@@ -484,6 +484,8 @@ struct Engine::Impl
             auto const now = mxlGetTime();
             if (snap->grains.empty() || now > snap->grains.back().origin + holdNs)
             {
+                // A later `unsupported` is logged and counted again.
+                unsupportedKey.clear();
                 snap->videoState = "no_signal";
                 idleAlarms(snap, true);
                 return;
@@ -731,6 +733,13 @@ struct Engine::Impl
             if (auto const problem = checkVideoGrain(layout, width, height, grain.grainSize); !problem.empty())
             {
                 unsupported(next, key, problem, grain.grainSize, layout.fillBytes);
+                // Open the flow again on the next try: a writer that re-creates it (with a
+                // definition that fits its grains) is read then; this reader would keep the
+                // deleted flow's last grain and the old definition.
+                releaseVideo();
+                video = nullptr;
+                openKey.clear();
+                metaKey.clear();
                 publishState(next);
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 continue;
@@ -855,7 +864,7 @@ struct Engine::Impl
                 if (buffer == nullptr)
                 {
                     buffer = std::make_shared<std::vector<std::uint8_t>>();
-                    if (grainPool.size() < 12)
+                    if (grainPool.size() < 20)
                     {
                         grainPool.push_back(buffer);
                     }
@@ -899,7 +908,18 @@ struct Engine::Impl
             saved.alpha = meta.alpha;
             saved.mediaType = meta.mediaType;
             next->grains.push_back(saved);
-            if (next->grains.size() > 4)
+            std::uint64_t slowestHeadNs = 0;
+            for (int head = 1; head <= config.outputs; ++head)
+            {
+                auto const format = runtime.headFormat(head);
+                if (format.rateNum > 0)
+                {
+                    slowestHeadNs = std::max<std::uint64_t>(
+                        slowestHeadNs, 1000000000ull * static_cast<std::uint64_t>(std::max(1, format.rateDen)) / static_cast<std::uint64_t>(format.rateNum));
+                }
+            }
+            auto const keep = grainsToKeep(saved.grainNs, slowestHeadNs, config.inputOffsetGrains);
+            while (next->grains.size() > keep)
             {
                 next->grains.erase(next->grains.begin());
             }

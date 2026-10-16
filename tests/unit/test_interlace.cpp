@@ -191,3 +191,20 @@ TEST_CASE("a woven 1080i-style frame fills the whole tile, from either field")
         }
     }
 }
+
+TEST_CASE("the snapshot keeps grains for the offset of the slowest head")
+{
+    std::uint64_t const field = 20'000'000; // i25: 50 fields per second
+    // A 25p head with MV_INPUT_OFFSET_GRAINS=2 looks 80 ms back and needs two more frames:
+    // 160 ms of fields. 1.4.3 kept 4 (80 ms), all newer than the target, so the tile was black.
+    auto const i25on25 = grainsToKeep(field, 40'000'000, 2);
+    CHECK(i25on25 >= 8);
+    CHECK(static_cast<std::uint64_t>(i25on25 - 1) * field >= 80'000'000 + 40'000'000);
+    // 29.97p head, i29.97 input.
+    CHECK(grainsToKeep(16'683'350, 33'366'700, 2) >= 8);
+    // 50p head, 50p input: as before, a little more.
+    CHECK(grainsToKeep(field, 20'000'000, 2) == 6);
+    CHECK(grainsToKeep(field, 0, 2) == 4);
+    CHECK(grainsToKeep(0, 40'000'000, 2) == 4);
+    CHECK(grainsToKeep(1'000'000, 40'000'000, 10) == 16);
+}

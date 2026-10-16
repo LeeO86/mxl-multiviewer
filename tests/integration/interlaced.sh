@@ -4,7 +4,10 @@
 # and crashed (SIGSEGV). Inputs: 1 a 1080i-style tff writer, 2 the same as bff, 3 an interlaced
 # writer whose flow_def.json was rewritten to say progressive (a grain smaller than the definition
 # says), 4 a progressive writer. The multiviewer must keep running, show 1 and 2 at full height,
-# mark 3 unsupported, and keep 4 running.
+# mark 3 unsupported, and keep 4 running. Head 1 is 50p, head 2 25p: an i25 input on a 25p head
+# needs more than the 80 ms of fields 1.4.3 kept (with the default offset of 2 the oldest field is
+# just about old enough, so the tile flickered; with offset 3 it was black every frame). Input 3 recovers once its writer re-creates the
+# flow with a definition that fits its grains.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -51,7 +54,8 @@ PIDS+=($!)
 "$WRITER" --domain "$WORK/src" --flow "$BFF" --width 192 --height 108 --rate 25 --interlace bff --y 800 --y2 200 >"$WORK/w2.log" 2>&1 &
 PIDS+=($!)
 "$WRITER" --domain "$WORK/src" --flow "$LIE" --width 192 --height 108 --rate 25 --interlace tff --y 600 >"$WORK/w3.log" 2>&1 &
-PIDS+=($!)
+W3=$!
+PIDS+=($W3)
 "$WRITER" --domain "$WORK/src" --flow "$PROG" --width 192 --height 108 --rate 50 --y 500 >"$WORK/w4.log" 2>&1 &
 PIDS+=($!)
 
@@ -77,6 +81,10 @@ MV_BACKEND="${MV_TEST_BACKEND:-cpu}" \
 MV_MAX_INPUTS=4 \
 MV_OUTPUT_FORMAT=192x108p50 \
 MV_ACTIVE_LAYOUT=2x2 \
+MV_OUTPUTS=2 \
+MV_OUT2_FORMAT=192x108p25 \
+MV_OUT2_LAYOUT=2x2 \
+MV_INPUT_OFFSET_GRAINS=3 \
 MV_AUDIO_CHANNELS=0 \
 NMOS_ENABLE=false \
 WEB_PORT="$WEB_PORT" \
@@ -136,23 +144,29 @@ python3 -c 'import sys; d=int(sys.argv[2])-int(sys.argv[1]); print("fields in 2 
 
 OUT="$(api /api/v1/outputs)"
 FLOW_OUT="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["outputs"][0]["video_flow_id"])' "$OUT")"
-sample() { "$SAMPLE" --domain "$WORK/mv" --flow "$FLOW_OUT" --x "$1" --y "$2" --width 192; }
+FLOW_OUT2="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["outputs"][1]["video_flow_id"])' "$OUT")"
+FLOW="$FLOW_OUT"
+sample() { "$SAMPLE" --domain "$WORK/mv" --flow "$FLOW" --x "$1" --y "$2" --width 192; }
 # Tiles 1 (left) and 2 (right) of the top row are 96×54 (the format caption covers lines 2-16, the
 # UMD lines 38-53): the upper half of each picture (to line 27) is 800,
 # the lower half 200, from whichever field is newest. Sampled several times (both fields).
+# Both heads: 50p and 25p.
 for _ in 1 2 3 4 5 6; do
   for x in 48 144; do
+   for FLOW in "$FLOW_OUT" "$FLOW_OUT2"; do
     upper="$(sample "$x" 22)"
     lower="$(sample "$x" 32)"
-    echo "x=$x upper=$upper lower=$lower"
+    echo "flow=${FLOW:0:8} x=$x upper=$upper lower=$lower"
     if [[ "$upper" != "800" || "$lower" != "200" ]]; then
       echo "interlaced tile at x=$x is not the full picture; luma by line:" >&2
       for y in $(seq 0 2 53); do echo "  y=$y $(sample "$x" "$y")" >&2; done
       exit 1
     fi
+   done
   done
   sleep 0.05
 done
+FLOW="$FLOW_OUT"
 # Input 4 (progressive) still shows.
 [[ "$(sample 144 81)" == "500" ]] || { echo "progressive tile 4: $(sample 144 81)" >&2; exit 1; }
 
@@ -165,6 +179,19 @@ done
 [[ "$FORMAT" == "True" ]] || { echo "no format alarm on input 3: $FORMAT" >&2; api /api/v1/inputs >&2; exit 1; }
 api /metrics | grep -q 'mxl_multiviewer_input_unsupported_total{input="3",reason="grain_too_small"}' ||
   { echo "no input_unsupported_total metric" >&2; exit 1; }
+
+# The writer of input 3 restarts and re-creates its flow with a definition that fits: the input
+# reads it (the reader opens the flow again while it is unsupported).
+kill "$W3" 2>/dev/null || true
+wait "$W3" 2>/dev/null || true
+rm -rf "$WORK/src/$LIE.mxl-flow"
+"$WRITER" --domain "$WORK/src" --flow "$LIE" --width 192 --height 108 --rate 25 --interlace tff --y 600 >"$WORK/w3b.log" 2>&1 &
+PIDS+=($!)
+want_state 3 running
+[[ "$(leg 3 interlaced)" == "True" ]] || { echo "input 3 not interlaced after recovery" >&2; exit 1; }
+for _ in $(seq 1 20); do [[ "$(sample 48 76)" == "600" ]] && break; sleep 0.1; done
+[[ "$(sample 48 76)" == "600" ]] || { echo "recovered tile 3: $(sample 48 76)" >&2; exit 1; }
+echo "input 3 recovered"
 
 alive
 kill -TERM "$MV_PID"

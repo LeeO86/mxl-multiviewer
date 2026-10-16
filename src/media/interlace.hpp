@@ -27,6 +27,12 @@ VideoGrainLayout videoGrainLayout(int width, int height, bool interlaced, bool a
 // plane is still readable (the fill only).
 std::string checkVideoGrain(VideoGrainLayout const& layout, int width, int height, std::size_t grainSize);
 
+// How many grains an input's snapshot keeps. The composer shows the newest grain that is at least
+// MV_INPUT_OFFSET_GRAINS head frames old, so the snapshot must span that plus two frames of the
+// slowest head: a 50-field input on a 25p head needs 10, where 1.4.3 kept 4 (80 ms, older than
+// the target: the tile went black). At least 4, at most 16.
+std::size_t grainsToKeep(std::uint64_t grainNs, std::uint64_t slowestHeadFrameNs, int inputOffsetGrains);
+
 // The frame lines of the field in grain `index`: 0 = top field (even lines 0, 2, …),
 // 1 = bottom field (odd lines).
 int fieldLineParity(std::uint64_t index, bool bottomFieldFirst);
