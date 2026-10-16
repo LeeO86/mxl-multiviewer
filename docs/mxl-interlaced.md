@@ -44,13 +44,13 @@ The bare line numbers in §1 are in `lib/internal/src/FlowParser.cpp` at 218ddaa
 - The MXL-side NMOS ANC flow, source and receiver caps MUST also declare the field rate; they follow the flow definition. Only the video flow keeps the frame rate (§3.2).
 - ANC grains MUST carry the RFC 8331 F bits: 0b10 for grain 2k, 0b11 for grain 2k+1, 0b00 for a progressive video.
 - An ANC grain MUST store the RFC 8331 payload from the Length field on: Length at grain byte 0, a 6-byte header (Length, ANC_Count, F, reserved), the packets at offset 6 (MXL `docs/Architecture.md:353`).
-- A field without ANC packets gets an empty grain only when the other field of the same frame has packets. A frame without any ANC packets writes no ANC grain.
+- When one field of a frame has ANC packets, the other field MUST get a grain too (empty, ANC_Count 0). A frame without any ANC packets MAY write two empty grains or none. Readers MUST treat a missing ANC grain the same as an empty one.
 
 ### 3.4 Writers
 
 - A writer MUST put the first field on an even index.
 - It MUST keep that after drops, late input and resyncs. When it skips a frame it skips both fields. It MUST NOT shift the index by one field.
-- On a hold or repeat (freeze, missing input) it SHOULD repeat the last whole pair: the first field again on the even index, the second field on the odd index. It MUST NOT write one field into both slots.
+- On a hold or repeat (freeze, missing input) it SHOULD repeat the last whole pair (2k, 2k+1): the first field again on the even index, the second field on the odd index. Only when no whole pair is available (e.g. a single field after start or a re-open) MAY the last field fill both slots; this gives a one-line bob and is the documented fallback.
 - A writer that derives the index from a per-field capture time with `mxlTimestampToIndex(field rate, t)` is compliant only while each field's t lies within ± half a field (a quarter frame) of that field's nominal time, because MXL rounds to the nearest index. It SHOULD derive k at the frame rate instead.
 
 ### 3.5 Readers
@@ -81,17 +81,17 @@ Status at 2026-10-16: the audit of each repo's `main` on that day, plus the fixe
 | --- | --- | --- | --- |
 | mxl-srt-gateway | writer (ingest), reader (egress) | compliant | Index from frame k, both fields per frame; a drop or resync skips both fields. Egress pairs 2k and 2k+1, tff and bff. |
 | mxl-test-player, video | writer | compliant (1.2.2) | `(idx & 1) ^ bff` field extraction. |
-| mxl-test-player, ANC | writer | compliant (1.2.3, PR #14, released) | ANC at the field rate (§3.3). |
+| mxl-test-player, ANC | writer | compliant (1.2.4, PR #15, released) | ANC at the field rate since 1.2.3 (PR #14); MXL's grain layout, packets at byte 6, since 1.2.4 (§3.3). |
 | mxl-multiviewer | reader | compliant (1.4.4) | Weaves grain idx with idx − 1, `(idx & 1) ^ bff`. |
 | mxl-webrtc-monitor | reader | compliant (1.4.1) | Pairs 2k and 2k+1, tff and bff. NMOS caps list `interlaced_bff` since 1.4.2 (PR #17, released). |
 | mxl-color-corrector | reader and writer | compliant (1.2.3) | Output index = input index; a hold keeps the parity. |
 | mxl-scopes | reader | compliant | Pairs 2k and 2k+1. |
 | mxl-decklink, capture | writer | compliant (1.0.6, first release with #23; #24 adds 29.97/59.94 audio) | Field lines of frame k to 2k and 2k+1. Field order from a mode table (NTSC bff), not yet checked on real cards. |
 | mxl-decklink, playout | reader | compliant (1.0.6, as above) | Reads 2k and 2k+1 per frame and weaves them, at the frame rate. |
-| mxl-decklink, ANC | writer | compliant (1.0.6, as above) | ANC at the field rate (§3.3). |
+| mxl-decklink, ANC | writer | compliant (1.0.7, PR #25, released) | ANC at the field rate since 1.0.6; MXL's grain layout, packets at byte 6, since 1.0.7 (§3.3). Since 1.0.7 the RFC 8331 C bit comes from the SDK's Y/C data stream (luma 0, chroma 1); S and StreamNum are 0. |
 | mxl-st2110-gateway, ingest | writer | compliant (1.0.19, PR #28, released) | Aligns parity by the F bit while the sender sets F=1; a sender that never sets F=1 keeps its timestamp index. MTL v26.09 itself drops a second field that reuses the first field's timestamp. ANC at the field rate. |
 | mxl-st2110-gateway, egress | reader | compliant (1.0.19, as above) | Output delay a whole number of frames; a repeat sends the last pair (§3.4). |
-| mxl-replay | reader and writer, progressive only | compliant (1.7.1, PR #27, released) | Refuses interlaced inputs visibly (progressive-only NMOS caps, error state). |
+| mxl-replay | reader and writer, progressive only | compliant (1.7.2, PR #28, released) | Refuses interlaced inputs visibly since 1.7.1 (PR #27: progressive-only NMOS caps, error state). MXL's ANC grain layout, packets at byte 6, since 1.7.2 (§3.3). |
 | obs-mxl-plugin, input | reader | compliant (input 0.0.2-alpha, PR #1) | Refuses interlaced flows. |
 | mxl-browser-source | writer, progressive only | N/A | Config refuses interlaced formats. |
 | strom | progressive only | compliant (refuses: caps negotiation fails) | An interlaced flow fails caps negotiation. |
@@ -109,7 +109,7 @@ For a writer, with a 1920×1080 `interlaced_tff` flow at 25/1:
 - Repeat with `interlaced_bff`: grain 2k holds the odd lines.
 - The ANC flow is declared at 50/1 (flow definition and NMOS), and each ANC grain has the same index as the video field it belongs to, with F bits 0b10 on even and 0b11 on odd indexes.
 - After a forced drop or resync, the first field is still on an even index.
-- On a hold or repeat, the repeated pair keeps its parity: the even index still holds the even frame lines (tff).
+- On a hold or repeat, the repeated pair keeps its parity: the even index still holds the even frame lines (tff). Only with no whole pair available (a single field after start or a re-open) may one field fill both slots.
 - ST 2110 egress: F = `idx & 1` on every field. ST 2110 ingest: with a sender that sets F, F=0 fields land on even indexes; with a sender stuck at F=0, ingest keeps the timestamp index, logs it, and loses no fields.
 
 For a reader:
@@ -120,8 +120,8 @@ For a reader:
 
 ## 6. Open points
 
-- ANC grain byte layout: MXL's layout (§3.3) is the rule, as mxl-st2110-gateway, mxl-data-probe and gst-mxl-rs write and read it. Three apps differ and are to be aligned; fixes are in progress:
-  - mxl-test-player 1.2.3: a 2-byte sequence number before Length, packets at offset 8 (fix: 1.2.4).
-  - mxl-replay 1.7.1: the same as mxl-test-player (fix: 1.7.2).
-  - mxl-decklink 1.0.6: Length at byte 0, but the header is padded to 8 bytes, packets at offset 8 (fix: 1.0.7).
+- Resolved: ANC grain byte layout. MXL's layout (§3.3) is the rule, as mxl-st2110-gateway, mxl-data-probe and gst-mxl-rs write and read it. The three apps that differed are aligned and released:
+  - mxl-test-player 1.2.4 (PR #15): had a 2-byte sequence number before Length, packets at offset 8.
+  - mxl-replay 1.7.2 (PR #28): the same as mxl-test-player.
+  - mxl-decklink 1.0.7 (PR #25): had Length at byte 0 but the header padded to 8 bytes, packets at offset 8. It also sets the C bit from the Y/C data stream now, with S and StreamNum 0.
 - mxl-decklink's field-order table (NTSC bff) is not yet checked on real cards.
