@@ -44,13 +44,13 @@ The bare line numbers in §1 are in `lib/internal/src/FlowParser.cpp` at 218ddaa
 - The MXL-side NMOS ANC flow, source and receiver caps MUST also declare the field rate; they follow the flow definition. Only the video flow keeps the frame rate (§3.2).
 - ANC grains MUST carry the RFC 8331 F bits: 0b10 for grain 2k, 0b11 for grain 2k+1, 0b00 for a progressive video.
 - An ANC grain MUST store the RFC 8331 payload from the Length field on: Length at grain byte 0, a 6-byte header (Length, ANC_Count, F, reserved), the packets at offset 6 (MXL `docs/Architecture.md:353`).
-- A field without ANC packets gets an empty grain only when the other field of the same frame has packets. A frame without any ANC packets writes no ANC grain.
+- When one field of a frame has ANC packets, the other field MUST get a grain too (empty, ANC_Count 0). A frame without any ANC packets MAY write two empty grains or none. Readers MUST treat a missing ANC grain the same as an empty one.
 
 ### 3.4 Writers
 
 - A writer MUST put the first field on an even index.
 - It MUST keep that after drops, late input and resyncs. When it skips a frame it skips both fields. It MUST NOT shift the index by one field.
-- On a hold or repeat (freeze, missing input) it SHOULD repeat the last whole pair: the first field again on the even index, the second field on the odd index. It MUST NOT write one field into both slots.
+- On a hold or repeat (freeze, missing input) it SHOULD repeat the last whole pair (2k, 2k+1): the first field again on the even index, the second field on the odd index. Only when no whole pair is available (e.g. a single field after start or a re-open) MAY the last field fill both slots; this gives a one-line bob and is the documented fallback.
 - A writer that derives the index from a per-field capture time with `mxlTimestampToIndex(field rate, t)` is compliant only while each field's t lies within ± half a field (a quarter frame) of that field's nominal time, because MXL rounds to the nearest index. It SHOULD derive k at the frame rate instead.
 
 ### 3.5 Readers
@@ -109,7 +109,7 @@ For a writer, with a 1920×1080 `interlaced_tff` flow at 25/1:
 - Repeat with `interlaced_bff`: grain 2k holds the odd lines.
 - The ANC flow is declared at 50/1 (flow definition and NMOS), and each ANC grain has the same index as the video field it belongs to, with F bits 0b10 on even and 0b11 on odd indexes.
 - After a forced drop or resync, the first field is still on an even index.
-- On a hold or repeat, the repeated pair keeps its parity: the even index still holds the even frame lines (tff).
+- On a hold or repeat, the repeated pair keeps its parity: the even index still holds the even frame lines (tff). Only with no whole pair available (a single field after start or a re-open) may one field fill both slots.
 - ST 2110 egress: F = `idx & 1` on every field. ST 2110 ingest: with a sender that sets F, F=0 fields land on even indexes; with a sender stuck at F=0, ingest keeps the timestamp index, logs it, and loses no fields.
 
 For a reader:
