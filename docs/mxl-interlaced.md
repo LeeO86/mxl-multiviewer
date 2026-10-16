@@ -43,6 +43,7 @@ The bare line numbers in §1 are in `lib/internal/src/FlowParser.cpp` at 218ddaa
 - ANC grain 2k MUST carry the packets of the first field, grain 2k+1 those of the second field. The index is the same as that of the video field.
 - The MXL-side NMOS ANC flow, source and receiver caps MUST also declare the field rate; they follow the flow definition. Only the video flow keeps the frame rate (§3.2).
 - ANC grains MUST carry the RFC 8331 F bits: 0b10 for grain 2k, 0b11 for grain 2k+1, 0b00 for a progressive video.
+- An ANC grain MUST store the RFC 8331 payload from the Length field on: Length at grain byte 0, a 6-byte header (Length, ANC_Count, F, reserved), the packets at offset 6 (MXL `docs/Architecture.md:353`).
 - A field without ANC packets gets an empty grain only when the other field of the same frame has packets. A frame without any ANC packets writes no ANC grain.
 
 ### 3.4 Writers
@@ -119,5 +120,8 @@ For a reader:
 
 ## 6. Open points
 
-- ANC grain byte layout: mxl-test-player to be aligned. MXL `docs/Architecture.md:353` says only the bytes from the RFC 8331 Length field on are stored, and mxl-decklink does that. mxl-test-player departs from MXL: it adds a 2-byte extended sequence number before Length.
+- ANC grain byte layout: MXL's layout (§3.3) is the rule, as mxl-st2110-gateway, mxl-data-probe and gst-mxl-rs write and read it. Three apps differ and are to be aligned; fixes are in progress:
+  - mxl-test-player 1.2.3: a 2-byte sequence number before Length, packets at offset 8 (fix: 1.2.4).
+  - mxl-replay 1.7.1: the same as mxl-test-player (fix: 1.7.2).
+  - mxl-decklink 1.0.6: Length at byte 0, but the header is padded to 8 bytes, packets at offset 8 (fix: 1.0.7).
 - mxl-decklink's field-order table (NTSC bff) is not yet checked on real cards.
