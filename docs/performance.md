@@ -136,3 +136,12 @@ Same host, GPU 2, image built from this branch, CUDA backend. Four heads, no inp
 
 With `MV_CUDA_ALARM_VERIFY=1`: 408 device results compared with the CPU's, all equal. `mxl-mv-cuda-alarm-check` on the A16: 8 of 8 cases equal.
 
+
+## Lab run 2026-10-16: interlaced inputs (1.4.4)
+
+mxl-test-player 1.2.1 at `1080i25` (interlaced_tff, two outputs: bars and the field-order pattern), routed to inputs 1 and 2 of a 2x2 1920×1080p50 head.
+
+- 1.4.3: SIGSEGV within a second of the route on both backends (gdb: `copyV210Scan` ← `readerMain` on CPU, `copyToDevice` ← `cudaUploadFrame` ← `readerMain` on CUDA).
+- 1.4.4, CPU backend (3 CPUs): both inputs `running`, `1080i25`, height 1080, 50 grains (fields) per second, full-height pictures; about 4 late frames per 1000 (compose 15.7 ms with three cores shared with nothing else of the head).
+- 1.4.4, CUDA backend (A16): 0 late, 0 missed over 1000 frames, compose 1.8 ms, process 58 % of a core; with `MV_CUDA_ALARM_VERIFY=1` every device alarm result on the woven frames equal to the CPU's (56 of 56). `mxl-mv-cuda-alarm-check`: frame and field-woven uploads equal on every case.
+- The player's moving patterns at 1080i underran on its 2–3 lab CPUs (about 17 of 50 fields per second missing); the input then read the 33 fields per second that arrived. Bars ran at 50.

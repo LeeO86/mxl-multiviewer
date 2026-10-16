@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.4
+
+Interlaced inputs (urgent: 1080i50 is the house format). 1.4.3 crashed (SIGSEGV, exit 139) on both backends as soon as an interlaced flow was routed to an input, for example the test player's `1080i25`.
+
+- Cause: MXL (218ddaa) stores an interlaced flow as fields. Each grain is one field of `frame_height / 2` lines, and there are twice as many grains per second as the flow definition's `grain_rate` says. The reader copied `frame_height` lines from each grain, past the end of the mapped grain: `copyV210Scan` on the CPU backend, `copyToDevice` in `cudaUploadFrame` on CUDA.
+- The reader now weaves each field with the field before it into a whole frame: on the CPU in the copy it already made (`weaveV210Scan`, alarm numbers in the same pass); on CUDA as two strided DMA copies from the MXL grains into every second line of the device frame (`cudaUploadFields`). Field order follows `interlace_mode`: grain 2k is the top field for `interlaced_tff` and the bottom field for `interlaced_bff`.
+- A tile shows the newest field (bob, now for either field on both scalers), so a 50p head shows all 50 fields per second at full picture height, without combing. Tile timing, `holding`, the black and freeze alarms (also the 1.4.2 GPU ones), `grains` and `input_late_grains_total` run at the field rate. The format caption and the API keep the definition's rate (`1080i25`, `rate_num` 25).
+- Every grain's size is checked before it is read. A grain smaller than its flow definition implies, or an interlaced flow with an odd height, makes the video leg `unsupported` (reason `grain_too_small` or `odd_interlaced_height`): slate `UNSUPPORTED`, `format_mismatch` alarm, one `input_unsupported` log line, `mxl_multiviewer_input_unsupported_total{input,reason}`. The process keeps running.
+- `mxl-mv-writer` writes interlaced flows (`--interlace tff|bff`, `--y2` for the lower half). New `tests/integration/interlaced.sh` (CI): tff and bff inputs at full height and at the field rate, an interlaced flow whose definition was rewritten to progressive (unsupported, no crash), and a progressive input next to them.
+
 ## 1.4.3
 
 GPU driver calls (platform D-234: Xid 119 GSP RPC timeouts and Xid 154 on host-03's RTX A4000, R595).

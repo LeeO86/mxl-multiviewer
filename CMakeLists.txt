@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(mxl-multiviewer VERSION 1.4.3 LANGUAGES CXX)
+project(mxl-multiviewer VERSION 1.4.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,7 @@ add_library(mv-core STATIC
     src/util/logging.cpp
     src/media/timebase.cpp
     src/media/v210.cpp
+    src/media/interlace.cpp
     src/media/scale.cpp
     src/media/ppm.cpp
     src/media/alarm.cpp
@@ -98,6 +99,7 @@ if(MV_BUILD_TESTS)
         tests/unit/test_config.cpp
         tests/unit/test_layout.cpp
         tests/unit/test_media.cpp
+        tests/unit/test_interlace.cpp
         tests/unit/test_control.cpp
         tests/unit/test_image.cpp
         tests/unit/test_preview.cpp

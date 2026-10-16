@@ -116,12 +116,12 @@ export function stopLive() {
 
 /** Pill kind for an input leg state (§5.3). */
 export function stateKind(state) {
-  return { running: "ok", holding: "warn", waiting: "warn", no_signal: "bad", not_routed: "neutral" }[state] || "neutral";
+  return { running: "ok", holding: "warn", waiting: "warn", no_signal: "bad", unsupported: "bad", not_routed: "neutral" }[state] || "neutral";
 }
 
 /** Human text for an input leg state. */
 export function stateText(state) {
-  return { running: "running", holding: "holding", waiting: "waiting", no_signal: "no signal", not_routed: "not routed" }[state] || state || "–";
+  return { running: "running", holding: "holding", waiting: "waiting", no_signal: "no signal", unsupported: "unsupported", not_routed: "not routed" }[state] || state || "–";
 }
 
 export const ALARM_NAMES = {

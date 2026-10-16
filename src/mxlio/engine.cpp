@@ -7,6 +7,7 @@
 #include "layout/geometry.hpp"
 #include "media/cuda_compose.hpp"
 #include "media/flowtext.hpp"
+#include "media/interlace.hpp"
 #include "media/jpeg.hpp"
 #include "media/overlay.hpp"
 #include "media/ppm.hpp"
@@ -73,9 +74,14 @@ struct SavedGrain
     std::uint64_t origin = 0;
     int width = 0;
     int height = 0;
+    // The flow definition's grain_rate (an interlaced flow: the frame rate) for the format label.
     int rateNum = 0;
     int rateDen = 1;
+    // One MXL grain: a frame, or a field of an interlaced flow (1.4.4).
+    std::uint64_t grainNs = 20'000'000;
     bool interlaced = false;
+    // Interlaced: the newest field's lines, which the composer bobs (a woven frame keeps both).
+    Bob bob = Bob::Off;
     bool alpha = false;
     std::string mediaType;
 };
@@ -126,6 +132,7 @@ struct FlowMeta
     int rateDen = 1;
     int channels = 0;
     bool interlaced = false;
+    bool bottomFieldFirst = false;
     bool alpha = false;
     std::string mediaType;
     std::string label;
@@ -155,7 +162,9 @@ FlowMeta parseFlow(std::string const& body)
     meta.mediaType = json::fieldString(root, "media_type").value_or("");
     meta.label = json::fieldString(root, "label").value_or("");
     meta.alpha = meta.mediaType == "video/v210a";
-    meta.interlaced = json::fieldString(root, "interlace_mode").value_or("").find("interlaced") == 0;
+    auto const interlace = json::fieldString(root, "interlace_mode").value_or("");
+    meta.interlaced = interlace.find("interlaced") == 0;
+    meta.bottomFieldFirst = interlace == "interlaced_bff";
     if (obj.count("grain_rate") != 0 && obj.at("grain_rate").is<picojson::object>())
     {
         auto const& rate = obj.at("grain_rate").get<picojson::object>();
@@ -446,6 +455,12 @@ struct Engine::Impl
         AlarmSet alarms;
         // CPU backend: buffers for copies of the packed grains (see SavedGrain::v210).
         std::vector<std::shared_ptr<std::vector<std::uint8_t>>> grainPool;
+        // Interlaced input on the paths that need a whole packed frame in host memory (a key, the
+        // CUDA fallback, the alarm check): the two fields woven (reused).
+        std::vector<std::uint8_t> wovenFill;
+        std::vector<std::uint8_t> wovenKey;
+        // The flow and reason last logged as unsupported: one log line each.
+        std::string unsupportedKey;
         // MV_CUDA_ALARM_VERIFY=1: CPU alarm numbers by grain index, to compare with the device's.
         bool const verifyGpuAlarms = std::getenv("MV_CUDA_ALARM_VERIFY") != nullptr && std::string(std::getenv("MV_CUDA_ALARM_VERIFY")) == "1";
         std::map<std::uint64_t, V210Scan> verifyRefs;
@@ -474,13 +489,35 @@ struct Engine::Impl
                 return;
             }
             auto const& last = snap->grains.back();
-            std::uint64_t const frameNs =
-                1000000000ull * static_cast<std::uint64_t>(std::max(1, last.rateDen)) / static_cast<std::uint64_t>(std::max(1, last.rateNum));
-            if (now > last.origin + 3 * frameNs)
+            // Three grains: fields of an interlaced flow (1.4.4).
+            if (now > last.origin + 3 * last.grainNs)
             {
                 snap->videoState = "holding";
             }
             bump(snap, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, snap->alarmNoSignal);
+        };
+        // 1.4.4: a grain this reader cannot read (smaller than the flow definition says, or an
+        // interlaced flow with an odd height) is never read: state `unsupported`, no picture, the
+        // format alarm, and one log line per flow and reason.
+        auto const unsupported = [&](std::shared_ptr<Snap> const& snap, std::string const& flowKey, std::string const& reason, std::size_t grainSize,
+                                     std::size_t expected) {
+            snap->videoState = "unsupported";
+            snap->videoReason = reason;
+            snap->grains.clear();
+            alarms.picture.reset();
+            if (unsupportedKey != flowKey + "|" + reason)
+            {
+                unsupportedKey = flowKey + "|" + reason;
+                logError("input_unsupported", {{"input", std::to_string(input)}, {"reason", reason}, {"grain_size", std::to_string(grainSize)},
+                                                  {"expected", std::to_string(expected)}, {"width", std::to_string(meta.width)},
+                                                  {"height", std::to_string(meta.height)}, {"interlaced", meta.interlaced ? "true" : "false"},
+                                                  {"media_type", meta.mediaType}});
+                metrics.inc("input_unsupported_total", {{"input", std::to_string(input)}, {"reason", reason}});
+            }
+            bump(snap, AlarmNames::noSignal, kAlarmNoSignal, alarms.noSignal, false, snap->alarmNoSignal);
+            bump(snap, AlarmNames::black, kAlarmBlack, alarms.black, false, snap->alarmBlack);
+            bump(snap, AlarmNames::freeze, kAlarmFreeze, alarms.freeze, false, snap->alarmFreeze);
+            bump(snap, AlarmNames::formatMismatch, kAlarmFormat, alarms.formatMismatch, true, snap->alarmFormat);
         };
         auto const waiting = [&](std::shared_ptr<Snap> const& snap, char const* reason) {
             snap->videoState = "waiting";
@@ -687,8 +724,80 @@ struct Engine::Impl
             int const width = meta.width > 0 ? meta.width : 1920;
             int const height = meta.height > 0 ? meta.height : 1080;
             int const rowBytes = static_cast<int>(v210RowBytes(width));
+            // 1.4.4: an interlaced grain is one field of height / 2 lines (MXL 218ddaa), so the
+            // size of every grain is checked before it is read. A grain smaller than the flow
+            // definition says never crashes the reader: the input is `unsupported` instead.
+            auto const layout = videoGrainLayout(width, height, meta.interlaced, meta.alpha);
+            if (auto const problem = checkVideoGrain(layout, width, height, grain.grainSize); !problem.empty())
+            {
+                unsupported(next, key, problem, grain.grainSize, layout.fillBytes);
+                publishState(next);
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+            unsupportedKey.clear();
+            // MXL indexes grains at the flow's own grain rate: the field rate of an interlaced flow.
+            mxlRational grainRate{meta.rateNum * (meta.interlaced ? 2 : 1), meta.rateDen};
+            if (info.config.common.grainRate.numerator > 0 && info.config.common.grainRate.denominator > 0)
+            {
+                grainRate = info.config.common.grainRate;
+            }
             auto const fillBytes = static_cast<std::size_t>(rowBytes) * static_cast<std::size_t>(height);
-            std::uint8_t const* alphaKey = meta.alpha && grain.grainSize > fillBytes ? payload + fillBytes : nullptr;
+            bool const withKey = meta.alpha && grain.grainSize >= layout.fillBytes + layout.keyBytes && layout.keyBytes > 0;
+            std::uint8_t const* alphaKey = withKey ? payload + layout.fillBytes : nullptr;
+            // Interlaced: the frame is this field and the one before it (grain index - 1), woven
+            // (§5.3). The newest field is shown (bobbed); without the field before it (the first
+            // grain, or it left the ring) this field gives both line sets.
+            std::uint8_t const* top = payload;
+            std::uint8_t const* bottom = payload;
+            Bob bob = Bob::Off;
+            if (layout.fields)
+            {
+                int const parity = fieldLineParity(grain.index, meta.bottomFieldFirst);
+                std::uint8_t const* other = payload;
+                if (grain.index > 0)
+                {
+                    mxlGrainInfo before{};
+                    std::uint8_t* previous = nullptr;
+                    if (mxlFlowReaderGetGrainNonBlocking(video, grain.index - 1, &before, &previous) == MXL_STATUS_OK && previous != nullptr &&
+                        before.index == grain.index - 1 && (before.flags & MXL_GRAIN_FLAG_INVALID) == 0 &&
+                        checkVideoGrain(layout, width, height, before.grainSize).empty() &&
+                        (!withKey || before.grainSize >= layout.fillBytes + layout.keyBytes))
+                    {
+                        other = previous;
+                    }
+                }
+                top = parity == 0 ? payload : other;
+                bottom = parity == 0 ? other : payload;
+                bob = parity == 0 ? Bob::Top : Bob::Bottom;
+            }
+            // The whole frame packed in host memory: the grain itself, or (interlaced) the two
+            // fields woven into a reused buffer. Only the paths that need it ask for it.
+            std::uint8_t const* framePacked = nullptr;
+            std::uint8_t const* frameKey = nullptr;
+            auto const packedFrame = [&]() {
+                if (framePacked != nullptr)
+                {
+                    return framePacked;
+                }
+                if (!layout.fields)
+                {
+                    framePacked = payload;
+                    frameKey = alphaKey;
+                    return framePacked;
+                }
+                wovenFill.resize(fillBytes);
+                weaveRows(top, bottom, wovenFill.data(), rowBytes, height);
+                framePacked = wovenFill.data();
+                if (alphaKey != nullptr)
+                {
+                    int const keyRow = static_cast<int>(alpha10RowBytes(width));
+                    wovenKey.resize(static_cast<std::size_t>(keyRow) * static_cast<std::size_t>(height));
+                    weaveRows(top + layout.fillBytes, bottom + layout.fillBytes, wovenKey.data(), keyRow, height);
+                    frameKey = wovenKey.data();
+                }
+                return framePacked;
+            };
             SavedGrain saved;
             V210Scan scan;
             bool scanned = false;
@@ -696,7 +805,17 @@ struct Engine::Impl
             if (useCuda.load())
             {
                 // Straight from the MXL grain to the GPU; the CPU neither copies nor unpacks it.
-                saved.gpu = cudaUploadFrame(payload, rowBytes, alphaKey, static_cast<int>(alpha10RowBytes(width)), width, height);
+                int const keyRow = static_cast<int>(alpha10RowBytes(width));
+                if (layout.fields)
+                {
+                    CudaField topField{top, alphaKey != nullptr ? top + layout.fillBytes : nullptr};
+                    CudaField bottomField{bottom, alphaKey != nullptr ? bottom + layout.fillBytes : nullptr};
+                    saved.gpu = cudaUploadFields(topField, bottomField, rowBytes, keyRow, width, height);
+                }
+                else
+                {
+                    saved.gpu = cudaUploadFrame(payload, rowBytes, alphaKey, keyRow, width, height);
+                }
                 // The alarms read the grain on the GPU too: on the CPU they were two more passes
                 // over every grain, most of a reader thread's CPU (platform: 36-42 % of a core per
                 // 1080p50 input). The result comes back one grain later, without waiting.
@@ -711,9 +830,10 @@ struct Engine::Impl
                     // with the device's when its result comes back.
                     V210Scan ref;
                     int n = 0;
-                    ref.sum = v210LumaSum(payload, rowBytes, width, height, 32, &n);
+                    auto const* frame = packedFrame();
+                    ref.sum = v210LumaSum(frame, rowBytes, width, height, 32, &n);
                     ref.count = n;
-                    ref.hash = lumaHash(payload, rowBytes, width, height);
+                    ref.hash = lumaHash(frame, rowBytes, width, height);
                     verifyRefs[grain.index] = ref;
                 }
             }
@@ -742,8 +862,16 @@ struct Engine::Impl
                 }
                 buffer->resize(fillBytes);
                 // The alarms read their samples from each line while it is in cache: as a
-                // separate pass they read most of the frame from memory again.
-                copyV210Scan(payload, buffer->data(), rowBytes, width, height, 32, scan);
+                // separate pass they read most of the frame from memory again. Interlaced: the
+                // two fields are woven into the copy in the same pass.
+                if (layout.fields)
+                {
+                    weaveV210Scan(top, bottom, buffer->data(), rowBytes, width, height, 32, scan);
+                }
+                else
+                {
+                    copyV210Scan(payload, buffer->data(), rowBytes, width, height, 32, scan);
+                }
                 scanned = true;
                 saved.v210 = std::move(buffer);
                 saved.rowBytes = rowBytes;
@@ -752,21 +880,22 @@ struct Engine::Impl
             {
                 auto frame = std::make_shared<Frame422>();
                 frame->allocate(width, height, meta.alpha);
-                unpackV210(payload, rowBytes, *frame);
-                if (alphaKey != nullptr)
+                unpackV210(packedFrame(), rowBytes, *frame);
+                if (frameKey != nullptr)
                 {
-                    unpackAlpha10(alphaKey, static_cast<int>(alpha10RowBytes(width)), *frame);
+                    unpackAlpha10(frameKey, static_cast<int>(alpha10RowBytes(width)), *frame);
                 }
                 saved.frame = std::move(frame);
             }
             saved.index = grain.index;
-            mxlRational rate{meta.rateNum, meta.rateDen};
-            saved.origin = mxlIndexToTimestamp(&rate, grain.index);
+            saved.origin = mxlIndexToTimestamp(&grainRate, grain.index);
+            saved.grainNs = std::max<std::uint64_t>(1, mxlIndexToTimestamp(&grainRate, grain.index + 1) - saved.origin);
             saved.width = width;
             saved.height = height;
             saved.rateNum = meta.rateNum;
             saved.rateDen = meta.rateDen;
             saved.interlaced = meta.interlaced;
+            saved.bob = bob;
             saved.alpha = meta.alpha;
             saved.mediaType = meta.mediaType;
             next->grains.push_back(saved);
@@ -830,10 +959,10 @@ struct Engine::Impl
             }
             else
             {
-                sum = static_cast<double>(v210LumaSum(payload, rowBytes, width, height, 32, &samples));
+                sum = static_cast<double>(v210LumaSum(packedFrame(), rowBytes, width, height, 32, &samples));
             }
             bool const black = samples > 0 && (sum / samples) <= config.blackY;
-            auto const hash = gpuScanned ? gpuScan.hash : scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(payload, rowBytes, width, height);
+            auto const hash = gpuScanned ? gpuScan.hash : scanned ? scan.hash : saved.frame ? lumaHash(*saved.frame) : lumaHash(packedFrame(), rowBytes, width, height);
             bool const freeze = alarms.picture.update(hash, steadyMs(), config.freezeMs);
             bool const formatBad = width > 3840 || height > 2160 || !allowedRate(meta.rateNum, meta.rateDen) ||
                                    (meta.mediaType != "video/v210" && meta.mediaType != "video/v210a" && !meta.mediaType.empty());
@@ -1292,7 +1421,7 @@ struct Engine::Impl
                 }
                 else if (!picture)
                 {
-                    item.slate = current->videoState == "waiting" ? "WAITING" : "NO SIGNAL";
+                    item.slate = current->videoState == "waiting" ? "WAITING" : current->videoState == "unsupported" ? "UNSUPPORTED" : "NO SIGNAL";
                 }
                 if (!item.slate.empty())
                 {
@@ -1548,7 +1677,7 @@ struct Engine::Impl
                 int rowBytes = 0;
                 int width = 0;
                 int height = 0;
-                bool bob = false;
+                Bob bob = Bob::Off;
             };
             std::vector<Source> sources;
             std::uint64_t const frameDur = mxlIndexToTimestamp(&rate, 1);
@@ -1599,7 +1728,7 @@ struct Engine::Impl
                     source.rowBytes = best->rowBytes;
                     source.width = best->width;
                     source.height = best->height;
-                    source.bob = best->interlaced;
+                    source.bob = best->bob;
                 }
                 sources.push_back(std::move(source));
             }
@@ -1649,7 +1778,7 @@ struct Engine::Impl
                     viewTile.srcY = source.place.srcY;
                     viewTile.srcW = source.place.srcW;
                     viewTile.srcH = source.place.srcH;
-                    viewTile.bob = source.bob;
+                    viewTile.bobField = static_cast<int>(source.bob);
                     if (source.frame == nullptr && source.gpu == nullptr)
                     {
                         viewTile.solid = true;

@@ -144,10 +144,12 @@ UMD source `is04` reads the routed sender's `label` from the registry Query API 
 
 - On activation: resolve domain → `mxlCreateInstance` on that directory → `mxlCreateFlowReader`. Each missing step retries with backoff 250 ms → 5 s while `master_enable` is true. State `waiting`, reason `domain_not_found` or `flow_not_found`.
 - The reader thread takes the newest complete grain (and a matching audio window) into a slot the composer can take without blocking. When caught up it waits for the next grain (`mxlFlowReaderGetGrain` with a timeout). On the CUDA backend the grain is uploaded to a device frame before the reader continues; on the CPU backend (or when that upload fails) it is unpacked into host memory.
+- MXL stores an interlaced flow (`interlaced_tff`, `interlaced_bff`) as fields: each grain is one field of `frame_height / 2` lines, and the grain rate is twice the definition's `grain_rate` (a 1080i flow declared at 25/1 has 50 grains per second). Grain 2k is the first field of frame k: the top field (even lines) for `interlaced_tff`, the bottom field (odd lines) for `interlaced_bff`. The reader takes the grain rate from the flow's MXL header. Each field grain is woven with the field before it (grain index − 1, when it is still in the ring and readable; otherwise the field is used for both line sets) into a whole frame, so the input publishes one frame per field: origin timestamps, `holding`, the black and freeze alarms, `grains`, and the composer's late count run at the field rate, as for a progressive input at that rate. `format`, `rate_num` and `rate_den` keep the definition's values (`1080i25`).
+- Before any grain is read its `grainSize` is checked against the lines the definition implies (the field lines when interlaced; the v210a key is used only when the grain holds it). A smaller grain, or an interlaced flow with an odd height, is never read: the video leg is `unsupported` with reason `grain_too_small` or `odd_interlaced_height`, the tile shows the slate `UNSUPPORTED`, `format_mismatch` rises, `input_unsupported` is logged once per flow and reason, and `mxl_multiviewer_input_unsupported_total{input,reason}` counts it. The reader checks again every 200 ms.
 - If `mxlFlowReaderGetGrain` returns too-late, the reader jumps to the current head and increments `resyncs`.
 - A writer that restarts re-creates its flow; MXL then reports `MXL_ERR_FLOW_INVALID` on a read past the head. The reader releases the flow and opens it again (`waiting` while it is missing); the last frame holds meanwhile. The audio leg, which only reads while its head moves, probes past the head once a second while it is `no_signal`.
 - A format change (`flow_def.json` width, height, rate, media type, or channel count) rebuilds that input only. Other inputs and the output keep running.
-- State `running` when a grain newer than the hold deadline is in hand. State `holding` when the last good grain is still inside `MV_HOLD_MS`. State `no_signal` after that, or when the flow exists but no grain has arrived.
+- State `running` when a grain newer than the hold deadline is in hand. State `holding` when the last good grain is still inside `MV_HOLD_MS`. State `no_signal` after that, or when the flow exists but no grain has arrived. State `unsupported` while the grains cannot be read (above).
 
 ### 5.4 Composer
 
@@ -164,7 +166,7 @@ For each output head, for each output index `N` at the head's grain rate:
 
 `MV_INPUT_OFFSET_GRAINS` defaults to 2. Added latency from input grain origin to the output grain that first displays it MUST be ≤ 2 output frames plus this offset, when the input grain is available at the reader.
 
-Interlaced inputs are bobbed: the composer scales field 0 (even lines) to the tile. The output flow is progressive.
+Interlaced inputs are bobbed: the composer scales the lines of the newest field (even lines after a top field, odd lines after a bottom field, each at its own height in the frame) to the tile, so a 50p head shows each of the 50 fields per second without combing. The output flow is progressive.
 
 ### 5.5 Pixel path
 
@@ -522,6 +524,7 @@ Prefix `mxl_multiviewer_`.
 | `input_state` | gauge 1 for the current state | `input`, `kind` (`video`/`audio`), `state` |
 | `input_late_grains_total` | counter | `input` |
 | `input_resyncs_total` | counter | `input` |
+| `input_unsupported_total` | counter: an input became `unsupported` (§5.3) | `input`, `reason` |
 | `alarms` | gauge 0/1 | `input`, `name` |
 | `alarms_total` | counter | `input`, `name` |
 | `tsl_messages_total` | counter | `transport` (`udp`/`tcp`) |

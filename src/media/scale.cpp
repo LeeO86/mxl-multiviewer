@@ -35,25 +35,40 @@ std::uint16_t bilerp(std::uint16_t const* plane, int stride, int width, int heig
     return static_cast<std::uint16_t>(std::lround(std::clamp(v0 + (v1 - v0) * fy, 0.f, 1023.f)));
 }
 
-std::uint16_t bilerpBob(std::uint16_t const* plane, int stride, int width, int height, float x, float y)
+// The two lines of field `parity` (0 even, 1 odd) around frame row `y`, and the weight of the
+// second in [0, 1]. For parity 0 these are the indices and weights of the 1.4.3 bob.
+struct FieldRows
+{
+    int y0 = 0;
+    int y1 = 0;
+    float f = 0;
+};
+
+FieldRows fieldRows(float y, int height, int parity)
+{
+    y = std::clamp(y, 0.f, static_cast<float>(std::max(1, height - 1)));
+    if (height < 2)
+    {
+        parity = 0;
+    }
+    int const rows = std::max(1, (height - parity + 1) / 2);
+    float const fy = std::clamp((y - static_cast<float>(parity)) * 0.5f, 0.f, static_cast<float>(rows - 1));
+    int const j0 = std::min(rows - 1, static_cast<int>(std::floor(fy)));
+    int const j1 = std::min(rows - 1, j0 + 1);
+    return FieldRows{clampIndex(2 * j0 + parity, height), clampIndex(2 * j1 + parity, height), fy - static_cast<float>(j0)};
+}
+
+std::uint16_t bilerpBob(std::uint16_t const* plane, int stride, int width, int height, float x, float y, int parity)
 {
     x = std::clamp(x, 0.f, static_cast<float>(width - 1));
-    y = std::clamp(y, 0.f, static_cast<float>(std::max(1, height - 1)));
-    int y0 = static_cast<int>(std::floor(y)) & ~1;
-    y0 = clampIndex(y0, height);
-    int y1 = clampIndex(y0 + 2, height);
-    if ((y1 & 1) != 0)
-    {
-        y1 = clampIndex(y1 - 1, height);
-    }
-    float const fy = std::clamp((y - static_cast<float>(y0)) * 0.5f, 0.f, 1.f);
+    auto const rows = fieldRows(y, height, parity);
     int const x0 = static_cast<int>(std::floor(x));
     int const x1 = clampIndex(x0 + 1, width);
     float const fx = x - static_cast<float>(x0);
     auto sample = [&](int yy, int xx) { return static_cast<float>(plane[yy * stride + xx]); };
-    float const v0 = sample(y0, x0) + (sample(y0, x1) - sample(y0, x0)) * fx;
-    float const v1 = sample(y1, x0) + (sample(y1, x1) - sample(y1, x0)) * fx;
-    return static_cast<std::uint16_t>(std::lround(std::clamp(v0 + (v1 - v0) * fy, 0.f, 1023.f)));
+    float const v0 = sample(rows.y0, x0) + (sample(rows.y0, x1) - sample(rows.y0, x0)) * fx;
+    float const v1 = sample(rows.y1, x0) + (sample(rows.y1, x1) - sample(rows.y1, x0)) * fx;
+    return static_cast<std::uint16_t>(std::lround(std::clamp(v0 + (v1 - v0) * rows.f, 0.f, 1023.f)));
 }
 
 void clearPlane(std::uint16_t* data, std::size_t count, std::uint16_t value)
@@ -91,17 +106,10 @@ Tap linearTap(float v, int size)
     return Tap{i0, clampIndex(i0 + 1, size), static_cast<std::uint32_t>(std::lround(f * 1024.f))};
 }
 
-Tap bobTap(float v, int size)
+Tap bobTap(float v, int size, int parity)
 {
-    v = std::clamp(v, 0.f, static_cast<float>(std::max(1, size - 1)));
-    int i0 = clampIndex(static_cast<int>(std::floor(v)) & ~1, size);
-    int i1 = clampIndex(i0 + 2, size);
-    if ((i1 & 1) != 0)
-    {
-        i1 = clampIndex(i1 - 1, size);
-    }
-    float const f = std::clamp((v - static_cast<float>(i0)) * 0.5f, 0.f, 1.f);
-    return Tap{i0, i1, static_cast<std::uint32_t>(std::lround(f * 1024.f))};
+    auto const rows = fieldRows(v, size, parity);
+    return Tap{rows.y0, rows.y1, static_cast<std::uint32_t>(std::lround(rows.f * 1024.f))};
 }
 
 std::uint16_t mix(std::uint16_t const* line0, std::uint16_t const* line1, Tap const& x, std::uint32_t wy)
@@ -163,7 +171,7 @@ private:
 };
 } // namespace
 
-void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, bool bob)
+void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, Bob bob)
 {
     if (place.dst.w <= 0 || place.dst.h <= 0 || src.width <= 0 || src.height <= 0 || src.data == nullptr)
     {
@@ -191,7 +199,7 @@ void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, b
             continue;
         }
         float const sy = place.srcY + (static_cast<float>(dy) + 0.5f) * place.srcH / static_cast<float>(place.dst.h) - 0.5f;
-        Tap const ty = bob ? bobTap(sy, src.height) : linearTap(sy, src.height);
+        Tap const ty = bob != Bob::Off ? bobTap(sy, src.height, static_cast<int>(bob)) : linearTap(sy, src.height);
         auto const& line0 = lines.get(ty.i0);
         auto const& line1 = lines.get(ty.i1);
         auto* rowY = dst.y.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(dst.width);
@@ -328,7 +336,7 @@ void blendOverlay(Frame422& canvas, PreparedOverlay const& overlay)
     }
 }
 
-void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool bob)
+void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob bob)
 {
     if (place.dst.w <= 0 || place.dst.h <= 0 || src.width <= 0 || src.height <= 0)
     {
@@ -352,12 +360,12 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool 
                 continue;
             }
             float const sx = place.srcX + (static_cast<float>(dx) + 0.5f) * place.srcW / static_cast<float>(place.dst.w) - 0.5f;
-            auto const ySample = bob ? bilerpBob(src.y.data(), src.width, src.width, src.height, sx, sy)
+            auto const ySample = bob != Bob::Off ? bilerpBob(src.y.data(), src.width, src.width, src.height, sx, sy, static_cast<int>(bob))
                                      : bilerp(src.y.data(), src.width, src.width, src.height, sx, sy);
             std::uint16_t alpha = 1023;
             if (src.hasAlpha && !src.a.empty())
             {
-                alpha = bob ? bilerpBob(src.a.data(), src.width, src.width, src.height, sx, sy)
+                alpha = bob != Bob::Off ? bilerpBob(src.a.data(), src.width, src.width, src.height, sx, sy, static_cast<int>(bob))
                             : bilerp(src.a.data(), src.width, src.width, src.height, sx, sy);
             }
             auto& dstY = dst.y[static_cast<std::size_t>(y * dst.width + x)];
@@ -376,7 +384,7 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool 
                 float const cx = place.srcX * 0.5f + (static_cast<float>(dx / 2) + 0.5f) * csrcW / static_cast<float>(std::max(1, place.dst.w / 2)) - 0.5f;
                 (void)csx;
                 auto pick = [&](std::vector<std::uint16_t> const& plane) {
-                    return bob ? bilerpBob(plane.data(), scw, scw, src.height, cx, sy) : bilerp(plane.data(), scw, scw, src.height, cx, sy);
+                    return bob != Bob::Off ? bilerpBob(plane.data(), scw, scw, src.height, cx, sy, static_cast<int>(bob)) : bilerp(plane.data(), scw, scw, src.height, cx, sy);
                 };
                 dst.cb[static_cast<std::size_t>(y * dcw + x / 2)] = pick(src.cb);
                 dst.cr[static_cast<std::size_t>(y * dcw + x / 2)] = pick(src.cr);
@@ -401,7 +409,7 @@ void coverFrame(Frame422& dst, Frame422 const& src)
         return;
     }
     auto const place = placeTile(PixelRect{0, 0, dst.width, dst.height}, src.width, src.height, ScaleMode::Fill);
-    scaleInto(dst, place, src, false);
+    scaleInto(dst, place, src, Bob::Off);
 }
 
 void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::uint16_t bgCr, Frame422 const* background, int backgroundCount,
@@ -440,7 +448,7 @@ void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::
             full.srcY = 0;
             full.srcW = 2;
             full.srcH = 2;
-            scaleInto(canvas, full, black, false);
+            scaleInto(canvas, full, black, Bob::Off);
             continue;
         }
         scaleInto(canvas, tiles[i].place, *tiles[i].source, tiles[i].bob);

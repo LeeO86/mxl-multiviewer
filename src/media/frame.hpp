@@ -62,4 +62,10 @@ struct V210Scan
     std::uint64_t hash = 0;
 };
 void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan);
+// Interlaced input (1.4.4): two field grains of height/2 lines each (MXL stores an interlaced
+// flow as fields), woven into one frame of `height` lines: `top` gives the even lines (0, 2, …),
+// `bottom` the odd ones. weaveV210Scan() takes the same alarm numbers as copyV210Scan() of the
+// woven frame; weaveRows() only weaves (the v210a key plane, or any packed rows).
+void weaveV210Scan(std::uint8_t const* top, std::uint8_t const* bottom, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan);
+void weaveRows(std::uint8_t const* top, std::uint8_t const* bottom, std::uint8_t* dst, int rowBytes, int height);
 } // namespace mv

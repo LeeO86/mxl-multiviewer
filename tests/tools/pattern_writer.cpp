@@ -66,9 +66,23 @@ int main(int argc, char** argv)
     auto const cb = static_cast<std::uint16_t>(std::stoi(arg(argc, argv, "--cb", "512")));
     auto const cr = static_cast<std::uint16_t>(std::stoi(arg(argc, argv, "--cr", "512")));
     auto const audio = arg(argc, argv, "--audio-flow", "");
+    // Interlaced (1.4.4): MXL stores the flow as fields, one per grain at twice --rate (25 or
+    // 30000/1001 only: pass 25). Grain 2k is the first field: top for tff, bottom for bff.
+    auto const interlace = arg(argc, argv, "--interlace", "");
+    // The lower half of the frame (frame lines >= height / 2) in this luma, so a reader that
+    // takes a field for a frame shows the edge in the wrong place.
+    int const y2 = std::stoi(arg(argc, argv, "--y2", "-1"));
     if (domain.empty() || flow.empty())
     {
-        std::cerr << "usage: mxl-mv-writer --domain DIR --flow UUID [--width W --height H --rate N --y Y --cb Cb --cr Cr --audio-flow UUID]\n";
+        std::cerr << "usage: mxl-mv-writer --domain DIR --flow UUID [--width W --height H --rate N --y Y --cb Cb --cr Cr --y2 Y --interlace tff|bff "
+                     "--audio-flow UUID]\n";
+        return 2;
+    }
+    bool const fields = interlace == "tff" || interlace == "bff";
+    bool const bff = interlace == "bff";
+    if (!interlace.empty() && !fields)
+    {
+        std::cerr << "--interlace is tff or bff\n";
         return 2;
     }
     auto* instance = mxlCreateInstance(domain.c_str(), nullptr);
@@ -81,7 +95,7 @@ int main(int argc, char** argv)
                       "\",\"format\":\"urn:x-nmos:format:video\",\"label\":\"pattern\",\"description\":\"pattern\",\"tags\":{\"urn:x-nmos:tag:grouphint/v1.0\":[\"Pattern:Video\"]},\"parents\":[],"
                       "\"media_type\":\"video/v210\",\"grain_rate\":{\"numerator\":" +
                       std::to_string(rate) + ",\"denominator\":1},\"frame_width\":" + std::to_string(width) + ",\"frame_height\":" + std::to_string(height) +
-                      ",\"interlace_mode\":\"progressive\",\"colorspace\":\"BT709\",\"components\":[]}";
+                      ",\"interlace_mode\":\"" + (fields ? std::string(bff ? "interlaced_bff" : "interlaced_tff") : std::string("progressive")) + "\",\"colorspace\":\"BT709\",\"components\":[]}";
     mxlFlowWriter writer = nullptr;
     if (mxlCreateFlowWriter(instance, def.c_str(), "{\"maxCommitBatchSizeHint\":1}", &writer, nullptr, nullptr) != MXL_STATUS_OK)
     {
@@ -96,10 +110,25 @@ int main(int argc, char** argv)
                                "\"media_type\":\"audio/float32\",\"sample_rate\":{\"numerator\":48000,\"denominator\":1},\"channel_count\":2,\"bit_depth\":32}";
         mxlCreateFlowWriter(instance, audioDef.c_str(), "{\"maxCommitBatchSizeHint\":480}", &audioWriter, nullptr, nullptr);
     }
-    mxlRational grainRate{rate, 1};
+    mxlRational grainRate{fields ? rate * 2 : rate, 1};
     std::uint64_t index = mxlGetCurrentIndex(&grainRate);
-    std::vector<std::uint8_t> frame(static_cast<std::size_t>(v210Row(width)) * static_cast<std::size_t>(height));
+    std::size_t const rowBytes = v210Row(width);
+    std::vector<std::uint8_t> frame(rowBytes * static_cast<std::size_t>(height));
     packSolid(frame.data(), width, height, y, cb, cr);
+    if (y2 >= 0)
+    {
+        packSolid(frame.data() + rowBytes * static_cast<std::size_t>(height / 2), width, height - height / 2, static_cast<std::uint16_t>(y2), cb, cr);
+    }
+    // One packed grain per field parity (0 top: even frame lines, 1 bottom: odd), or the frame.
+    std::vector<std::uint8_t> field[2];
+    for (int parity = 0; parity < 2 && fields; ++parity)
+    {
+        field[parity].resize(rowBytes * static_cast<std::size_t>(height / 2));
+        for (int r = 0; r < height / 2; ++r)
+        {
+            std::memcpy(field[parity].data() + rowBytes * static_cast<std::size_t>(r), frame.data() + rowBytes * static_cast<std::size_t>(2 * r + parity), rowBytes);
+        }
+    }
     while (gRun.load())
     {
         auto const now = mxlGetCurrentIndex(&grainRate);
@@ -112,14 +141,15 @@ int main(int argc, char** argv)
         std::uint8_t* payload = nullptr;
         if (mxlFlowWriterOpenGrain(writer, index, &grain, &payload) == MXL_STATUS_OK && payload != nullptr)
         {
-            std::memcpy(payload, frame.data(), frame.size());
+            auto const& picture = fields ? field[static_cast<int>(index & 1u) ^ (bff ? 1 : 0)] : frame;
+            std::memcpy(payload, picture.data(), std::min<std::size_t>(picture.size(), grain.grainSize));
             grain.validSlices = grain.totalSlices;
             grain.flags = 0;
             mxlFlowWriterCommitGrain(writer, &grain);
         }
         if (audioWriter != nullptr)
         {
-            std::size_t count = 48000 / std::max(1, rate);
+            std::size_t count = 48000 / std::max(1, static_cast<int>(grainRate.numerator));
             std::size_t maxWrite = count;
             mxlFlowWriterGetMaxWriteLengthSamples(audioWriter, &maxWrite);
             count = std::min(count, maxWrite);

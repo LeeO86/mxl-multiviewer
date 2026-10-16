@@ -361,7 +361,11 @@ void v210Chroma(std::uint8_t const* src, int rowBytes, int cx, int row, std::uin
     }
 }
 
-void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan)
+namespace
+{
+// copyV210Scan() and weaveV210Scan(): `source(row)` is the packed line that becomes `row`.
+template <typename Source>
+void scanRows(Source const& source, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan)
 {
     scan.sum = 0;
     scan.count = 0;
@@ -377,7 +381,7 @@ void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int 
     for (int row = 0; row < height; ++row)
     {
         auto* line = dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes);
-        std::memcpy(line, src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes), static_cast<std::size_t>(rowBytes));
+        std::memcpy(line, source(row), static_cast<std::size_t>(rowBytes));
         long long const first = static_cast<long long>(row) * width;
         long long const end = first + width;
         for (; nextSum < end; nextSum += sumStep)
@@ -391,6 +395,30 @@ void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int 
         }
     }
     scan.hash = grid.hash();
+}
+} // namespace
+
+void copyV210Scan(std::uint8_t const* src, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan)
+{
+    auto const source = [&](int row) { return src + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes); };
+    scanRows(source, dst, rowBytes, width, height, sumStep, scan);
+}
+
+void weaveV210Scan(std::uint8_t const* top, std::uint8_t const* bottom, std::uint8_t* dst, int rowBytes, int width, int height, int sumStep, V210Scan& scan)
+{
+    auto const source = [&](int row) {
+        return ((row & 1) == 0 ? top : bottom) + static_cast<std::size_t>(row / 2) * static_cast<std::size_t>(rowBytes);
+    };
+    scanRows(source, dst, rowBytes, width, height, sumStep, scan);
+}
+
+void weaveRows(std::uint8_t const* top, std::uint8_t const* bottom, std::uint8_t* dst, int rowBytes, int height)
+{
+    for (int row = 0; row < height; ++row)
+    {
+        auto const* src = ((row & 1) == 0 ? top : bottom) + static_cast<std::size_t>(row / 2) * static_cast<std::size_t>(rowBytes);
+        std::memcpy(dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(rowBytes), src, static_cast<std::size_t>(rowBytes));
+    }
 }
 
 std::uint64_t v210LumaSum(std::uint8_t const* src, int rowBytes, int width, int height, int step, int* count)

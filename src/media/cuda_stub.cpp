@@ -34,6 +34,11 @@ std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const*, int, std::
     return nullptr;
 }
 
+std::shared_ptr<CudaFrame const> cudaUploadFields(CudaField const&, CudaField const&, int, int, int, int)
+{
+    return nullptr;
+}
+
 std::shared_ptr<CudaOverlay const> cudaUploadOverlay(std::shared_ptr<CudaOverlay const> const&, std::uint8_t const*, int, int, CudaRect const*, int)
 {
     return nullptr;
