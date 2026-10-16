@@ -41,6 +41,8 @@ All line numbers are in `lib/internal/src/FlowParser.cpp` at 218ddaa.
 
 - The ANC flow (`video/smpte291` data flow) of an interlaced video runs at the field rate. It MUST be declared at twice the frame rate: 50/1 for 1080i50, 60000/1001 for 1080i59.94. MXL does not double a data flow (§1).
 - ANC grain 2k MUST carry the packets of the first field, grain 2k+1 those of the second field. The index is the same as that of the video field.
+- The MXL-side NMOS ANC flow, source and receiver caps also declare the field rate; they follow the flow definition. Only the video flow keeps the frame rate (§3.2).
+- ANC grains carry the RFC 8331 F bits: 0b10 for grain 2k, 0b11 for grain 2k+1, 0b00 for a progressive video.
 
 ### 3.4 Writers
 
@@ -68,24 +70,24 @@ All line numbers are in `lib/internal/src/FlowParser.cpp` at 218ddaa.
 
 ## 4. Compliance
 
-Status at 2026-10-16, from the audit of each repo's `main` on that day. "Fix in progress" means a change against this convention is open.
+Status at 2026-10-16: the audit of each repo's `main` on that day, plus the fixes made after it. A version is the first one that complies.
 
 | repo | role | status | notes |
 | --- | --- | --- | --- |
 | mxl-srt-gateway | writer (ingest), reader (egress) | compliant | Index from frame k, both fields per frame; a drop or resync skips both fields. Egress pairs 2k and 2k+1, tff and bff. |
 | mxl-test-player, video | writer | compliant (1.2.2) | `(idx & 1) ^ bff` field extraction. |
-| mxl-test-player, ANC | writer | fix in progress | ANC at the field rate (§3.3). |
+| mxl-test-player, ANC | writer | compliant (1.2.3, PR #14, released) | ANC at the field rate (§3.3). |
 | mxl-multiviewer | reader | compliant (1.4.4) | Weaves grain idx with idx − 1, `(idx & 1) ^ bff`. |
-| mxl-webrtc-monitor | reader | compliant (1.4.1); NMOS fix in progress | Pairs 2k and 2k+1, tff and bff. Fix: NMOS caps also list `interlaced_bff`. |
+| mxl-webrtc-monitor | reader | compliant (1.4.1) | Pairs 2k and 2k+1, tff and bff. NMOS caps list `interlaced_bff` since 1.4.2 (PR #17, released). |
 | mxl-color-corrector | reader and writer | compliant (1.2.3) | Output index = input index; a hold keeps the parity. |
 | mxl-scopes | reader | compliant | Pairs 2k and 2k+1. |
-| mxl-decklink, capture | writer | fix in progress | Write field lines (not the top half of the frame) to 2k and 2k+1 from frame k; real field order instead of fixed tff. |
-| mxl-decklink, playout | reader | fix in progress | Read 2k and 2k+1 per frame and weave, at the frame rate. |
-| mxl-decklink, ANC | writer | fix in progress | ANC at the field rate (§3.3). |
-| mxl-st2110-gateway, ingest | writer | fix in progress | Align parity by the F bit (§3.6). |
-| mxl-st2110-gateway, egress | reader | fix in progress | Output delay a whole number of frames; a repeat sends the last pair (§3.4). |
-| mxl-replay | reader and writer, progressive only | fix in progress | Progressive-only NMOS caps and a visible error state for an interlaced input. |
-| obs-mxl-plugin, input | reader | fix in progress | Refuse interlaced flows. |
+| mxl-decklink, capture | writer | compliant (1.0.6, PRs #23 and #24, merged, not yet released) | Field lines of frame k to 2k and 2k+1. Field order from a mode table (NTSC bff), not yet checked on real cards. |
+| mxl-decklink, playout | reader | compliant (1.0.6, as above) | Reads 2k and 2k+1 per frame and weaves them, at the frame rate. |
+| mxl-decklink, ANC | writer | compliant (1.0.6, as above) | ANC at the field rate (§3.3). |
+| mxl-st2110-gateway, ingest | writer | compliant (1.0.19, PR #28, released) | Aligns parity by the F bit while the sender sets F=1; a sender that never sets F=1 keeps its timestamp index. MTL v26.09 itself drops a second field that reuses the first field's timestamp. ANC at the field rate. |
+| mxl-st2110-gateway, egress | reader | compliant (1.0.19, as above) | Output delay a whole number of frames; a repeat sends the last pair (§3.4). |
+| mxl-replay | reader and writer, progressive only | compliant (1.7.1, PR #27, released) | Refuses interlaced inputs visibly (progressive-only NMOS caps, error state). |
+| obs-mxl-plugin, input | reader | compliant (PR #1, merged) | Refuses interlaced flows. |
 | mxl-browser-source | writer, progressive only | N/A | Config refuses interlaced formats. |
 | strom | progressive only | N/A | An interlaced flow fails caps negotiation. |
 
@@ -100,7 +102,7 @@ For a writer, with a 1920×1080 `interlaced_tff` flow at 25/1:
 - Both parities are valid: indexes 2k and 2k+1 are both written, complete, and not flagged invalid.
 - Grain 2k holds the even frame lines. Use a source with distinct even and odd lines (for example a line-number pattern) and compare grain 2k row i with frame line 2i.
 - Repeat with `interlaced_bff`: grain 2k holds the odd lines.
-- The ANC flow is declared at 50/1, and each ANC grain has the same index as the video field it belongs to.
+- The ANC flow is declared at 50/1 (flow definition and NMOS), and each ANC grain has the same index as the video field it belongs to, with F bits 0b10 on even and 0b11 on odd indexes.
 - After a forced drop or resync, the first field is still on an even index.
 
 For a reader:
@@ -108,3 +110,7 @@ For a reader:
 - Feed a tff and a bff flow with distinct even and odd lines. The woven frame matches the source line for line.
 - Each field grain is read as 540 lines, never 1080.
 - A reader that does not support interlaced flows shows a visible error and does not crash.
+
+## 6. Open points
+
+- ANC grain byte layout (decision pending). mxl-test-player puts a 2-byte extended sequence number before the RFC 8331 Length field. mxl-decklink starts the grain at Length. MXL `docs/Architecture.md` says only the bytes from Length on are stored. The apps need one shared rule.
