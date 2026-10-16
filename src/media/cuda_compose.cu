@@ -189,7 +189,9 @@ __device__ unsigned short bilerp(Plane const& plane, int width, int height, floa
     return round10(v0 + (v1 - v0) * fy);
 }
 
-__device__ unsigned short bilerpBob(Plane const& plane, int width, int height, float x, float y)
+// Bob (1.4.4): the lines of field `parity` only (0 even, 1 odd) at their own height in the
+// frame; the same rows and weights as fieldRows() in scale.cpp.
+__device__ unsigned short bilerpBob(Plane const& plane, int width, int height, float x, float y, int parity)
 {
     if (width <= 1)
     {
@@ -203,7 +205,7 @@ __device__ unsigned short bilerpBob(Plane const& plane, int width, int height, f
     {
         x = static_cast<float>(width - 1);
     }
-    float const yLimit = static_cast<float>(height > 1 ? height - 1 : 0);
+    float const yLimit = static_cast<float>(height > 1 ? height - 1 : 1);
     if (y < 0.f)
     {
         y = 0.f;
@@ -212,22 +214,33 @@ __device__ unsigned short bilerpBob(Plane const& plane, int width, int height, f
     {
         y = yLimit;
     }
-    int y0 = static_cast<int>(y) & ~1;
-    y0 = clampIndex(y0, height);
-    int y1 = clampIndex(y0 + 2, height);
-    if ((y1 & 1) != 0)
+    if (height < 2)
     {
-        y1 = clampIndex(y1 - 1, height);
+        parity = 0;
     }
-    float fy = (y - static_cast<float>(y0)) * 0.5f;
+    int rows = (height - parity + 1) / 2;
+    if (rows < 1)
+    {
+        rows = 1;
+    }
+    float fy = (y - static_cast<float>(parity)) * 0.5f;
     if (fy < 0.f)
     {
         fy = 0.f;
     }
-    if (fy > 1.f)
+    if (fy > static_cast<float>(rows - 1))
     {
-        fy = 1.f;
+        fy = static_cast<float>(rows - 1);
     }
+    int j0 = static_cast<int>(floorf(fy));
+    if (j0 > rows - 1)
+    {
+        j0 = rows - 1;
+    }
+    int const j1 = j0 + 1 < rows ? j0 + 1 : rows - 1;
+    int const y0 = clampIndex(2 * j0 + parity, height);
+    int const y1 = clampIndex(2 * j1 + parity, height);
+    float const f = fy - static_cast<float>(j0);
     int const x0 = static_cast<int>(x);
     int const x1 = clampIndex(x0 + 1, width);
     float const fx = x - static_cast<float>(x0);
@@ -237,7 +250,7 @@ __device__ unsigned short bilerpBob(Plane const& plane, int width, int height, f
     float const v11 = plane.at(x1, y1);
     float const v0 = v00 + (v10 - v00) * fx;
     float const v1 = v01 + (v11 - v01) * fx;
-    return round10(v0 + (v1 - v0) * fy);
+    return round10(v0 + (v1 - v0) * f);
 }
 
 __global__ void fill422Kernel(unsigned short* y, unsigned short* cb, unsigned short* cr, int width, int height, unsigned short yv, unsigned short cbv, unsigned short crv)
@@ -289,7 +302,7 @@ struct DevScale
     Plane inA;
     int inW;
     int inH;
-    int bob;
+    int bob; // -1 off, else the field's line parity (bilerpBob)
     int solid;
     unsigned short solidY;
     unsigned short solidCb;
@@ -323,11 +336,11 @@ __global__ void scaleTileKernel(DevScale args)
     }
     float const sy = args.windowY + (static_cast<float>(dy) + 0.5f) * args.windowH / static_cast<float>(args.spanH) - 0.5f;
     float const sx = args.windowX + (static_cast<float>(dx) + 0.5f) * args.windowW / static_cast<float>(args.spanW) - 0.5f;
-    unsigned short ySample = args.bob ? bilerpBob(args.inY, args.inW, args.inH, sx, sy) : bilerp(args.inY, args.inW, args.inH, sx, sy);
+    unsigned short ySample = args.bob >= 0 ? bilerpBob(args.inY, args.inW, args.inH, sx, sy, args.bob) : bilerp(args.inY, args.inW, args.inH, sx, sy);
     unsigned short alpha = 1023;
     if (args.inA.valid())
     {
-        alpha = args.bob ? bilerpBob(args.inA, args.inW, args.inH, sx, sy) : bilerp(args.inA, args.inW, args.inH, sx, sy);
+        alpha = args.bob >= 0 ? bilerpBob(args.inA, args.inW, args.inH, sx, sy, args.bob) : bilerp(args.inA, args.inW, args.inH, sx, sy);
     }
     unsigned short& outY = args.planeY[y * args.canvasW + x];
     if (alpha >= 1023)
@@ -342,8 +355,8 @@ __global__ void scaleTileKernel(DevScale args)
     {
         int const scw = args.inW / 2;
         float const cx = args.windowX * 0.5f + (static_cast<float>(dx / 2) + 0.5f) * (args.windowW * 0.5f) / static_cast<float>(args.spanW > 1 ? args.spanW / 2 : 1) - 0.5f;
-        unsigned short cb = args.bob ? bilerpBob(args.inCb, scw, args.inH, cx, sy) : bilerp(args.inCb, scw, args.inH, cx, sy);
-        unsigned short cr = args.bob ? bilerpBob(args.inCr, scw, args.inH, cx, sy) : bilerp(args.inCr, scw, args.inH, cx, sy);
+        unsigned short cb = args.bob >= 0 ? bilerpBob(args.inCb, scw, args.inH, cx, sy, args.bob) : bilerp(args.inCb, scw, args.inH, cx, sy);
+        unsigned short cr = args.bob >= 0 ? bilerpBob(args.inCr, scw, args.inH, cx, sy, args.bob) : bilerp(args.inCr, scw, args.inH, cx, sy);
         if (alpha < 1023 && alpha > 0)
         {
             unsigned short& outCb = args.planeCb[y * cw + x / 2];
@@ -884,6 +897,29 @@ bool copyToDevice(cudaStream_t stream, void* device, void const* host, std::size
     return cudaMemcpyAsync(device, pin, bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess;
 }
 
+// One field (`rows` packed lines of `rowBytes`) into every second line of a device frame,
+// starting at `parity`: straight from locked memory as a strided copy, else through the pinned
+// staging buffer at the same offset (the caller has waited for that buffer's previous use).
+bool copyFieldToDevice(cudaStream_t stream, std::uint8_t* device, int rowBytes, int parity, std::uint8_t const* host, int rows, std::uint8_t* staging)
+{
+    std::size_t const pitch = static_cast<std::size_t>(rowBytes);
+    std::size_t const bytes = pitch * static_cast<std::size_t>(rows);
+    auto* dst = device + static_cast<std::size_t>(parity) * pitch;
+    if (staging == nullptr && hostMemory().ensure(host, bytes, true))
+    {
+        return cudaMemcpy2DAsync(dst, 2 * pitch, host, pitch, pitch, static_cast<std::size_t>(rows), cudaMemcpyHostToDevice, stream) == cudaSuccess;
+    }
+    if (staging == nullptr)
+    {
+        return false;
+    }
+    for (int r = 0; r < rows; ++r)
+    {
+        std::memcpy(staging + (static_cast<std::size_t>(2 * r + parity)) * pitch, host + static_cast<std::size_t>(r) * pitch, pitch);
+    }
+    return true;
+}
+
 // One per input thread: its grains upload on its own stream, so inputs
 // copy in parallel and never wait for compose.
 struct Uploader
@@ -1162,7 +1198,7 @@ CudaComposeStatus cudaComposeFrame(CudaComposeDesc const& desc)
         args.windowH = tile.srcH;
         args.inW = tile.srcWidth;
         args.inH = tile.srcHeight;
-        args.bob = tile.bob ? 1 : 0;
+        args.bob = tile.bobField == 0 || tile.bobField == 1 ? tile.bobField : -1;
         args.solid = tile.solid || (tile.y == nullptr && tile.frame == nullptr) ? 1 : 0;
         args.solidY = desc.solidY;
         args.solidCb = desc.solidCb;
@@ -1430,6 +1466,66 @@ std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v
     {
         std::size_t const keyBytes = static_cast<std::size_t>(alphaRowBytes) * static_cast<std::size_t>(height);
         ok = copyToDevice(up.stream, frame->alpha10, alpha10, keyBytes, up.stagingAlpha);
+    }
+    // Record even on failure: the pool waits on this event before it reuses the frame.
+    if (cudaEventRecord(frame->ready, up.stream) != cudaSuccess || !ok)
+    {
+        return nullptr;
+    }
+    return frame;
+}
+
+std::shared_ptr<CudaFrame const> cudaUploadFields(CudaField const& top, CudaField const& bottom, int v210RowBytes, int alphaRowBytes, int width, int height)
+{
+    if (top.v210 == nullptr || bottom.v210 == nullptr || width < 2 || (width & 1) != 0 || height < 2 || (height & 1) != 0 || v210RowBytes < 16 ||
+        !cudaRuntimeAvailable())
+    {
+        return nullptr;
+    }
+    auto& up = uploader();
+    if (!up.open())
+    {
+        return nullptr;
+    }
+    bool const alpha = top.alpha10 != nullptr && bottom.alpha10 != nullptr && alphaRowBytes > 0;
+    auto frame = framePool().acquire(width, height, alpha, up.stream);
+    if (frame == nullptr || v210RowBytes != frame->v210RowBytes || (alpha && alphaRowBytes != frame->alphaRowBytes))
+    {
+        return nullptr;
+    }
+    int const rows = height / 2;
+    std::size_t const fieldBytes = static_cast<std::size_t>(v210RowBytes) * static_cast<std::size_t>(rows);
+    std::size_t const keyFieldBytes = alpha ? static_cast<std::size_t>(alphaRowBytes) * static_cast<std::size_t>(rows) : 0;
+    // The two fields go to the device as strided copies straight from the MXL grains (each grain is
+    // locked on first use). If one cannot be locked, both are woven on the CPU into the staging
+    // buffer and copied as one frame.
+    bool const direct = hostMemory().ensure(top.v210, fieldBytes, true) && hostMemory().ensure(bottom.v210, fieldBytes, true) &&
+                        (!alpha || (hostMemory().ensure(top.alpha10, keyFieldBytes, true) && hostMemory().ensure(bottom.alpha10, keyFieldBytes, true)));
+    bool ok = true;
+    if (direct)
+    {
+        ok = copyFieldToDevice(up.stream, frame->v210, v210RowBytes, 0, top.v210, rows, nullptr) &&
+             copyFieldToDevice(up.stream, frame->v210, v210RowBytes, 1, bottom.v210, rows, nullptr);
+        if (ok && alpha)
+        {
+            ok = copyFieldToDevice(up.stream, frame->alpha10, alphaRowBytes, 0, top.alpha10, rows, nullptr) &&
+                 copyFieldToDevice(up.stream, frame->alpha10, alphaRowBytes, 1, bottom.alpha10, rows, nullptr);
+        }
+    }
+    else
+    {
+        ok = cudaStreamSynchronize(up.stream) == cudaSuccess;
+        auto* pin = ok ? static_cast<std::uint8_t*>(up.staging.ensure(2 * fieldBytes, true)) : nullptr;
+        ok = pin != nullptr && copyFieldToDevice(up.stream, frame->v210, v210RowBytes, 0, top.v210, rows, pin) &&
+             copyFieldToDevice(up.stream, frame->v210, v210RowBytes, 1, bottom.v210, rows, pin) &&
+             cudaMemcpyAsync(frame->v210, pin, 2 * fieldBytes, cudaMemcpyHostToDevice, up.stream) == cudaSuccess;
+        if (ok && alpha)
+        {
+            auto* key = static_cast<std::uint8_t*>(up.stagingAlpha.ensure(2 * keyFieldBytes, true));
+            ok = key != nullptr && copyFieldToDevice(up.stream, frame->alpha10, alphaRowBytes, 0, top.alpha10, rows, key) &&
+                 copyFieldToDevice(up.stream, frame->alpha10, alphaRowBytes, 1, bottom.alpha10, rows, key) &&
+                 cudaMemcpyAsync(frame->alpha10, key, 2 * keyFieldBytes, cudaMemcpyHostToDevice, up.stream) == cudaSuccess;
+        }
     }
     // Record even on failure: the pool waits on this event before it reuses the frame.
     if (cudaEventRecord(frame->ready, up.stream) != cudaSuccess || !ok)

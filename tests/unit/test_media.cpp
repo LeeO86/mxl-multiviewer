@@ -160,7 +160,7 @@ TEST_CASE("scaler matches bilinear pixel centres and compose keeps tile colours"
     place.dst = {0, 0, 2, 1};
     place.srcW = 4;
     place.srcH = 2;
-    scaleInto(dst, place, src, false);
+    scaleInto(dst, place, src, Bob::Off);
     // dst (0,0) centre maps to src ((0.5)*4/2 - 0.5, (0.5)*2/1 - 0.5) = (0.5, 0.5)
     // samples (0,0)=0, (1,0)=100, (0,1)=10, (1,1)=110 → 55
     CHECK(std::abs(static_cast<int>(dst.y[0]) - 55) <= 1);
@@ -216,7 +216,7 @@ TEST_CASE("scaler matches bilinear pixel centres and compose keeps tile colours"
     Frame422 full;
     full.allocate(192, 108, false);
     auto const placed = placeTile(PixelRect{0, 0, 192, 108}, 192, 108, ScaleMode::Fit);
-    scaleInto(full, placed, solid, false);
+    scaleInto(full, placed, solid, Bob::Off);
     CHECK(full.y[10 * 192 + 10] == 200);
     CHECK(full.y[54 * 192 + 96] == 200);
     CHECK(full.y[20 * 192 + 24] == 200);
@@ -245,14 +245,15 @@ TEST_CASE("scaling straight from v210 matches the unpacked scaler within 1")
     {
         PixelRect dst;
         float x, y, w, h;
-        bool bob;
+        Bob bob;
     };
-    Case const cases[] = {{{0, 0, 49, 27}, 0, 0, 196, 110, false}, {{3, 2, 37, 23}, 10, 5, 150, 90, false}, {{0, 0, 196, 110}, 0, 0, 196, 110, false},
-        {{0, 0, 300, 160}, 20, 10, 100, 60, false}, {{1, 1, 60, 33}, 0, 0, 196, 110, true}};
+    Case const cases[] = {{{0, 0, 49, 27}, 0, 0, 196, 110, Bob::Off}, {{3, 2, 37, 23}, 10, 5, 150, 90, Bob::Off},
+        {{0, 0, 196, 110}, 0, 0, 196, 110, Bob::Off}, {{0, 0, 300, 160}, 20, 10, 100, 60, Bob::Off}, {{1, 1, 60, 33}, 0, 0, 196, 110, Bob::Top},
+        {{1, 1, 60, 33}, 0, 0, 196, 110, Bob::Bottom}, {{0, 0, 196, 220}, 0, 0, 196, 110, Bob::Bottom}};
     for (auto const& c : cases)
     {
         CAPTURE(c.dst.w);
-        CAPTURE(c.bob);
+        CAPTURE(static_cast<int>(c.bob));
         Frame422 a;
         Frame422 b;
         a.allocate(320, 180, false);
@@ -289,7 +290,7 @@ TEST_CASE("scaling straight from v210 matches the unpacked scaler within 1")
     place.dst = {0, 0, 40, 20};
     place.srcW = 96;
     place.srcH = 54;
-    scaleV210Into(out, place, V210View{flatPacked.data(), static_cast<int>(v210RowBytes(96)), 96, 54}, false);
+    scaleV210Into(out, place, V210View{flatPacked.data(), static_cast<int>(v210RowBytes(96)), 96, 54}, Bob::Off);
     CHECK(std::all_of(out.y.begin(), out.y.end(), [](std::uint16_t v) { return v == 321; }));
     CHECK(std::all_of(out.cb.begin(), out.cb.end(), [](std::uint16_t v) { return v == 456; }));
     CHECK(std::all_of(out.cr.begin(), out.cr.end(), [](std::uint16_t v) { return v == 789; }));

@@ -31,7 +31,8 @@ struct CudaTileView
     std::uint16_t const* a = nullptr;
     // Device-resident source; when set, y/cb/cr/a are not used.
     CudaFrame const* frame = nullptr;
-    bool bob = false;
+    // Bob (scale.hpp): -1 off, 0 the top field's lines (even), 1 the bottom field's (odd).
+    int bobField = -1;
     bool solid = false;
 };
 
@@ -111,6 +112,17 @@ void cudaDeviceMemory(std::uint64_t* freeBytes, std::uint64_t* totalBytes);
 // usable or the grain is not standard v210 row layout.
 std::shared_ptr<CudaFrame const> cudaUploadFrame(std::uint8_t const* v210, int v210RowBytes, std::uint8_t const* alpha10, int alphaRowBytes, int width,
     int height);
+
+// Interlaced input (1.4.4): one frame woven on the device from two field grains of height / 2
+// lines each (MXL stores an interlaced flow as fields). `top` gives the even lines, `bottom` the
+// odd ones; alpha10 is the field's key plane or nullptr. Like cudaUploadFrame, the grains are
+// locked on first use and copied by DMA, as strided copies into every second device line.
+struct CudaField
+{
+    std::uint8_t const* v210 = nullptr;
+    std::uint8_t const* alpha10 = nullptr;
+};
+std::shared_ptr<CudaFrame const> cudaUploadFields(CudaField const& top, CudaField const& bottom, int v210RowBytes, int alphaRowBytes, int width, int height);
 
 // Black and freeze alarm numbers of an uploaded grain, computed on the device (1.4.2): the same
 // values as v210LumaSum (sum, count) and lumaHash (hash) on the CPU, bit for bit.

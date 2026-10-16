@@ -8,9 +8,18 @@
 
 namespace mv
 {
+// Interlaced sources (a frame woven from two fields): the scaler reads only the lines of one
+// field (bob), placed at their own height in the frame, so a tile shows the newest field without
+// combing. Off reads every line.
+enum class Bob : int
+{
+    Off = -1,
+    Top = 0,    // even lines 0, 2, …
+    Bottom = 1, // odd lines 1, 3, …
+};
+
 // Bilinear scale of src into dst. Sample positions are pixel centres.
-// bob reads only even source lines (field 0) while still covering the full frame height.
-void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, bool bob);
+void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob bob);
 
 // Limited-range black (Y=64, Cb=Cr=512) then each tile in order.
 void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::uint16_t bgCr, Frame422 const* background, int backgroundCount,
@@ -20,7 +29,7 @@ struct ComposeTile
 {
     Placement place;
     Frame422 const* source = nullptr;
-    bool bob = false;
+    Bob bob = Bob::Off;
 };
 
 // A packed v210 picture without alpha.
@@ -35,7 +44,7 @@ struct V210View
 // scaleInto() straight from packed v210: the same sample positions, weights in 1/1024 steps
 // (within 1 of the float result, exact on flat areas), and only the source lines the
 // placement touches are unpacked.
-void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, bool bob);
+void scaleV210Into(Frame422& dst, Placement const& place, V210View const& src, Bob bob);
 
 void blendStraightRgba(Frame422& canvas, std::uint8_t const* rgba, int stride);
 

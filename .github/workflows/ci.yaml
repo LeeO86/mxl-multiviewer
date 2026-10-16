@@ -90,6 +90,11 @@ jobs:
           chmod +x tests/integration/mosaic.sh tests/integration/fake_registry.py
           MXL_LIB_DIR=/opt/mxl/lib tests/integration/mosaic.sh build/mxl-multiviewer build/mxl-mv-writer build/mxl-mv-sample
 
+      - name: Integration (interlaced inputs)
+        run: |
+          chmod +x tests/integration/interlaced.sh
+          MXL_LIB_DIR=/opt/mxl/lib tests/integration/interlaced.sh build/mxl-multiviewer build/mxl-mv-writer build/mxl-mv-sample
+
       - name: Integration (WebRTC preview)
         run: |
           curl -fsSL -o /tmp/mediamtx.tgz https://github.com/bluenviron/mediamtx/releases/download/v1.20.1/mediamtx_v1.20.1_linux_amd64.tar.gz
