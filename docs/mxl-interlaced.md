@@ -81,17 +81,17 @@ Status at 2026-10-16: the audit of each repo's `main` on that day, plus the fixe
 | --- | --- | --- | --- |
 | mxl-srt-gateway | writer (ingest), reader (egress) | compliant | Index from frame k, both fields per frame; a drop or resync skips both fields. Egress pairs 2k and 2k+1, tff and bff. |
 | mxl-test-player, video | writer | compliant (1.2.2) | `(idx & 1) ^ bff` field extraction. |
-| mxl-test-player, ANC | writer | compliant (1.2.3, PR #14, released) | ANC at the field rate (§3.3). |
+| mxl-test-player, ANC | writer | compliant (1.2.4, PR #15, released) | ANC at the field rate since 1.2.3 (PR #14); MXL's grain layout, packets at byte 6, since 1.2.4 (§3.3). |
 | mxl-multiviewer | reader | compliant (1.4.4) | Weaves grain idx with idx − 1, `(idx & 1) ^ bff`. |
 | mxl-webrtc-monitor | reader | compliant (1.4.1) | Pairs 2k and 2k+1, tff and bff. NMOS caps list `interlaced_bff` since 1.4.2 (PR #17, released). |
 | mxl-color-corrector | reader and writer | compliant (1.2.3) | Output index = input index; a hold keeps the parity. |
 | mxl-scopes | reader | compliant | Pairs 2k and 2k+1. |
 | mxl-decklink, capture | writer | compliant (1.0.6, first release with #23; #24 adds 29.97/59.94 audio) | Field lines of frame k to 2k and 2k+1. Field order from a mode table (NTSC bff), not yet checked on real cards. |
 | mxl-decklink, playout | reader | compliant (1.0.6, as above) | Reads 2k and 2k+1 per frame and weaves them, at the frame rate. |
-| mxl-decklink, ANC | writer | compliant (1.0.6, as above) | ANC at the field rate (§3.3). |
+| mxl-decklink, ANC | writer | compliant (1.0.7, PR #25, released) | ANC at the field rate since 1.0.6; MXL's grain layout, packets at byte 6, since 1.0.7 (§3.3). Since 1.0.7 the RFC 8331 C bit comes from the SDK's Y/C data stream (luma 0, chroma 1); S and StreamNum are 0. |
 | mxl-st2110-gateway, ingest | writer | compliant (1.0.19, PR #28, released) | Aligns parity by the F bit while the sender sets F=1; a sender that never sets F=1 keeps its timestamp index. MTL v26.09 itself drops a second field that reuses the first field's timestamp. ANC at the field rate. |
 | mxl-st2110-gateway, egress | reader | compliant (1.0.19, as above) | Output delay a whole number of frames; a repeat sends the last pair (§3.4). |
-| mxl-replay | reader and writer, progressive only | compliant (1.7.1, PR #27, released) | Refuses interlaced inputs visibly (progressive-only NMOS caps, error state). |
+| mxl-replay | reader and writer, progressive only | compliant (1.7.2, PR #28, released) | Refuses interlaced inputs visibly since 1.7.1 (PR #27: progressive-only NMOS caps, error state). MXL's ANC grain layout, packets at byte 6, since 1.7.2 (§3.3). |
 | obs-mxl-plugin, input | reader | compliant (input 0.0.2-alpha, PR #1) | Refuses interlaced flows. |
 | mxl-browser-source | writer, progressive only | N/A | Config refuses interlaced formats. |
 | strom | progressive only | compliant (refuses: caps negotiation fails) | An interlaced flow fails caps negotiation. |
@@ -120,8 +120,8 @@ For a reader:
 
 ## 6. Open points
 
-- ANC grain byte layout: MXL's layout (§3.3) is the rule, as mxl-st2110-gateway, mxl-data-probe and gst-mxl-rs write and read it. Three apps differ and are to be aligned; fixes are in progress:
-  - mxl-test-player 1.2.3: a 2-byte sequence number before Length, packets at offset 8 (fix: 1.2.4).
-  - mxl-replay 1.7.1: the same as mxl-test-player (fix: 1.7.2).
-  - mxl-decklink 1.0.6: Length at byte 0, but the header is padded to 8 bytes, packets at offset 8 (fix: 1.0.7).
+- Resolved: ANC grain byte layout. MXL's layout (§3.3) is the rule, as mxl-st2110-gateway, mxl-data-probe and gst-mxl-rs write and read it. The three apps that differed are aligned and released:
+  - mxl-test-player 1.2.4 (PR #15): had a 2-byte sequence number before Length, packets at offset 8.
+  - mxl-replay 1.7.2 (PR #28): the same as mxl-test-player.
+  - mxl-decklink 1.0.7 (PR #25): had Length at byte 0 but the header padded to 8 bytes, packets at offset 8. It also sets the C bit from the Y/C data stream now, with S and StreamNum 0.
 - mxl-decklink's field-order table (NTSC bff) is not yet checked on real cards.
