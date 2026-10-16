@@ -60,7 +60,9 @@ All line numbers are in `lib/internal/src/FlowParser.cpp` at 218ddaa.
 ### 3.6 SMPTE ST 2110-20
 
 - Field F=0 (RFC 4175 §4.2) is the first field. It maps to grain 2k, F=1 to grain 2k+1.
-- Ingest MUST align by the F bit: an F=0 field goes to an even index, an F=1 field to an odd index, whatever the RTP timestamp says.
+- Ingest MUST align by the F bit while the sender sets F (it has seen F=1 within the last few fields): an F=0 field goes to an even index, an F=1 field to an odd index, whatever the RTP timestamp says.
+- A sender that never sets F=1 is not compliant. Ingest SHOULD then keep its timestamp index and log it, rather than lose fields.
+- MTL v26.09 itself drops a second field that reuses the first field's RTP timestamp, so such a sender loses every second field before ingest sees it.
 - Egress MUST set F = `idx & 1`. Its output delay MUST be a whole number of frames (an even number of fields), so the RTP timestamp of an F=0 field stays on the frame grid.
 
 ### 3.7 Field order
@@ -81,7 +83,7 @@ Status at 2026-10-16: the audit of each repo's `main` on that day, plus the fixe
 | mxl-webrtc-monitor | reader | compliant (1.4.1) | Pairs 2k and 2k+1, tff and bff. NMOS caps list `interlaced_bff` since 1.4.2 (PR #17, released). |
 | mxl-color-corrector | reader and writer | compliant (1.2.3) | Output index = input index; a hold keeps the parity. |
 | mxl-scopes | reader | compliant | Pairs 2k and 2k+1. |
-| mxl-decklink, capture | writer | compliant (1.0.6, PRs #23 and #24, merged, not yet released) | Field lines of frame k to 2k and 2k+1. Field order from a mode table (NTSC bff), not yet checked on real cards. |
+| mxl-decklink, capture | writer | compliant (1.0.6, PRs #23 and #24, released) | Field lines of frame k to 2k and 2k+1. Field order from a mode table (NTSC bff), not yet checked on real cards. |
 | mxl-decklink, playout | reader | compliant (1.0.6, as above) | Reads 2k and 2k+1 per frame and weaves them, at the frame rate. |
 | mxl-decklink, ANC | writer | compliant (1.0.6, as above) | ANC at the field rate (§3.3). |
 | mxl-st2110-gateway, ingest | writer | compliant (1.0.19, PR #28, released) | Aligns parity by the F bit while the sender sets F=1; a sender that never sets F=1 keeps its timestamp index. MTL v26.09 itself drops a second field that reuses the first field's timestamp. ANC at the field rate. |
