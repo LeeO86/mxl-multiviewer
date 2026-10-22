@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.5
+
+Keyed inputs over the picture below (finding from the mxl-scopes M2 lab: the scope's key output over a picture hid the picture).
+
+- Cause: the CPU backend scales each tile into its own image and then copies those images onto the canvas in z order. A `video/v210a` tile's key was blended into the tile's own image (luma against what that image held from the last frame, chroma not at all) and the image was then copied opaque, so the canvas under the tile (a lower tile, the background colour or `MV_BACKGROUND_FILE`) was never seen. Key 0 showed luma 0, a part key showed the fill.
+- A keyed tile is now scaled into a layer that keeps the straight fill and the key, and the copy onto the canvas lays it over what is already there: key 0 keeps the canvas, 1023 takes the fill, values between mix them as `(fill × key + under × (1023 − key) + 511) / 1023`, luma and chroma (chroma by the key of the pair's first pixel). A keyed tile with nothing under it is laid over the layout background. Tiles without a key are copied as before.
+- The CUDA backend already blended each tile straight onto the canvas; it is unchanged. The CPU result is now the same as CUDA's (same formula and rounding).
+- No metric, setting or API change.
+- `mxl-mv-writer --key K` writes a `video/v210a` flow with key K on every pixel (progressive). New `tests/integration/keyed.sh` (CI): key 0, 1023 and 512 over a picture and 512 over the background; it also passes with `MV_TEST_BACKEND=cuda` (lab).
+
 ## 1.4.4
 
 Interlaced inputs (urgent: 1080i50 is the house format). 1.4.3 crashed (SIGSEGV, exit 139) on both backends as soon as an interlaced flow was routed to an input, for example the test player's `1080i25`.

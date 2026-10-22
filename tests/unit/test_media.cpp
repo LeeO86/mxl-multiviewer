@@ -222,6 +222,91 @@ TEST_CASE("scaler matches bilinear pixel centres and compose keeps tile colours"
     CHECK(full.y[20 * 192 + 24] == 200);
 }
 
+TEST_CASE("a keyed tile is laid over the canvas below it")
+{
+    // Golden pixels for a straight 10-bit key: (fill × key + under × (1023 − key) + 511) / 1023.
+    // Canvas (the picture or background below): Y 800, Cb 300, Cr 700. Tile fill: 200, 600, 400.
+    Frame422 canvas;
+    canvas.allocate(8, 2, false);
+    canvas.fill(800, 300, 700);
+    Frame422 tile;
+    tile.allocate(6, 2, true);
+    tile.fill(200, 600, 400);
+    std::uint16_t const keys[6] = {0, 0, 1023, 1023, 512, 512};
+    for (int y = 0; y < 2; ++y)
+    {
+        for (int x = 0; x < 6; ++x)
+        {
+            tile.a[static_cast<std::size_t>(y * 6 + x)] = keys[x];
+        }
+    }
+    blitTile(canvas, PixelRect{2, 0, 6, 2}, tile);
+    for (int y = 0; y < 2; ++y)
+    {
+        auto const row = static_cast<std::size_t>(y * 8);
+        auto const crow = static_cast<std::size_t>(y * 4);
+        CHECK(canvas.y[row + 0] == 800); // left of the tile
+        CHECK(canvas.y[row + 2] == 800); // key 0: what is under it
+        CHECK(canvas.y[row + 3] == 800);
+        CHECK(canvas.cb[crow + 1] == 300);
+        CHECK(canvas.cr[crow + 1] == 700);
+        CHECK(canvas.y[row + 4] == 200); // key 1023: the fill
+        CHECK(canvas.cb[crow + 2] == 600);
+        CHECK(canvas.cr[crow + 2] == 400);
+        CHECK(canvas.y[row + 6] == 500); // key 512: (200·512 + 800·511 + 511) / 1023
+        CHECK(canvas.y[row + 7] == 500);
+        CHECK(canvas.cb[crow + 3] == 450); // (600·512 + 300·511 + 511) / 1023
+        CHECK(canvas.cr[crow + 3] == 550); // (400·512 + 700·511 + 511) / 1023
+    }
+
+    // The CPU backend's path: the source scaled into a layer (straight fill and key, whatever
+    // the layer held before), then blitted over the canvas.
+    Frame422 source;
+    source.allocate(12, 6, true);
+    source.fill(200, 600, 400);
+    std::fill(source.a.begin(), source.a.end(), static_cast<std::uint16_t>(512));
+    Frame422 layer;
+    layer.allocate(6, 2, true);
+    layer.fill(999, 999, 999);
+    scaleInto(layer, placeTile(PixelRect{0, 0, 6, 2}, 12, 6, ScaleMode::Fill), source, Bob::Off);
+    CHECK(layer.y[0] == 200);
+    CHECK(layer.cb[0] == 600);
+    CHECK(layer.a[0] == 512);
+    Frame422 below;
+    below.allocate(8, 2, false);
+    below.fill(800, 300, 700);
+    blitTile(below, PixelRect{2, 0, 6, 2}, layer);
+    CHECK(below.y[0] == 800);
+    CHECK(below.y[2] == 500);
+    CHECK(below.cb[1] == 450);
+    CHECK(below.cr[1] == 550);
+
+    // A tile with nothing below it is blended over the background colour (limited black here).
+    Frame422 background;
+    background.allocate(6, 2, false);
+    background.fill(64, 512, 512);
+    blitTile(background, PixelRect{0, 0, 6, 2}, layer);
+    CHECK(background.y[0] == 132); // (200·512 + 64·511 + 511) / 1023
+    CHECK(background.cb[0] == 556); // (600·512 + 512·511 + 511) / 1023
+
+    // Scaled straight onto a canvas without alpha (composeTiles), luma and chroma are blended.
+    Frame422 direct;
+    direct.allocate(6, 2, false);
+    direct.fill(800, 300, 700);
+    scaleInto(direct, placeTile(PixelRect{0, 0, 6, 2}, 12, 6, ScaleMode::Fill), source, Bob::Off);
+    CHECK(direct.y[0] == 500);
+    CHECK(direct.cb[0] == 450);
+    CHECK(direct.cr[0] == 550);
+
+    // A tile without a key is copied.
+    Frame422 opaque;
+    opaque.allocate(2, 1, false);
+    opaque.fill(200, 600, 400);
+    blitTile(direct, PixelRect{0, 0, 2, 1}, opaque);
+    CHECK(direct.y[0] == 200);
+    CHECK(direct.cb[0] == 600);
+}
+
 TEST_CASE("scaling straight from v210 matches the unpacked scaler within 1")
 {
     Frame422 src;
