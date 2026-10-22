@@ -40,6 +40,19 @@ void packSolid(std::uint8_t* dst, int width, int height, std::uint16_t y, std::u
     }
 }
 
+// The v210a key plane (MXL FlowParser): 3 × 10-bit samples per little-endian 32-bit word,
+// (width + 2) / 3 words per line, the lines after the fill plane.
+std::uint32_t keyRow(int width) { return static_cast<std::uint32_t>((width + 2) / 3 * 4); }
+
+void packKey(std::uint8_t* dst, int width, int height, std::uint16_t key)
+{
+    std::uint32_t const word = (key & 0x3ffu) | (static_cast<std::uint32_t>(key & 0x3ffu) << 10) | (static_cast<std::uint32_t>(key & 0x3ffu) << 20);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(keyRow(width)) * static_cast<std::size_t>(height); i += 4)
+    {
+        std::memcpy(dst + i, &word, 4);
+    }
+}
+
 std::string arg(int argc, char** argv, char const* name, std::string const& fallback)
 {
     for (int i = 1; i + 1 < argc; ++i)
@@ -72,10 +85,12 @@ int main(int argc, char** argv)
     // The lower half of the frame (frame lines >= height / 2) in this luma, so a reader that
     // takes a field for a frame shows the edge in the wrong place.
     int const y2 = std::stoi(arg(argc, argv, "--y2", "-1"));
+    // A v210a flow (1.4.5) with this key (0 transparent .. 1023 opaque) on every pixel; progressive only.
+    int const key = std::stoi(arg(argc, argv, "--key", "-1"));
     if (domain.empty() || flow.empty())
     {
         std::cerr << "usage: mxl-mv-writer --domain DIR --flow UUID [--width W --height H --rate N --y Y --cb Cb --cr Cr --y2 Y --interlace tff|bff "
-                     "--audio-flow UUID]\n";
+                     "--key K --audio-flow UUID]\n";
         return 2;
     }
     bool const fields = interlace == "tff" || interlace == "bff";
@@ -83,6 +98,11 @@ int main(int argc, char** argv)
     if (!interlace.empty() && !fields)
     {
         std::cerr << "--interlace is tff or bff\n";
+        return 2;
+    }
+    if (key > 1023 || (key >= 0 && fields))
+    {
+        std::cerr << "--key is 0..1023, progressive only\n";
         return 2;
     }
     auto* instance = mxlCreateInstance(domain.c_str(), nullptr);
@@ -93,7 +113,7 @@ int main(int argc, char** argv)
     }
     std::string def = std::string("{\"id\":\"") + flow +
                       "\",\"format\":\"urn:x-nmos:format:video\",\"label\":\"pattern\",\"description\":\"pattern\",\"tags\":{\"urn:x-nmos:tag:grouphint/v1.0\":[\"Pattern:Video\"]},\"parents\":[],"
-                      "\"media_type\":\"video/v210\",\"grain_rate\":{\"numerator\":" +
+                      "\"media_type\":\"" + std::string(key >= 0 ? "video/v210a" : "video/v210") + "\",\"grain_rate\":{\"numerator\":" +
                       std::to_string(rate) + ",\"denominator\":1},\"frame_width\":" + std::to_string(width) + ",\"frame_height\":" + std::to_string(height) +
                       ",\"interlace_mode\":\"" + (fields ? std::string(bff ? "interlaced_bff" : "interlaced_tff") : std::string("progressive")) + "\",\"colorspace\":\"BT709\",\"components\":[]}";
     mxlFlowWriter writer = nullptr;
@@ -113,11 +133,16 @@ int main(int argc, char** argv)
     mxlRational grainRate{fields ? rate * 2 : rate, 1};
     std::uint64_t index = mxlGetCurrentIndex(&grainRate);
     std::size_t const rowBytes = v210Row(width);
-    std::vector<std::uint8_t> frame(rowBytes * static_cast<std::size_t>(height));
+    std::size_t const fillBytes = rowBytes * static_cast<std::size_t>(height);
+    std::vector<std::uint8_t> frame(fillBytes + (key >= 0 ? static_cast<std::size_t>(keyRow(width)) * static_cast<std::size_t>(height) : 0));
     packSolid(frame.data(), width, height, y, cb, cr);
     if (y2 >= 0)
     {
         packSolid(frame.data() + rowBytes * static_cast<std::size_t>(height / 2), width, height - height / 2, static_cast<std::uint16_t>(y2), cb, cr);
+    }
+    if (key >= 0)
+    {
+        packKey(frame.data() + fillBytes, width, height, static_cast<std::uint16_t>(key));
     }
     // One packed grain per field parity (0 top: even frame lines, 1 bottom: odd), or the frame.
     std::vector<std::uint8_t> field[2];

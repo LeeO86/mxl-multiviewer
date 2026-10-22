@@ -18,8 +18,16 @@ enum class Bob : int
     Bottom = 1, // odd lines 1, 3, …
 };
 
-// Bilinear scale of src into dst. Sample positions are pixel centres.
+// Bilinear scale of src into dst. Sample positions are pixel centres. A source with a key
+// (v210a) is blended over what dst holds (luma and chroma). A dst with alpha is a layer instead:
+// it gets the straight samples and the key, and blitTile() blends it later.
 void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob bob);
+
+// A tile image onto the canvas at dst (its top-left corner, even x). An image with alpha (a
+// layer from scaleInto) is laid over what the canvas holds there: key 0 keeps the canvas, 1023
+// takes the tile, values between mix them (chroma by the key of the pair's first pixel, as on
+// CUDA). An image without alpha is copied.
+void blitTile(Frame422& canvas, PixelRect const& dst, Frame422 const& tile);
 
 // Limited-range black (Y=64, Cb=Cr=512) then each tile in order.
 void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::uint16_t bgCr, Frame422 const* background, int backgroundCount,

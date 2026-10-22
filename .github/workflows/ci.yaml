@@ -95,6 +95,11 @@ jobs:
           chmod +x tests/integration/interlaced.sh
           MXL_LIB_DIR=/opt/mxl/lib tests/integration/interlaced.sh build/mxl-multiviewer build/mxl-mv-writer build/mxl-mv-sample
 
+      - name: Integration (keyed inputs)
+        run: |
+          chmod +x tests/integration/keyed.sh
+          MXL_LIB_DIR=/opt/mxl/lib tests/integration/keyed.sh build/mxl-multiviewer build/mxl-mv-writer build/mxl-mv-sample
+
       - name: Integration (WebRTC preview)
         run: |
           curl -fsSL -o /tmp/mediamtx.tgz https://github.com/bluenviron/mediamtx/releases/download/v1.20.1/mediamtx_v1.20.1_linux_amd64.tar.gz

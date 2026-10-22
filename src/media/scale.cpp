@@ -11,6 +11,13 @@ namespace mv
 {
 namespace
 {
+// A straight key (0 transparent .. 1023 opaque): the sample over what is under it, rounded as
+// the CUDA compositor does.
+std::uint16_t keyOver(std::uint16_t fill, std::uint16_t under, int alpha)
+{
+    return static_cast<std::uint16_t>((static_cast<int>(fill) * alpha + static_cast<int>(under) * (1023 - alpha) + 511) / 1023);
+}
+
 int clampIndex(int v, int limit)
 {
     return std::clamp(v, 0, std::max(0, limit - 1));
@@ -344,6 +351,7 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob b
     }
     int const dcw = dst.chromaWidth();
     int const scw = src.chromaWidth();
+    bool const layer = dst.hasAlpha;
     for (int dy = 0; dy < place.dst.h; ++dy)
     {
         int const y = place.dst.y + dy;
@@ -369,13 +377,13 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob b
                             : bilerp(src.a.data(), src.width, src.width, src.height, sx, sy);
             }
             auto& dstY = dst.y[static_cast<std::size_t>(y * dst.width + x)];
-            if (alpha >= 1023)
+            if (layer || alpha >= 1023)
             {
                 dstY = ySample;
             }
             else if (alpha > 0)
             {
-                dstY = static_cast<std::uint16_t>((static_cast<int>(ySample) * alpha + static_cast<int>(dstY) * (1023 - alpha) + 511) / 1023);
+                dstY = keyOver(ySample, dstY, alpha);
             }
             if ((x & 1) == 0 && x / 2 < dcw)
             {
@@ -386,10 +394,20 @@ void scaleInto(Frame422& dst, Placement const& place, Frame422 const& src, Bob b
                 auto pick = [&](std::vector<std::uint16_t> const& plane) {
                     return bob != Bob::Off ? bilerpBob(plane.data(), scw, scw, src.height, cx, sy, static_cast<int>(bob)) : bilerp(plane.data(), scw, scw, src.height, cx, sy);
                 };
-                dst.cb[static_cast<std::size_t>(y * dcw + x / 2)] = pick(src.cb);
-                dst.cr[static_cast<std::size_t>(y * dcw + x / 2)] = pick(src.cr);
+                auto& dstCb = dst.cb[static_cast<std::size_t>(y * dcw + x / 2)];
+                auto& dstCr = dst.cr[static_cast<std::size_t>(y * dcw + x / 2)];
+                if (layer || alpha >= 1023)
+                {
+                    dstCb = pick(src.cb);
+                    dstCr = pick(src.cr);
+                }
+                else if (alpha > 0)
+                {
+                    dstCb = keyOver(pick(src.cb), dstCb, alpha);
+                    dstCr = keyOver(pick(src.cr), dstCr, alpha);
+                }
             }
-            if (dst.hasAlpha)
+            if (layer)
             {
                 dst.a[static_cast<std::size_t>(y * dst.width + x)] = alpha;
             }
@@ -410,6 +428,34 @@ void coverFrame(Frame422& dst, Frame422 const& src)
     }
     auto const place = placeTile(PixelRect{0, 0, dst.width, dst.height}, src.width, src.height, ScaleMode::Fill);
     scaleInto(dst, place, src, Bob::Off);
+}
+
+void blitTile(Frame422& canvas, PixelRect const& dst, Frame422 const& tile)
+{
+    bool const keyed = tile.hasAlpha && tile.a.size() == tile.y.size();
+    int const cw = canvas.chromaWidth();
+    int const tw = tile.chromaWidth();
+    for (int y = 0; y < tile.height && dst.y + y < canvas.height; ++y)
+    {
+        for (int x = 0; x < tile.width && dst.x + x < canvas.width; ++x)
+        {
+            auto const t = static_cast<std::size_t>(y * tile.width + x);
+            int const alpha = keyed ? tile.a[t] : 1023;
+            if (alpha <= 0)
+            {
+                continue;
+            }
+            auto& outY = canvas.y[static_cast<std::size_t>((dst.y + y) * canvas.width + dst.x + x)];
+            outY = alpha >= 1023 ? tile.y[t] : keyOver(tile.y[t], outY, alpha);
+            if (((dst.x + x) & 1) == 0 && (x / 2) < tw && (dst.x + x) / 2 < cw)
+            {
+                auto const tc = static_cast<std::size_t>(y * tw + x / 2);
+                auto const c = static_cast<std::size_t>((dst.y + y) * cw + (dst.x + x) / 2);
+                canvas.cb[c] = alpha >= 1023 ? tile.cb[tc] : keyOver(tile.cb[tc], canvas.cb[c], alpha);
+                canvas.cr[c] = alpha >= 1023 ? tile.cr[tc] : keyOver(tile.cr[tc], canvas.cr[c], alpha);
+            }
+        }
+    }
 }
 
 void composeTiles(Frame422& canvas, std::uint16_t bgY, std::uint16_t bgCb, std::uint16_t bgCr, Frame422 const* background, int backgroundCount,

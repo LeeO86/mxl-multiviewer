@@ -197,24 +197,6 @@ std::string readFlowDef(mxlInstance instance, std::string const& flowId)
     return buffer;
 }
 
-void blit(Frame422& canvas, PixelRect const& dst, Frame422 const& tile)
-{
-    int const cw = canvas.chromaWidth();
-    int const tw = tile.chromaWidth();
-    for (int y = 0; y < tile.height && dst.y + y < canvas.height; ++y)
-    {
-        for (int x = 0; x < tile.width && dst.x + x < canvas.width; ++x)
-        {
-            canvas.y[static_cast<std::size_t>((dst.y + y) * canvas.width + dst.x + x)] = tile.y[static_cast<std::size_t>(y * tile.width + x)];
-            if (((dst.x + x) & 1) == 0 && (x / 2) < tw && (dst.x + x) / 2 < cw)
-            {
-                canvas.cb[static_cast<std::size_t>((dst.y + y) * cw + (dst.x + x) / 2)] = tile.cb[static_cast<std::size_t>(y * tw + x / 2)];
-                canvas.cr[static_cast<std::size_t>((dst.y + y) * cw + (dst.x + x) / 2)] = tile.cr[static_cast<std::size_t>(y * tw + x / 2)];
-            }
-        }
-    }
-}
-
 // Limited-range black into a rectangle of the canvas: letterbox areas of fit tiles (§5.5).
 void fillBlack(Frame422& canvas, PixelRect const& rect)
 {
@@ -1876,7 +1858,8 @@ struct Engine::Impl
             }
             if (!cudaFrame)
             {
-                // Each tile into its own reused image on the pool, then blitted in z order.
+                // Each tile into its own reused image on the pool, then blitted in z order (a
+                // keyed tile blended over what is below it).
                 if (tileImages.size() < sources.size())
                 {
                     tileImages.resize(sources.size());
@@ -1888,9 +1871,12 @@ struct Engine::Impl
                     jobs.emplace_back([&source = sources[i], &image = tileImages[i]] {
                         int const w = std::max(2, source.place.dst.w);
                         int const h = std::max(1, source.place.dst.h);
-                        if (image.width != w || image.height != h || image.hasAlpha)
+                        // A keyed source (v210a) is scaled into a layer with its key, which
+                        // blitTile() lays over the canvas below in z order.
+                        bool const keyed = source.frame != nullptr && source.frame->hasAlpha && !source.frame->a.empty();
+                        if (image.width != w || image.height != h || image.hasAlpha != keyed)
                         {
-                            image.allocate(w, h, false);
+                            image.allocate(w, h, keyed);
                         }
                         Placement local = source.place;
                         local.dst = {0, 0, w, h};
@@ -1927,7 +1913,7 @@ struct Engine::Impl
                     {
                         fillBlack(canvas, source.rect);
                     }
-                    blit(canvas, source.place.dst, tileImages[i]);
+                    blitTile(canvas, source.place.dst, tileImages[i]);
                 }
                 if (withOverlay)
                 {
