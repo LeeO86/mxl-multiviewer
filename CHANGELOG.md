@@ -9,6 +9,9 @@ Keyed inputs over the picture below (finding from the mxl-scopes M2 lab: the sco
 - The CUDA backend already blended each tile straight onto the canvas; it is unchanged. The CPU result is now the same as CUDA's (same formula and rounding).
 - No metric, setting or API change.
 - `mxl-mv-writer --key K` writes a `video/v210a` flow with key K on every pixel (progressive). New `tests/integration/keyed.sh` (CI): key 0, 1023 and 512 over a picture and 512 over the background; it also passes with `MV_TEST_BACKEND=cuda` (lab).
+- Known limits (both unchanged by this release):
+  - A keyed tile with `scale: fit` whose aspect differs from the tile's: the whole tile rectangle is first painted limited-range black for the letterbox (both backends), so key 0 shows black there, not what is below.
+  - CPU backend: keyed sources always go through the generic scaler (about 45 ms for a quarter tile from 1080p, about 183 ms for a full frame), and the keyed blend adds about 6.7 ms per full 1080p tile. Keyed tiles on the CPU backend do not hold 50p; use the CUDA backend for keyed sources.
 
 ## 1.4.4
 
