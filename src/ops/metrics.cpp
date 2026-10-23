@@ -65,6 +65,14 @@ void Metrics::observe(std::string const& name, Labels const& labels, double seco
     }
 }
 
+void startHeadCounters(Metrics& metrics, int head)
+{
+    for (auto const* name : {"output_frames_total", "output_frames_late_total", "output_frames_missed_total"})
+    {
+        metrics.inc(name, {{"head", std::to_string(head)}}, 0);
+    }
+}
+
 std::string Metrics::render() const
 {
     std::lock_guard lock{mutex_};

@@ -78,6 +78,24 @@ for _ in $(seq 1 50); do
 done
 curl -sf "http://127.0.0.1:${WEB_PORT}/livez" >/dev/null
 
+# 1.4.6: the head's late and missed counters are on /metrics right after start (at 0 until a frame
+# is late or missed; 1.4.5 created them only on their first increment).
+counters=0
+for _ in $(seq 1 25); do
+  METRICS="$(curl -sf "http://127.0.0.1:${WEB_PORT}/metrics" || true)"
+  if grep -q '^mxl_multiviewer_output_frames_late_total{head="1"} ' <<<"$METRICS" &&
+     grep -q '^mxl_multiviewer_output_frames_missed_total{head="1"} ' <<<"$METRICS"; then
+    counters=1
+    break
+  fi
+  sleep 0.2
+done
+grep '^mxl_multiviewer_output_frames_\(late\|missed\)_total' <<<"$METRICS" || true
+if [[ "$counters" != 1 ]]; then
+  echo "output_frames_late_total / output_frames_missed_total are not on /metrics after start" >&2
+  exit 1
+fi
+
 restored=0
 for _ in $(seq 1 40); do
   STATE="$(curl -sf "http://127.0.0.1:${WEB_PORT}/api/v1/inputs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inputs"][0]["video"]["state"])')"
