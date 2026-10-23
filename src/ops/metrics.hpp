@@ -38,4 +38,8 @@ private:
     std::map<std::string, Hist> histograms_;
     std::vector<double> bounds_{0.001, 0.002, 0.005, 0.01, 0.02, 0.04, 0.08};
 };
+
+// A head's output counters (`output_frames_total`, `_late_total`, `_missed_total`) at 0, so
+// /metrics has them from the start and not only after their first increment (1.4.6).
+void startHeadCounters(Metrics& metrics, int head);
 } // namespace mv

@@ -687,6 +687,27 @@ TEST_CASE("metrics prefix")
     CHECK(text.find("mxl_multiviewer_compose_seconds_count") != std::string::npos);
 }
 
+TEST_CASE("a head's output counters are on /metrics at 0 from the start")
+{
+    // 1.4.5 created late and missed only on their first increment, so dashboards had no data.
+    Metrics metrics;
+    startHeadCounters(metrics, 1);
+    startHeadCounters(metrics, 2);
+    auto const text = metrics.render();
+    for (auto const* head : {"1", "2"})
+    {
+        for (auto const* name : {"output_frames_total", "output_frames_late_total", "output_frames_missed_total"})
+        {
+            auto const line = std::string("mxl_multiviewer_") + name + "{head=\"" + head + "\"} 0\n";
+            CHECK_MESSAGE(text.find(line) != std::string::npos, line);
+        }
+    }
+    // Calling it again (a head restarted) keeps the counts.
+    metrics.inc("output_frames_late_total", {{"head", "1"}}, 2);
+    startHeadCounters(metrics, 1);
+    CHECK(metrics.render().find("mxl_multiviewer_output_frames_late_total{head=\"1\"} 2\n") != std::string::npos);
+}
+
 TEST_CASE("overlay changes cover every changed pixel and nothing else")
 {
     int const width = 300;

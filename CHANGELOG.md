@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.6
+
+Output counters on `/metrics` from the start (platform: dashboards showed "no data" for late and missed frames on 1.4.5).
+
+- `mxl_multiviewer_output_frames_late_total{head}` and `mxl_multiviewer_output_frames_missed_total{head}` were created on their first increment, so a head that had not yet been late or missed a frame had no series. This was not new in 1.4.5: the code and the output are the same in 1.4.4 (lab: both images, CPU, no inputs, 20 s: only `output_frames_total` on `/metrics`). Earlier runs only showed the series because a frame had already been late or missed.
+- Each head now exports `output_frames_total`, `output_frames_late_total` and `output_frames_missed_total` at 0 when it starts. Names, labels and meaning are unchanged.
+- Unit test: the three counters at 0 for each head right after start; `tests/integration/mosaic.sh` checks that late and missed are on `/metrics` right after start.
+
 ## 1.4.5
 
 Keyed inputs over the picture below (finding from the mxl-scopes M2 lab: the scope's key output over a picture hid the picture).

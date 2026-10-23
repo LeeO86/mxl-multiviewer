@@ -1624,6 +1624,7 @@ struct Engine::Impl
         PreparedOverlay prepared;
         std::uint64_t preparedVersion = 0;
         OutputView view = runtime.output(head);
+        startHeadCounters(metrics, head);
         view.domainId = domainId;
         view.backend = "cpu";
         view.videoFlowId = videoFlow;
