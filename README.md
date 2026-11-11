@@ -4,6 +4,8 @@ Broadcast multiviewer for the MXL proof-of-concept platform. It composites up to
 
 Part of [mxl-stack](https://github.com/LeeO86/mxl-stack), a collection of open-source MXL media functions with Docker Compose and Kubernetes examples.
 
+![mxl-multiviewer: a 3x3 layout of MXL flows with tally, labels and audio meters](docs/images/web-ui.png)
+
 The previous Rust/GStreamer 2×2 prototype is gone. `docs/audit.md` says why. Behaviour is `SPECIFICATION.md`. How this tree differs from that text is `IMPLEMENTATION_PLAN.md`.
 
 The output is an NMOS sender. Route it to `mxl-decklink` for an SDI wall or to `mxl-webrtc-monitor` for a browser. The outputs are uncompressed; browsers only get a low-rate preview: a JPEG per head, or with `MV_PREVIEW_MODE=webrtc` one H.264 WebRTC stream of all heads (see Preview below).
@@ -37,7 +39,7 @@ MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
 MV_STATE_DIR=/config \
 NMOS_REGISTRY_ADDRESS=192.0.2.10 \
 NMOS_HOST_ADDRESS=192.0.2.20 \
-NMOS_SEED=sport-sa-mv1 \
+NMOS_SEED=studio-a-mv1 \
 NMOS_LABEL=mv1 \
 NMOS_ENABLE=true \
 ./build/mxl-multiviewer
