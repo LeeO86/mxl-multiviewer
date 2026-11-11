@@ -2,6 +2,8 @@
 
 Broadcast multiviewer for the MXL proof-of-concept platform. It composites up to 32 NMOS inputs into one uncompressed `video/v210` MXL output (and an optional `audio/float32` follow), timed from TAI rather than a media-framework clock.
 
+Part of [mxl-stack](https://github.com/LeeO86/mxl-stack), a collection of open-source MXL media functions with Docker Compose and Kubernetes examples.
+
 The previous Rust/GStreamer 2×2 prototype is gone. `docs/audit.md` says why. Behaviour is `SPECIFICATION.md`. How this tree differs from that text is `IMPLEMENTATION_PLAN.md`.
 
 The output is an NMOS sender. Route it to `mxl-decklink` for an SDI wall or to `mxl-webrtc-monitor` for a browser. The outputs are uncompressed; browsers only get a low-rate preview: a JPEG per head, or with `MV_PREVIEW_MODE=webrtc` one H.264 WebRTC stream of all heads (see Preview below).
@@ -33,8 +35,8 @@ On the platform the pod network is enough. Mount the MXL root read-write (this p
 MXL_DOMAIN_SCAN_PATH=/Volumes/mxl \
 MXL_OUTPUT_DOMAIN_DIR=/Volumes/mxl/multiviewer \
 MV_STATE_DIR=/config \
-NMOS_REGISTRY_ADDRESS=10.0.0.10 \
-NMOS_HOST_ADDRESS=10.0.0.20 \
+NMOS_REGISTRY_ADDRESS=192.0.2.10 \
+NMOS_HOST_ADDRESS=192.0.2.20 \
 NMOS_SEED=sport-sa-mv1 \
 NMOS_LABEL=mv1 \
 NMOS_ENABLE=true \
